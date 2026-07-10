@@ -1,0 +1,77 @@
+# macOS / Windows
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Python bytecode and tool caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# Virtual environments and local Python managers
+.venv/
+venv/
+env/
+
+# Build and packaging output
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Editors
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Secrets and machine-local configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+config.local.yaml
+config.local.yml
+
+# Runtime data: conversations, memories, logs, caches and tokens
+data/
+*.sqlite
+*.sqlite3
+*.db
+*.log
+*vts*token*.json
+
+# User-imported or protected assets must never be committed
+assets/user_imported/
+*.moc3
+*.model3.json
+*.physics3.json
+*.exp3.json
+*.motion3.json
+*.wav
+*.mp3
+*.flac
+*.ogg
+*.m4a
+*.mp4
+*.mov
+*.png
+*.jpg
+*.jpeg
+*.webp
+
+# Explicitly allow future synthetic/licensed fixtures and placeholders
+!assets/placeholder/**/*.wav
+!assets/placeholder/**/*.png
+!assets/placeholder/**/*.jpg
+!tests/fixtures/**/*.wav
+!tests/fixtures/**/*.png
+!tests/fixtures/**/*.jpg
