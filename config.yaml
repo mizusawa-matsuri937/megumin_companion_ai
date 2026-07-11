@@ -14,7 +14,19 @@ logging:
   file_enabled: true
   file_path: data/logs/app.jsonl
 
-# Day 10 才接入真实 Provider。改为其他 provider 后，启动时会要求配置对应环境变量。
+# Day 5-7 默认使用不联网的确定性 Mock。Day 10 改为真实 provider 后才要求密钥。
 llm:
-  provider: none
+  provider: mock
   api_key_env: COMPANION_LLM_API_KEY
+
+pipeline:
+  tts_worker_count: 2
+  segment_min_chars: 6
+  segment_max_chars: 42
+  segment_max_words: 25
+  mock_token_delay_ms: 20
+  mock_audio_duration_ms: 180
+  mock_audio_volume: 0.12
+  audio_cache_path: data/cache/audio/mock
+  # 默认静默模拟播放，避免后端启动后意外发声；Gate A 人工工具显式使用系统播放器。
+  playback_mode: silent
