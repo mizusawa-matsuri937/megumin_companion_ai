@@ -1,0 +1,20 @@
+app:
+  name: Megumin Desktop Companion AI
+  environment: dev
+  timezone: Asia/Shanghai
+  language: zh-CN
+  log_level: INFO
+
+server:
+  host: 127.0.0.1
+  port: 8765
+
+logging:
+  console_enabled: true
+  file_enabled: true
+  file_path: data/logs/app.jsonl
+
+# Day 10 才接入真实 Provider。改为其他 provider 后，启动时会要求配置对应环境变量。
+llm:
+  provider: none
+  api_key_env: COMPANION_LLM_API_KEY
