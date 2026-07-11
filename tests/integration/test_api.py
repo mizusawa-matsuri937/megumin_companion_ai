@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 from app.config import Settings
-from app.config.settings import LoggingConfig
+from app.config.settings import LLMConfig, LoggingConfig, PipelineConfig
 from app.core import TurnService
 from app.main import create_app
 from app.schemas import TurnState, UserMessage
@@ -28,6 +28,17 @@ def quiet_settings(*, log_path: Path | None = None) -> Settings:
             file_enabled=log_path is not None,
             file_path=log_path or Path("unused.jsonl"),
         )
+    )
+
+
+def mock_pipeline_settings(*, token_delay_ms: int = 0) -> Settings:
+    return Settings(
+        logging=LoggingConfig(console_enabled=False, file_enabled=False),
+        llm=LLMConfig(provider="mock"),
+        pipeline=PipelineConfig(
+            mock_token_delay_ms=token_delay_ms,
+            mock_audio_duration_ms=0,
+        ),
     )
 
 
@@ -104,3 +115,46 @@ def test_lifecycle_writes_start_and_stop_events(tmp_path: Path) -> None:
         json.loads(line)["event"] for line in log_path.read_text(encoding="utf-8").splitlines()
     ]
     assert events == ["application.started", "application.stopped"]
+
+
+def test_websocket_streams_complete_mock_pipeline_for_text_and_voice() -> None:
+    app = create_app(mock_pipeline_settings())
+    with TestClient(app) as client, client.websocket_connect("/ws/client") as websocket:
+        for mode in ("text", "voice"):
+            websocket.send_json(
+                {
+                    "type": "user.message",
+                    "payload": {"text": f"运行 {mode} 完整链路", "input_mode": mode},
+                }
+            )
+            events = []
+            while True:
+                event = websocket.receive_json()
+                events.append(event)
+                if event["type"] == "assistant.completed":
+                    break
+
+            event_types = [event["type"] for event in events]
+            assert event_types[0] == "turn.accepted"
+            assert "assistant.delta" in event_types
+            assert "assistant.segment" in event_types
+            assert "audio.ready" in event_types
+            assert "playback.started" in event_types
+            assert event_types[-1] == "assistant.completed"
+            assert events[0]["payload"]["input_mode"] == mode
+            metrics = events[-1]["payload"]["metrics"]
+            assert metrics["llm_first_token_ms"] is not None
+            assert metrics["first_sentence_play_ms"] is not None
+
+
+def test_http_interrupt_cancels_active_turn() -> None:
+    app = create_app(mock_pipeline_settings(token_delay_ms=100))
+    with TestClient(app) as client:
+        accepted = client.post("/api/chat", json={"text": "请开始一个较慢的回复"}).json()
+        cancelled = client.post(
+            "/api/interrupt",
+            json={"turn_id": accepted["turn_id"], "session_id": accepted["session_id"]},
+        )
+
+    assert cancelled.status_code == 200
+    assert cancelled.json()["status"] == "cancelled"

@@ -1,4 +1,4 @@
-"""Minimal message, turn, segmentation, and audio contracts for Day 4."""
+"""Message, turn, segmentation, audio, and observable pipeline contracts."""
 
 from __future__ import annotations
 
@@ -120,3 +120,32 @@ class TurnState(ContractModel):
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
     error_code: str | None = None
+
+
+class TurnMetrics(ContractModel):
+    """Privacy-safe latency measurements for one dialogue turn."""
+
+    llm_first_token_ms: int | None = Field(default=None, ge=0)
+    llm_first_segment_ms: int | None = Field(default=None, ge=0)
+    tts_first_audio_ms: int | None = Field(default=None, ge=0)
+    first_sentence_play_ms: int | None = Field(default=None, ge=0)
+    turn_total_ms: int | None = Field(default=None, ge=0)
+    tts_job_latency_ms: list[int] = Field(default_factory=list)
+    audio_queue_wait_ms: list[int] = Field(default_factory=list)
+    segment_count: int = Field(default=0, ge=0)
+    playback_count: int = Field(default=0, ge=0)
+
+
+class PipelineEvent(ContractModel):
+    """Event sent to a local client while a turn is running."""
+
+    type: str = Field(min_length=1)
+    turn_id: str = Field(min_length=1)
+    session_id: str = Field(min_length=1)
+    payload: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=utc_now)
+
+
+class TurnInterruptRequest(ContractModel):
+    turn_id: str | None = Field(default=None, min_length=1)
+    session_id: str = Field(default="local_session", min_length=1)

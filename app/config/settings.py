@@ -9,7 +9,15 @@ from typing import Any, Literal
 
 import yaml
 from dotenv import dotenv_values
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, SecretStr, ValidationError
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    PrivateAttr,
+    SecretStr,
+    ValidationError,
+    model_validator,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config.yaml"
@@ -50,11 +58,30 @@ class LLMConfig(StrictModel):
     api_key_env: str | None = "COMPANION_LLM_API_KEY"
 
 
+class PipelineConfig(StrictModel):
+    tts_worker_count: int = Field(default=2, ge=1, le=8)
+    segment_min_chars: int = Field(default=6, ge=1, le=100)
+    segment_max_chars: int = Field(default=42, ge=1, le=500)
+    segment_max_words: int = Field(default=25, ge=1, le=100)
+    mock_token_delay_ms: int = Field(default=20, ge=0, le=10_000)
+    mock_audio_duration_ms: int = Field(default=180, ge=0, le=10_000)
+    mock_audio_volume: float = Field(default=0.12, ge=0.0, le=1.0)
+    audio_cache_path: Path = Path("data/cache/audio/mock")
+    playback_mode: Literal["silent", "system"] = "silent"
+
+    @model_validator(mode="after")
+    def validate_segment_lengths(self) -> PipelineConfig:
+        if self.segment_max_chars < self.segment_min_chars:
+            raise ValueError("segment_max_chars 必须不小于 segment_min_chars")
+        return self
+
+
 class Settings(StrictModel):
     app: AppConfig = Field(default_factory=AppConfig)
     server: ServerConfig = Field(default_factory=ServerConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
+    pipeline: PipelineConfig = Field(default_factory=PipelineConfig)
 
     _environment: dict[str, str] = PrivateAttr(default_factory=dict)
 
@@ -157,6 +184,6 @@ def load_settings(
         raise ConfigurationError(f"配置文件 {resolved_config} 无效：{issues}") from exc
 
     settings._environment = environment
-    if settings.llm.provider.lower() != "none":
+    if settings.llm.provider.lower() not in {"none", "mock"}:
         settings.require_llm_api_key()
     return settings
