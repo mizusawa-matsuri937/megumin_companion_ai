@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from contextlib import suppress
 from datetime import datetime
 from functools import partial
@@ -14,12 +14,11 @@ from app.core import FeatureFlagSource, TurnObserver
 from app.core.cancellation import CancellationToken
 from app.emotion import Clock, SystemClock
 from app.memory.analyzer import MemoryCandidateAnalyzer, NoopMemoryCandidateAnalyzer
-from app.memory.context import ContextSnapshot, MemoryContextAssembler
+from app.memory.context import MemoryContextAssembler
 from app.memory.models import MemoryItem, PendingConfirmation, SourceInputMode
 from app.memory.service import HistoryService, MemoryService
-from app.prompts import HistoryMessage, PromptContextSource
+from app.prompts import PromptContextSnapshot, PromptContextSource
 from app.schemas import (
-    ExternalContextBlock,
     FeatureName,
     FeatureState,
     TurnOutcome,
@@ -80,26 +79,30 @@ class FeatureFlagManager(FeatureFlagSource):
 
 
 class MemoryPromptContextSource(PromptContextSource):
+    """Build one cache-free context snapshot and retry across every revocation epoch."""
+
     def __init__(self, assembler: MemoryContextAssembler) -> None:
         self._assembler = assembler
-        self._snapshots: dict[str, ContextSnapshot] = {}
+        self._epoch = 0
         self._lock = asyncio.Lock()
 
-    async def history_for(self, message: UserMessage) -> Sequence[HistoryMessage]:
-        snapshot = await self._build(message)
-        async with self._lock:
-            self._snapshots[message.message_id] = snapshot
-        return snapshot.history
-
-    async def context_for(self, message: UserMessage) -> Sequence[ExternalContextBlock]:
-        async with self._lock:
-            snapshot = self._snapshots.pop(message.message_id, None)
-        if snapshot is None:
+    async def snapshot_for(self, message: UserMessage) -> PromptContextSnapshot:
+        while True:
+            async with self._lock:
+                epoch = self._epoch
             snapshot = await self._build(message)
-        return snapshot.blocks
+            async with self._lock:
+                if epoch == self._epoch:
+                    return snapshot
 
-    async def _build(self, message: UserMessage) -> ContextSnapshot:
-        return await asyncio.to_thread(
+    async def invalidate(self) -> None:
+        """Make every snapshot built before this barrier ineligible for future prompts."""
+
+        async with self._lock:
+            self._epoch += 1
+
+    async def _build(self, message: UserMessage) -> PromptContextSnapshot:
+        snapshot = await asyncio.to_thread(
             partial(
                 self._assembler.build,
                 user_id=message.user_id,
@@ -108,6 +111,7 @@ class MemoryPromptContextSource(PromptContextSource):
                 exclude_message_id=message.message_id,
             )
         )
+        return PromptContextSnapshot(history=snapshot.history, blocks=snapshot.blocks)
 
 
 class MemoryCandidateSupervisor:
@@ -344,9 +348,12 @@ class MemoryRuntime:
                 if not enabled:
                     await self.candidates.cancel_active()
                     await asyncio.to_thread(self.memory.finalize_disabled_state)
+                await self.context_source.invalidate()
                 return state
             if name is FeatureName.recent_history:
-                return await asyncio.to_thread(self.history.set_enabled, enabled)
+                state = await asyncio.to_thread(self.history.set_enabled, enabled)
+                await self.context_source.invalidate()
+                return state
             return await asyncio.to_thread(
                 self.features.set,
                 name,
@@ -375,7 +382,7 @@ class MemoryRuntime:
     async def update_memory(
         self, memory_id: str, *, user_id: str, content: str
     ) -> MemoryItem | None:
-        return await asyncio.to_thread(
+        item = await asyncio.to_thread(
             partial(
                 self.memory.update_for_management,
                 memory_id,
@@ -383,25 +390,38 @@ class MemoryRuntime:
                 content=content,
             )
         )
+        if item is not None:
+            await self.context_source.invalidate()
+        return item
 
     async def delete_memory(self, memory_id: str, *, user_id: str) -> bool:
-        return await asyncio.to_thread(
+        deleted = await asyncio.to_thread(
             self.memory.delete_for_management, memory_id, user_id=user_id
         )
+        if deleted:
+            await self.context_source.invalidate()
+        return deleted
 
     async def confirm_memory(self, confirmation_id: str, *, approved: bool) -> MemoryItem | None:
-        return await asyncio.to_thread(self.memory.confirm, confirmation_id, approved=approved)
+        item = await asyncio.to_thread(self.memory.confirm, confirmation_id, approved=approved)
+        if item is not None:
+            await self.context_source.invalidate()
+        return item
 
     async def pending_confirmations(self) -> tuple[PendingConfirmation, ...]:
         return await asyncio.to_thread(self.memory.pending_confirmations)
 
     async def clear_memories(self, *, user_id: str) -> int:
-        return await asyncio.to_thread(self.memory.clear_for_management, user_id=user_id)
+        deleted = await asyncio.to_thread(self.memory.clear_for_management, user_id=user_id)
+        await self.context_source.invalidate()
+        return deleted
 
     async def clear_history(self, *, user_id: str, session_id: str | None = None) -> int:
-        return await asyncio.to_thread(
+        deleted = await asyncio.to_thread(
             self.history.clear_for_management, user_id=user_id, session_id=session_id
         )
+        await self.context_source.invalidate()
+        return deleted
 
     async def export(self, *, user_id: str) -> dict[str, Any]:
         items = await self.list_memories(user_id=user_id, include_superseded=True)

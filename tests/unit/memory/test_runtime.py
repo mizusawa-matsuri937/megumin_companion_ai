@@ -5,14 +5,23 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
 from pathlib import Path
-from threading import Event
-from typing import Any
+from threading import Event, Lock
+from typing import Any, Literal
 
 import pytest
 from app.core import CancellationToken, TurnService
-from app.memory import MemoryClaim, MemorySensitivity, MemoryType
-from app.memory.runtime import _drainable_to_thread, create_memory_runtime
+from app.memory import (
+    ContextSnapshot,
+    MemoryClaim,
+    MemoryContextAssembler,
+    MemoryItem,
+    MemorySensitivity,
+    MemoryType,
+    SourceInputMode,
+)
+from app.memory.runtime import MemoryRuntime, _drainable_to_thread, create_memory_runtime
 from app.schemas import (
     FeatureName,
     TurnMetrics,
@@ -20,6 +29,7 @@ from app.schemas import (
     TurnState,
     UserMessage,
 )
+from app.storage import ConversationOrigin, ConversationRecord, ConversationRole
 
 
 class GatedAnalyzer:
@@ -79,6 +89,44 @@ class ImmediatePipeline:
         self.closed = True
 
 
+class BlockingSnapshotAssembler(MemoryContextAssembler):
+    """Return one pre-mutation snapshot late, then delegate all retries normally."""
+
+    def __init__(self, delegate: MemoryContextAssembler) -> None:
+        self._delegate = delegate
+        self.entered = Event()
+        self.release = Event()
+        self._calls_lock = Lock()
+        self.calls = 0
+
+    def build(
+        self,
+        *,
+        user_id: str,
+        session_id: str,
+        query: str,
+        exclude_message_id: str | None = None,
+        history_limit: int = 100,
+        memory_limit: int = 10,
+    ) -> ContextSnapshot:
+        snapshot = self._delegate.build(
+            user_id=user_id,
+            session_id=session_id,
+            query=query,
+            exclude_message_id=exclude_message_id,
+            history_limit=history_limit,
+            memory_limit=memory_limit,
+        )
+        with self._calls_lock:
+            self.calls += 1
+            call = self.calls
+        if call == 1:
+            self.entered.set()
+            if not self.release.wait(timeout=2):
+                raise TimeoutError("test did not release stale context snapshot")
+        return snapshot
+
+
 def _logger() -> logging.Logger:
     logger = logging.getLogger("test.memory.runtime")
     logger.handlers = [logging.NullHandler()]
@@ -92,6 +140,38 @@ async def _receive_completed(queue: asyncio.Queue[Any]) -> None:
         queue.task_done()
         if event.type == "assistant.completed":
             return
+
+
+def _save_memory(runtime: MemoryRuntime, *, suffix: str = "手冲") -> MemoryItem:
+    source = f"我喜欢{suffix}咖啡"
+    result = runtime.memory.consider_user_claim(
+        MemoryClaim(
+            memory_type=MemoryType.fact,
+            canonical_key="preference:coffee",
+            content=f"用户喜欢{suffix}咖啡",
+            evidence_quote=source,
+            importance_score=0.9,
+            confidence_score=0.95,
+            sensitivity_hint=MemorySensitivity.normal,
+        ),
+        user_id="local_user",
+        source_message_id=f"seed-{suffix}",
+        source_input_mode=SourceInputMode.text,
+        source_text=source,
+        created_at=datetime(2026, 7, 13, 12, tzinfo=UTC),
+    )
+    assert result.item is not None
+    return result.item
+
+
+def _block_first_snapshot(runtime: MemoryRuntime) -> BlockingSnapshotAssembler:
+    blocker = BlockingSnapshotAssembler(runtime.context_source._assembler)
+    runtime.context_source._assembler = blocker
+    return blocker
+
+
+async def _wait_for_thread_event(event: Event) -> None:
+    assert await asyncio.to_thread(event.wait, 1)
 
 
 def test_candidate_llm_does_not_block_assistant_completion(tmp_path: Path) -> None:
@@ -171,5 +251,117 @@ def test_repeated_cancellation_cannot_release_an_active_sqlite_worker() -> None:
         release.set()
         with pytest.raises(asyncio.CancelledError):
             await task
+
+    asyncio.run(scenario())
+
+
+def test_memory_update_retries_an_inflight_pre_mutation_snapshot(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        runtime = await create_memory_runtime(str(tmp_path / "update-context.sqlite3"))
+        await runtime.set_feature(FeatureName.long_term_memory, True)
+        item = _save_memory(runtime)
+        blocker = _block_first_snapshot(runtime)
+        pending = asyncio.create_task(runtime.context_source.snapshot_for(UserMessage(text="咖啡")))
+        try:
+            await _wait_for_thread_event(blocker.entered)
+            updated = await runtime.update_memory(
+                item.memory_id,
+                user_id="local_user",
+                content="用户喜欢深烘咖啡",
+            )
+            assert updated is not None
+            assert not pending.done()
+
+            blocker.release.set()
+            snapshot = await pending
+            serialized = "\n".join(block.content for block in snapshot.blocks)
+            assert "用户喜欢深烘咖啡" in serialized
+            assert "用户喜欢手冲咖啡" not in serialized
+            assert blocker.calls == 2
+        finally:
+            blocker.release.set()
+            await asyncio.gather(pending, return_exceptions=True)
+            await runtime.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("operation", ["delete", "clear", "disable"])
+def test_memory_revocation_retries_an_inflight_snapshot_without_old_blocks(
+    tmp_path: Path,
+    operation: Literal["delete", "clear", "disable"],
+) -> None:
+    async def scenario() -> None:
+        runtime = await create_memory_runtime(str(tmp_path / f"{operation}-context.sqlite3"))
+        await runtime.set_feature(FeatureName.long_term_memory, True)
+        item = _save_memory(runtime)
+        blocker = _block_first_snapshot(runtime)
+        pending = asyncio.create_task(runtime.context_source.snapshot_for(UserMessage(text="咖啡")))
+        try:
+            await _wait_for_thread_event(blocker.entered)
+            if operation == "delete":
+                assert await runtime.delete_memory(item.memory_id, user_id="local_user")
+            elif operation == "clear":
+                assert await runtime.clear_memories(user_id="local_user") == 1
+            else:
+                assert not (await runtime.set_feature(FeatureName.long_term_memory, False)).enabled
+            assert not pending.done()
+
+            blocker.release.set()
+            snapshot = await pending
+            assert snapshot.blocks == ()
+            assert blocker.calls == 2
+        finally:
+            blocker.release.set()
+            await asyncio.gather(pending, return_exceptions=True)
+            await runtime.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("operation", ["clear", "disable"])
+def test_history_revocation_retries_an_inflight_snapshot_without_old_history(
+    tmp_path: Path,
+    operation: Literal["clear", "disable"],
+) -> None:
+    async def scenario() -> None:
+        runtime = await create_memory_runtime(str(tmp_path / f"history-{operation}.sqlite3"))
+        record = ConversationRecord(
+            message_id="old-history",
+            session_id="local_session",
+            user_id="local_user",
+            turn_id="old-turn",
+            role=ConversationRole.user,
+            origin=ConversationOrigin.user_text,
+            content="应被撤销的旧历史",
+            created_at=datetime(2026, 7, 13, 12, tzinfo=UTC),
+        )
+        assert runtime.history.record(record)
+        blocker = _block_first_snapshot(runtime)
+        pending = asyncio.create_task(
+            runtime.context_source.snapshot_for(UserMessage(text="新消息"))
+        )
+        try:
+            await _wait_for_thread_event(blocker.entered)
+            if operation == "clear":
+                assert (
+                    await runtime.clear_history(
+                        user_id="local_user",
+                        session_id="local_session",
+                    )
+                    == 1
+                )
+            else:
+                assert not (await runtime.set_feature(FeatureName.recent_history, False)).enabled
+            assert not pending.done()
+
+            blocker.release.set()
+            snapshot = await pending
+            assert snapshot.history == ()
+            assert blocker.calls == 2
+        finally:
+            blocker.release.set()
+            await asyncio.gather(pending, return_exceptions=True)
+            await runtime.close()
 
     asyncio.run(scenario())
