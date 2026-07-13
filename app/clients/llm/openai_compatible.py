@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
-from collections.abc import AsyncIterator
-from typing import Any
+from collections.abc import AsyncIterator, Awaitable
+from typing import Any, TypeVar
 
 import httpx
 
@@ -17,6 +18,8 @@ from app.schemas import (
     ImageURLContent,
     TextContent,
 )
+
+_ResultT = TypeVar("_ResultT")
 
 
 class OpenAICompatibleLLMProvider:
@@ -56,11 +59,24 @@ class OpenAICompatibleLLMProvider:
 
     async def stream(self, request: ChatRequest, token: CancellationToken) -> AsyncIterator[str]:
         self._ensure_open()
+        token.raise_if_cancelled()
         payload = self._payload(request, stream=True)
+        response: httpx.Response | None = None
         try:
-            async with self._client.stream("POST", self._endpoint, json=payload) as response:
+            outgoing = self._client.build_request("POST", self._endpoint, json=payload)
+            response = await _await_with_token(
+                self._client.send(outgoing, stream=True),
+                token,
+            )
+            try:
+                token.raise_if_cancelled()
                 self._raise_for_status(response)
-                async for line in response.aiter_lines():
+                lines = response.aiter_lines()
+                while True:
+                    try:
+                        line = await _await_with_token(anext(lines), token)
+                    except StopAsyncIteration:
+                        return
                     token.raise_if_cancelled()
                     data = _sse_data(line)
                     if data is None:
@@ -72,6 +88,8 @@ class OpenAICompatibleLLMProvider:
                     for delta in _extract_stream_text(body):
                         if delta:
                             yield delta
+            finally:
+                await response.aclose()
         except LLMProviderError:
             raise
         except httpx.TimeoutException as exc:
@@ -83,9 +101,12 @@ class OpenAICompatibleLLMProvider:
         self._ensure_open()
         token.raise_if_cancelled()
         try:
-            response = await self._client.post(
-                self._endpoint,
-                json=self._payload(request, stream=False),
+            response = await _await_with_token(
+                self._client.post(
+                    self._endpoint,
+                    json=self._payload(request, stream=False),
+                ),
+                token,
             )
             token.raise_if_cancelled()
             self._raise_for_status(response)
@@ -143,6 +164,36 @@ class OpenAICompatibleLLMProvider:
         else:
             code, retryable = LLMErrorCode.rejected, False
         raise LLMProviderError(code, retryable=retryable, status_code=status)
+
+
+async def _await_with_token(
+    operation: Awaitable[_ResultT],
+    token: CancellationToken,
+) -> _ResultT:
+    """Cancel one blocked HTTP operation as soon as its turn token is revoked."""
+
+    token.raise_if_cancelled()
+    operation_task = asyncio.ensure_future(operation)
+    cancellation_task = asyncio.create_task(token.wait())
+    try:
+        done, _pending = await asyncio.wait(
+            (operation_task, cancellation_task),
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if operation_task in done:
+            return operation_task.result()
+        operation_task.cancel()
+        await asyncio.gather(operation_task, return_exceptions=True)
+        token.raise_if_cancelled()
+        raise asyncio.CancelledError
+    except BaseException:
+        if not operation_task.done():
+            operation_task.cancel()
+        await asyncio.gather(operation_task, return_exceptions=True)
+        raise
+    finally:
+        cancellation_task.cancel()
+        await asyncio.gather(cancellation_task, return_exceptions=True)
 
 
 def _serialize_message(message: ChatMessage) -> dict[str, Any]:

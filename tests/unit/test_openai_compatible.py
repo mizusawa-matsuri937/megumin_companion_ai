@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from collections.abc import AsyncIterator
 
 import httpx
 import pytest
@@ -14,6 +15,34 @@ from app.schemas import (
     ImageURLContent,
     TextContent,
 )
+
+
+class FragmentedByteStream(httpx.AsyncByteStream):
+    def __init__(self, chunks: list[bytes]) -> None:
+        self._chunks = chunks
+        self.closed = False
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        for chunk in self._chunks:
+            await asyncio.sleep(0)
+            yield chunk
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
+class BlockingByteStream(httpx.AsyncByteStream):
+    def __init__(self, started: asyncio.Event) -> None:
+        self._started = started
+        self.closed = False
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        self._started.set()
+        await asyncio.Event().wait()
+        yield b"unreachable"
+
+    async def aclose(self) -> None:
+        self.closed = True
 
 
 def make_provider(handler: httpx.MockTransport) -> OpenAICompatibleLLMProvider:
@@ -61,6 +90,86 @@ def test_stream_parses_unicode_sse_and_sends_expected_payload() -> None:
     assert seen["model"] == "test-model"
     assert seen["stream"] is True
     assert seen["messages"] == [{"role": "user", "content": "你好"}]
+
+
+def test_stream_reassembles_unicode_sse_split_at_every_byte_boundary() -> None:
+    body = (
+        ': keepalive\n\ndata: {"choices":[{"delta":{"content":"你🌋好"}}]}\n\ndata: [DONE]\n\n'
+    ).encode()
+    stream = FragmentedByteStream([body[index : index + 1] for index in range(len(body))])
+
+    def handler(_incoming: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            stream=stream,
+            headers={"content-type": "text/event-stream; charset=utf-8"},
+        )
+
+    async def scenario() -> list[str]:
+        provider = make_provider(httpx.MockTransport(handler))
+        output = [delta async for delta in provider.stream(request(), CancellationToken("turn"))]
+        await provider._client.aclose()
+        return output
+
+    assert asyncio.run(scenario()) == ["你🌋好"]
+    assert stream.closed
+
+
+def test_token_cancellation_interrupts_a_blocked_stream_body_and_closes_it() -> None:
+    async def scenario() -> None:
+        started = asyncio.Event()
+        stream = BlockingByteStream(started)
+
+        def handler(_incoming: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                stream=stream,
+                headers={"content-type": "text/event-stream"},
+            )
+
+        provider = make_provider(httpx.MockTransport(handler))
+        token = CancellationToken("turn")
+
+        async def consume() -> list[str]:
+            return [delta async for delta in provider.stream(request(), token)]
+
+        task = asyncio.create_task(consume())
+        await asyncio.wait_for(started.wait(), timeout=1)
+        token.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=1)
+        assert stream.closed
+        await provider._client.aclose()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("operation", ["stream", "complete"])
+def test_token_cancellation_interrupts_a_request_waiting_for_headers(operation: str) -> None:
+    async def scenario() -> None:
+        started = asyncio.Event()
+
+        async def handler(_incoming: httpx.Request) -> httpx.Response:
+            started.set()
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable")
+
+        provider = make_provider(httpx.MockTransport(handler))
+        token = CancellationToken("turn")
+
+        async def invoke() -> object:
+            if operation == "stream":
+                return [delta async for delta in provider.stream(request(), token)]
+            return await provider.complete(request(), token)
+
+        task = asyncio.create_task(invoke())
+        await asyncio.wait_for(started.wait(), timeout=1)
+        token.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=1)
+        await provider._client.aclose()
+
+    asyncio.run(scenario())
 
 
 def test_complete_returns_text_usage_and_json_mode() -> None:
