@@ -10,6 +10,7 @@ from app.proactive.models import (
     ProactiveTrigger,
     ProactiveTriggerType,
 )
+from app.proactive.runtime import ProactiveRuntime, ProactiveRuntimeSnapshot
 
 __all__ = [
     "ProactiveContext",
@@ -18,6 +19,8 @@ __all__ = [
     "ProactiveLifecycle",
     "ProactiveLifecycleSnapshot",
     "ProactivePolicy",
+    "ProactiveRuntime",
+    "ProactiveRuntimeSnapshot",
     "ProactiveSuppression",
     "ProactiveTrigger",
     "ProactiveTriggerType",

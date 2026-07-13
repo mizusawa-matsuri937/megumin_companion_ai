@@ -10,7 +10,7 @@ from typing import Any, Protocol
 
 from app.config.logging import log_event
 from app.core.cancellation import CancellationToken
-from app.core.contracts import TurnEventSink
+from app.core.contracts import TurnEventSink, TurnPriorityController
 from app.schemas import (
     PipelineEvent,
     TurnOutcome,
@@ -54,6 +54,7 @@ class TurnService:
         *,
         observers: Sequence[TurnObserver] = (),
         event_sinks: Sequence[TurnEventSink] = (),
+        priority_controller: TurnPriorityController | None = None,
     ) -> None:
         self._logger = logger
         self._pipeline = pipeline
@@ -61,57 +62,110 @@ class TurnService:
         self._outcomes: dict[str, TurnOutcome] = {}
         self._observers = tuple(observers)
         self._event_sinks = tuple(event_sinks)
+        self._priority_controller = priority_controller
         self._tokens: dict[str, CancellationToken] = {}
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._session_turn: dict[str, str] = {}
         self._subscribers: dict[str, set[asyncio.Queue[PipelineEvent]]] = {}
         self._closed = False
+        self._coordination_lock = asyncio.Lock()
 
     async def accept(self, message: UserMessage) -> TurnState:
-        if self._closed:
-            raise RuntimeError("TurnService 已关闭")
-
-        # A new explicit input is a hard event barrier: the previous turn is fully
-        # cancelled before the new accepted event can be published.
-        await self.cancel(session_id=message.session_id, reason="superseded")
-        state = TurnState(
-            session_id=message.session_id,
-            source_message_id=message.message_id,
-            input_mode=message.input_mode,
-        )
-        self._states[state.turn_id] = state
-        self._session_turn[message.session_id] = state.turn_id
-        log_event(
-            self._logger,
-            logging.INFO,
-            "turn.accepted",
-            turn_id=state.turn_id,
-            message_id=message.message_id,
-            session_id=message.session_id,
-            input_mode=message.input_mode.value,
-            text_length=len(message.text),
-        )
-        await self._publish(
-            PipelineEvent(
-                type="turn.accepted",
-                turn_id=state.turn_id,
-                session_id=state.session_id,
-                payload=state.model_dump(mode="json"),
+        async with self._coordination_lock:
+            if self._closed:
+                raise RuntimeError("TurnService 已关闭")
+            state = TurnState(
+                session_id=message.session_id,
+                source_message_id=message.message_id,
+                input_mode=message.input_mode,
             )
-        )
-        await self._notify_user_accepted(message, state)
+            priority_owned = False
+            registered = False
+            token: CancellationToken | None = None
+            task: asyncio.Task[None] | None = None
+            try:
+                # Acquire cleanup ownership before the controller can add its
+                # marker; begin_user_turn may itself be cancelled while waiting
+                # for proactive cleanup.
+                priority_owned = True
+                await self._begin_user_priority(state.turn_id)
+                # The priority marker for this new turn is established before the
+                # previous marker can disappear, leaving no proactive-start gap.
+                await self._cancel_locked(
+                    session_id=message.session_id,
+                    turn_id=None,
+                    reason="superseded",
+                )
+                self._states[state.turn_id] = state
+                self._session_turn[message.session_id] = state.turn_id
+                registered = True
+                log_event(
+                    self._logger,
+                    logging.INFO,
+                    "turn.accepted",
+                    turn_id=state.turn_id,
+                    message_id=message.message_id,
+                    session_id=message.session_id,
+                    input_mode=message.input_mode.value,
+                    text_length=len(message.text),
+                )
+                await self._publish(
+                    PipelineEvent(
+                        type="turn.accepted",
+                        turn_id=state.turn_id,
+                        session_id=state.session_id,
+                        payload=state.model_dump(mode="json"),
+                    )
+                )
+                await self._notify_user_accepted(message, state)
 
-        if self._pipeline is not None:
-            token = CancellationToken(state.turn_id)
-            self._tokens[state.turn_id] = token
-            self._tasks[state.turn_id] = asyncio.create_task(
-                self._run(message, state, token), name=f"dialogue-{state.turn_id}"
-            )
-        else:
-            self._session_turn.pop(message.session_id, None)
-        return state
+                if self._pipeline is not None:
+                    token = CancellationToken(state.turn_id)
+                    started = asyncio.Event()
+                    self._tokens[state.turn_id] = token
+                    task = asyncio.create_task(
+                        self._run(message, state, token, started),
+                        name=f"dialogue-{state.turn_id}",
+                    )
+                    self._tasks[state.turn_id] = task
+                    # Do not transfer cleanup ownership until the task has
+                    # entered a cancellation-protected try/finally region.
+                    await started.wait()
+                    priority_owned = False
+                else:
+                    self._session_turn.pop(message.session_id, None)
+                return state
+            except BaseException:
+                if task is not None:
+                    if token is not None:
+                        token.cancel()
+                    task.cancel()
+                    await asyncio.gather(task, return_exceptions=True)
+                if registered:
+                    current = self._states[state.turn_id]
+                    if current.status not in {
+                        TurnStatus.cancelled,
+                        TurnStatus.completed,
+                        TurnStatus.failed,
+                    }:
+                        self._set_status(state.turn_id, TurnStatus.cancelled)
+                        await self._publish_state_event(state.turn_id, "turn.cancelled")
+                    self._tokens.pop(state.turn_id, None)
+                    self._tasks.pop(state.turn_id, None)
+                    if self._session_turn.get(state.session_id) == state.turn_id:
+                        self._session_turn.pop(state.session_id, None)
+                raise
+            finally:
+                if priority_owned:
+                    await self._end_user_priority(state.turn_id)
 
-    async def _run(self, message: UserMessage, state: TurnState, token: CancellationToken) -> None:
+    async def _run(
+        self,
+        message: UserMessage,
+        state: TurnState,
+        token: CancellationToken,
+        started: asyncio.Event,
+    ) -> None:
         assert self._pipeline is not None
 
         async def emit(event_type: str, payload: dict[str, Any]) -> None:
@@ -125,10 +179,36 @@ class TurnService:
                 )
             )
 
-        self._set_status(state.turn_id, TurnStatus.streaming)
         try:
+            self._set_status(state.turn_id, TurnStatus.streaming)
+            started.set()
             outcome = await self._pipeline.run(message, state, token, emit)
             token.raise_if_cancelled()
+            self._outcomes[state.turn_id] = outcome
+            # This synchronous state transition is the success commit point.
+            # Public cancel/shutdown paths wait for, rather than cancel, the
+            # remaining observers once the turn is terminal.
+            completed = self._set_status(state.turn_id, TurnStatus.completed)
+            await self._notify_turn_completed(message, completed, outcome)
+            await self._publish(
+                PipelineEvent(
+                    type="assistant.completed",
+                    turn_id=state.turn_id,
+                    session_id=state.session_id,
+                    payload={
+                        "state": completed.model_dump(mode="json"),
+                        "metrics": outcome.metrics.model_dump(mode="json"),
+                    },
+                )
+            )
+            log_event(
+                self._logger,
+                logging.INFO,
+                "turn.completed",
+                turn_id=state.turn_id,
+                session_id=state.session_id,
+                **outcome.metrics.model_dump(mode="json"),
+            )
         except asyncio.CancelledError:
             self._set_status(state.turn_id, TurnStatus.cancelled)
             await self._publish_state_event(state.turn_id, "turn.cancelled")
@@ -152,30 +232,9 @@ class TurnService:
                 session_id=state.session_id,
                 error_code=error_code,
             )
-        else:
-            self._outcomes[state.turn_id] = outcome
-            await self._notify_turn_completed(message, state, outcome)
-            completed = self._set_status(state.turn_id, TurnStatus.completed)
-            await self._publish(
-                PipelineEvent(
-                    type="assistant.completed",
-                    turn_id=state.turn_id,
-                    session_id=state.session_id,
-                    payload={
-                        "state": completed.model_dump(mode="json"),
-                        "metrics": outcome.metrics.model_dump(mode="json"),
-                    },
-                )
-            )
-            log_event(
-                self._logger,
-                logging.INFO,
-                "turn.completed",
-                turn_id=state.turn_id,
-                session_id=state.session_id,
-                **outcome.metrics.model_dump(mode="json"),
-            )
         finally:
+            started.set()
+            await self._end_user_priority(state.turn_id)
             self._tokens.pop(state.turn_id, None)
             self._tasks.pop(state.turn_id, None)
             if self._session_turn.get(state.session_id) == state.turn_id:
@@ -188,16 +247,31 @@ class TurnService:
         turn_id: str | None = None,
         reason: str = "user_interrupt",
     ) -> TurnState | None:
+        async with self._coordination_lock:
+            return await self._cancel_locked(
+                session_id=session_id,
+                turn_id=turn_id,
+                reason=reason,
+            )
+
+    async def _cancel_locked(
+        self,
+        *,
+        session_id: str,
+        turn_id: str | None,
+        reason: str,
+    ) -> TurnState | None:
         target_id = turn_id or self._session_turn.get(session_id)
         if target_id is None:
             return None
         state = self._states.get(target_id)
-        if state is None or state.status in {
-            TurnStatus.cancelled,
-            TurnStatus.completed,
-            TurnStatus.failed,
-        }:
+        if state is None:
             return state
+        if state.status in {TurnStatus.cancelled, TurnStatus.completed, TurnStatus.failed}:
+            task = self._tasks.get(target_id)
+            if task is not None and task is not asyncio.current_task() and not task.done():
+                await asyncio.gather(task, return_exceptions=True)
+            return self._states.get(target_id)
 
         token = self._tokens.get(target_id)
         if token is not None:
@@ -298,16 +372,24 @@ class TurnService:
         }
 
     async def shutdown(self) -> None:
-        if self._closed:
-            return
-        self._closed = True
-        for token in self._tokens.values():
-            token.cancel()
-        tasks = tuple(self._tasks.values())
-        for task in tasks:
-            task.cancel()
+        async with self._coordination_lock:
+            if self._closed:
+                return
+            self._closed = True
+            tasks = tuple(self._tasks.items())
+            for turn_id, task in tasks:
+                state = self._states.get(turn_id)
+                if state is None or state.status not in {
+                    TurnStatus.cancelled,
+                    TurnStatus.completed,
+                    TurnStatus.failed,
+                }:
+                    token = self._tokens.get(turn_id)
+                    if token is not None:
+                        token.cancel()
+                    task.cancel()
         if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+            await asyncio.gather(*(task for _turn_id, task in tasks), return_exceptions=True)
         if self._pipeline is not None:
             await self._pipeline.close()
         if self._event_sinks:
@@ -315,6 +397,14 @@ class TurnService:
                 *(sink.close() for sink in self._event_sinks),
                 return_exceptions=True,
             )
+
+    async def _begin_user_priority(self, turn_id: str) -> None:
+        if self._priority_controller is not None:
+            await self._priority_controller.begin_user_turn(turn_id)
+
+    async def _end_user_priority(self, turn_id: str) -> None:
+        if self._priority_controller is not None:
+            await self._priority_controller.end_user_turn(turn_id)
 
     async def _notify_user_accepted(self, message: UserMessage, state: TurnState) -> None:
         for observer in self._observers:

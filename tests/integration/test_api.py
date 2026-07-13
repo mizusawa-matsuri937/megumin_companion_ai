@@ -3,6 +3,7 @@
 import json
 from pathlib import Path
 
+import pytest
 from app.config import Settings
 from app.config.settings import LLMConfig, LoggingConfig, PipelineConfig
 from app.core import TurnService
@@ -205,3 +206,29 @@ def test_websocket_rejects_malformed_commands_without_private_echo() -> None:
             {"type": "user.message", "payload": {"text": "错误后仍可继续", "input_mode": "text"}}
         )
         assert websocket.receive_json()["type"] == "turn.accepted"
+
+
+def test_partial_startup_closes_already_started_event_sink(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Sink:
+        def __init__(self) -> None:
+            self.closed = 0
+
+        async def close(self) -> None:
+            self.closed += 1
+
+    sink = Sink()
+
+    def fail_pipeline(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("synthetic startup failure")
+
+    monkeypatch.setattr("app.main.build_vts_event_sink", lambda _settings: sink)
+    monkeypatch.setattr("app.main.build_dialogue_pipeline", fail_pipeline)
+
+    with (
+        pytest.raises(RuntimeError, match="startup failure"),
+        TestClient(create_app(quiet_settings())),
+    ):
+        pass
+    assert sink.closed == 1

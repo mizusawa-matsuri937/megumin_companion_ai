@@ -6,6 +6,7 @@ import logging
 import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import timedelta
 from pathlib import Path
 
 if __package__ in {None, ""}:
@@ -30,6 +31,7 @@ from app.config.settings import PROJECT_ROOT  # noqa: E402
 from app.core import TurnService  # noqa: E402
 from app.memory.analyzer import LLMMemoryCandidateAnalyzer  # noqa: E402
 from app.memory.runtime import MemoryRuntime, create_memory_runtime  # noqa: E402
+from app.proactive import ProactivePolicy, ProactiveRuntime  # noqa: E402
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -41,6 +43,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.settings = resolved_settings
         app.state.logger = logger
         app.state.memory_runtime = None
+        app.state.proactive_runtime = None
         app.state.turn_service = None
         standalone_analyzer_provider: LLMProvider | None = None
         try:
@@ -67,6 +70,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 )
                 standalone_analyzer_provider = None
             app.state.memory_runtime = memory_runtime
+            proactive_runtime = (
+                ProactiveRuntime(
+                    memory_runtime.features,
+                    ProactivePolicy(
+                        timezone=resolved_settings.app.timezone,
+                        minimum_score=resolved_settings.proactive.minimum_score,
+                        cooldown=timedelta(seconds=resolved_settings.proactive.cooldown_seconds),
+                        idle_minimum=timedelta(
+                            seconds=resolved_settings.proactive.idle_minimum_seconds
+                        ),
+                        daily_limit=resolved_settings.proactive.daily_limit,
+                        quiet_start_hour=resolved_settings.proactive.quiet_start_hour,
+                        quiet_end_hour=resolved_settings.proactive.quiet_end_hour,
+                    ),
+                )
+                if memory_runtime is not None
+                else None
+            )
+            app.state.proactive_runtime = proactive_runtime
             app.state.vts_event_sink = build_vts_event_sink(resolved_settings)
             event_sinks = (
                 (app.state.vts_event_sink,) if app.state.vts_event_sink is not None else ()
@@ -82,6 +104,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 ),
                 observers=observers,
                 event_sinks=event_sinks,
+                priority_controller=proactive_runtime,
             )
             log_event(
                 logger,
@@ -96,6 +119,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             service = getattr(app.state, "turn_service", None)
             if isinstance(service, TurnService):
                 await service.shutdown()
+            else:
+                sink = getattr(app.state, "vts_event_sink", None)
+                if sink is not None:
+                    await sink.close()
+            proactive = getattr(app.state, "proactive_runtime", None)
+            if isinstance(proactive, ProactiveRuntime):
+                await proactive.close()
             runtime = getattr(app.state, "memory_runtime", None)
             if isinstance(runtime, MemoryRuntime):
                 await runtime.close()

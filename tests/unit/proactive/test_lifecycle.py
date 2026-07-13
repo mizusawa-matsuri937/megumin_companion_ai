@@ -37,7 +37,11 @@ def test_explicit_user_atomically_preempts_proactive_and_blocks_new_work() -> No
         assert not lifecycle.snapshot().proactive_turn_active
         assert not await lifecycle.try_start(intent(), runner)
 
+        await lifecycle.begin_user_turn("replacement")
         await lifecycle.end_user_turn()
+        assert lifecycle.snapshot().user_turn_active
+        assert not await lifecycle.try_start(intent(), runner)
+        await lifecycle.end_user_turn("replacement")
 
         async def complete(_intent: ProactiveIntent, _token: object) -> None:
             return None

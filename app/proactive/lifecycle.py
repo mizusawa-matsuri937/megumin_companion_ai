@@ -24,7 +24,7 @@ class ProactiveLifecycle:
 
     def __init__(self) -> None:
         self._lock = asyncio.Lock()
-        self._user_turn_active = False
+        self._user_turns: set[str] = set()
         self._task: asyncio.Task[None] | None = None
         self._token: CancellationToken | None = None
         self._closed = False
@@ -32,14 +32,14 @@ class ProactiveLifecycle:
     def snapshot(self) -> ProactiveLifecycleSnapshot:
         task = self._task
         return ProactiveLifecycleSnapshot(
-            user_turn_active=self._user_turn_active,
+            user_turn_active=bool(self._user_turns),
             proactive_turn_active=task is not None and not task.done(),
             closed=self._closed,
         )
 
     async def try_start(self, intent: ProactiveIntent, runner: ProactiveRunner) -> bool:
         async with self._lock:
-            if self._closed or self._user_turn_active:
+            if self._closed or self._user_turns:
                 return False
             if self._task is not None and not self._task.done():
                 return False
@@ -52,9 +52,9 @@ class ProactiveLifecycle:
             self._task = task
             return True
 
-    async def begin_user_turn(self) -> None:
+    async def begin_user_turn(self, turn_id: str = "user") -> None:
         async with self._lock:
-            self._user_turn_active = True
+            self._user_turns.add(turn_id)
             token = self._token
             task = self._task
             if token is not None:
@@ -64,9 +64,9 @@ class ProactiveLifecycle:
         if task is not None:
             await asyncio.gather(task, return_exceptions=True)
 
-    async def end_user_turn(self) -> None:
+    async def end_user_turn(self, turn_id: str = "user") -> None:
         async with self._lock:
-            self._user_turn_active = False
+            self._user_turns.discard(turn_id)
 
     async def wait_idle(self) -> None:
         async with self._lock:
@@ -84,6 +84,12 @@ class ProactiveLifecycle:
         try:
             await runner(intent, token)
             token.raise_if_cancelled()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # Proactive work is best-effort background activity. The runner owns
+            # structured error reporting; its failure must not leak an unhandled task.
+            return
         finally:
             async with self._lock:
                 if self._task is task:

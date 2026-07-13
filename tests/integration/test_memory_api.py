@@ -24,6 +24,7 @@ from app.memory import (
     SourceInputMode,
 )
 from app.memory.runtime import MemoryRuntime
+from app.proactive import ProactiveRuntime
 from app.schemas import ChatCompletion, ChatRequest
 from fastapi.testclient import TestClient
 
@@ -88,6 +89,7 @@ def test_feature_memory_and_history_control_plane(tmp_path: Path) -> None:
     with TestClient(app) as client:
         runtime = app.state.memory_runtime
         assert isinstance(runtime, MemoryRuntime)
+        assert isinstance(app.state.proactive_runtime, ProactiveRuntime)
 
         features = client.get("/api/features")
         assert features.status_code == 200

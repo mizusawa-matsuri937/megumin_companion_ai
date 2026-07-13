@@ -84,6 +84,14 @@ perception:
   cloud_max_calls: 6
   cloud_period_seconds: 60
 
+proactive:
+  minimum_score: 0.62
+  cooldown_seconds: 1200
+  idle_minimum_seconds: 180
+  daily_limit: 8
+  quiet_start_hour: 23
+  quiet_end_hour: 8
+
 pipeline:
   tts_worker_count: 2
   segment_min_chars: 6

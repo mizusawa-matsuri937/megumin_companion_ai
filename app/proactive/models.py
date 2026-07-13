@@ -23,6 +23,7 @@ class ProactiveSuppression(StrEnum):
     allowed = "allowed"
     disabled = "disabled"
     user_active = "user_active"
+    proactive_active = "proactive_active"
     focus_mode = "focus_mode"
     sensitive = "sensitive"
     do_not_disturb = "do_not_disturb"

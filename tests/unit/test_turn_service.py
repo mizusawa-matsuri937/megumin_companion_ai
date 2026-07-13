@@ -97,6 +97,49 @@ class RecordingSink:
         self.closed = True
 
 
+class GatedObserver(RecordingObserver):
+    def __init__(self) -> None:
+        super().__init__()
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def on_user_accepted(self, message: UserMessage, state: TurnState) -> None:
+        await super().on_user_accepted(message, state)
+        self.entered.set()
+        await self.release.wait()
+
+
+class CompletionGateObserver(RecordingObserver):
+    def __init__(self) -> None:
+        super().__init__()
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def on_turn_completed(
+        self,
+        message: UserMessage,
+        state: TurnState,
+        outcome: TurnOutcome,
+    ) -> None:
+        await super().on_turn_completed(message, state, outcome)
+        self.entered.set()
+        await self.release.wait()
+
+
+class RecordingPriority:
+    def __init__(self) -> None:
+        self.active: set[str] = set()
+        self.snapshots: list[frozenset[str]] = []
+
+    async def begin_user_turn(self, turn_id: str) -> None:
+        self.active.add(turn_id)
+        self.snapshots.append(frozenset(self.active))
+
+    async def end_user_turn(self, turn_id: str) -> None:
+        self.active.discard(turn_id)
+        self.snapshots.append(frozenset(self.active))
+
+
 def logger() -> logging.Logger:
     instance = logging.getLogger("test.turn_service")
     instance.handlers = [logging.NullHandler()]
@@ -220,5 +263,130 @@ def test_cancel_active_pipeline_and_shutdown_cleanup() -> None:
         await service.shutdown()
         assert service.snapshot()["turns"][second.turn_id]["status"] == "cancelled"
         assert pipeline.closed
+
+    asyncio.run(scenario())
+
+
+def test_interrupt_during_acceptance_waits_for_atomic_task_registration() -> None:
+    async def scenario() -> None:
+        pipeline = ControllablePipeline(wait_forever=True)
+        observer = GatedObserver()
+        service = TurnService(logger(), pipeline, observers=(observer,))
+        queue = service.subscribe("local_session")
+
+        accepting = asyncio.create_task(service.accept(UserMessage(text="原子注册")))
+        accepted = await receive_type(queue, "turn.accepted")
+        await observer.entered.wait()
+        interrupting = asyncio.create_task(service.cancel(turn_id=accepted.turn_id))
+        await asyncio.sleep(0)
+        assert not interrupting.done()
+
+        observer.release.set()
+        state = await accepting
+        cancelled = await interrupting
+        assert state.turn_id == accepted.turn_id
+        assert cancelled is not None and cancelled.status is TurnStatus.cancelled
+        await service.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_cancelling_acceptance_cleans_registered_state_and_priority() -> None:
+    async def scenario() -> None:
+        observer = GatedObserver()
+        priority = RecordingPriority()
+        service = TurnService(
+            logger(),
+            ControllablePipeline(wait_forever=True),
+            observers=(observer,),
+            priority_controller=priority,
+        )
+        queue = service.subscribe("local_session")
+        accepting = asyncio.create_task(service.accept(UserMessage(text="取消接受过程")))
+        accepted = await receive_type(queue, "turn.accepted")
+        await observer.entered.wait()
+
+        accepting.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await accepting
+
+        snapshot = service.snapshot()
+        assert snapshot["turns"][accepted.turn_id]["status"] == "cancelled"
+        assert snapshot["active_turns"] == []
+        assert priority.active == set()
+        assert await service.cancel(session_id="local_session") is None
+        await service.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_interrupt_waits_for_success_observers_after_atomic_completion_commit() -> None:
+    async def scenario() -> None:
+        observer = CompletionGateObserver()
+        service = TurnService(
+            logger(),
+            ControllablePipeline(),
+            observers=(observer,),
+        )
+        state = await service.accept(UserMessage(text="完成边界"))
+        await observer.entered.wait()
+
+        interrupting = asyncio.create_task(service.cancel(turn_id=state.turn_id))
+        await asyncio.sleep(0)
+        assert not interrupting.done()
+        assert service.snapshot()["turns"][state.turn_id]["status"] == "completed"
+
+        observer.release.set()
+        terminal = await interrupting
+        assert terminal is not None and terminal.status is TurnStatus.completed
+        assert service.snapshot()["active_turns"] == []
+        await service.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_replacement_turn_keeps_priority_marker_without_a_gap() -> None:
+    async def scenario() -> None:
+        pipeline = ControllablePipeline(wait_forever=True)
+        priority = RecordingPriority()
+        service = TurnService(logger(), pipeline, priority_controller=priority)
+
+        first = await service.accept(UserMessage(text="第一轮"))
+        second = await service.accept(UserMessage(text="第二轮"))
+
+        assert priority.active == {second.turn_id}
+        assert any(
+            snapshot == frozenset({first.turn_id, second.turn_id})
+            for snapshot in priority.snapshots
+        )
+        assert frozenset() not in priority.snapshots[:-1]
+        await service.shutdown()
+        assert priority.active == set()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("operation", ["cancel", "shutdown"])
+def test_immediate_terminal_operation_cannot_leave_an_unstarted_task(
+    operation: str,
+) -> None:
+    async def scenario() -> None:
+        priority = RecordingPriority()
+        service = TurnService(
+            logger(),
+            ControllablePipeline(wait_forever=True),
+            priority_controller=priority,
+        )
+        state = await service.accept(UserMessage(text="立即终止"))
+
+        if operation == "cancel":
+            await service.cancel(turn_id=state.turn_id)
+            await service.shutdown()
+        else:
+            await service.shutdown()
+
+        assert service.snapshot()["turns"][state.turn_id]["status"] == "cancelled"
+        assert service.snapshot()["active_turns"] == []
+        assert priority.active == set()
 
     asyncio.run(scenario())

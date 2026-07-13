@@ -34,3 +34,11 @@ class UserMessageSink(Protocol):
     """Common destination for explicit text and local STT input."""
 
     async def accept(self, message: UserMessage) -> TurnState: ...
+
+
+class TurnPriorityController(Protocol):
+    """Atomically arbitrate explicit user turns against optional background work."""
+
+    async def begin_user_turn(self, turn_id: str) -> None: ...
+
+    async def end_user_turn(self, turn_id: str) -> None: ...
