@@ -325,6 +325,7 @@ class MemoryRuntime:
         self._maintenance_task: asyncio.Task[None] | None = None
         self._closed = False
         self._close_task: asyncio.Task[None] | None = None
+        self._feature_update_lock = asyncio.Lock()
 
     def start(self) -> None:
         self.candidates.start()
@@ -337,17 +338,21 @@ class MemoryRuntime:
         return self.features.list()
 
     async def set_feature(self, name: FeatureName, enabled: bool) -> FeatureState:
-        if name is FeatureName.long_term_memory:
-            state = await asyncio.to_thread(self.memory.set_enabled, enabled)
-            if not enabled:
-                await self.candidates.cancel_active()
-            return state
-        return await asyncio.to_thread(
-            self.features.set,
-            name,
-            enabled,
-            updated_at=self._clock.now(),
-        )
+        async with self._feature_update_lock:
+            if name is FeatureName.long_term_memory:
+                state = await asyncio.to_thread(self.memory.set_enabled, enabled)
+                if not enabled:
+                    await self.candidates.cancel_active()
+                    await asyncio.to_thread(self.memory.finalize_disabled_state)
+                return state
+            if name is FeatureName.recent_history:
+                return await asyncio.to_thread(self.history.set_enabled, enabled)
+            return await asyncio.to_thread(
+                self.features.set,
+                name,
+                enabled,
+                updated_at=self._clock.now(),
+            )
 
     async def list_memories(
         self, *, user_id: str, include_superseded: bool = False
@@ -508,8 +513,15 @@ async def _drainable_to_thread(operation: Callable[[], Any]) -> Any:
     """Do not release private inputs while their worker still owns the closure."""
 
     worker = asyncio.create_task(asyncio.to_thread(operation))
-    try:
-        return await asyncio.shield(worker)
-    except asyncio.CancelledError:
-        await asyncio.shield(worker)
-        raise
+    cancelled = False
+    while True:
+        try:
+            result = await asyncio.shield(worker)
+            if cancelled:
+                raise asyncio.CancelledError
+            return result
+        except asyncio.CancelledError:
+            cancelled = True
+            if worker.done():
+                await asyncio.gather(worker, return_exceptions=True)
+                raise

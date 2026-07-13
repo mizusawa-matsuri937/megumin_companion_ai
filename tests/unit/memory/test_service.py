@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from threading import Event
 
 import pytest
 from app.emotion.clock import FakeClock
@@ -10,12 +12,15 @@ from app.memory.models import (
     MemoryActionResult,
     MemoryClaim,
     MemoryDecision,
+    MemoryEvaluation,
     MemoryItem,
+    MemoryProposal,
     MemorySensitivity,
     MemoryType,
     ProfileItem,
     SourceInputMode,
 )
+from app.memory.policy import MemoryPolicy
 from app.memory.service import (
     ConfirmationNotFoundError,
     CredentialRejectedError,
@@ -242,6 +247,67 @@ def test_history_service_uses_seven_day_repository_semantics(tmp_path: Path) -> 
     assert service.cleanup() == 1
 
 
+def test_history_disable_waits_for_inflight_write_and_blocks_all_later_writes() -> None:
+    store = BlockingConversationStore()
+    flags = InMemoryFlags(recent_history=True)
+    service = HistoryService(store, flags, clock=FakeClock(_now()))
+    record = ConversationRecord(
+        message_id="race",
+        session_id="session",
+        user_id="local_user",
+        turn_id="turn",
+        role=ConversationRole.user,
+        origin=ConversationOrigin.user_text,
+        content="linearized history write",
+        created_at=_now(),
+    )
+    disable_started = Event()
+
+    def disable() -> FeatureState:
+        disable_started.set()
+        return service.set_enabled(False)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        record_future = executor.submit(service.record, record)
+        assert store.entered.wait(timeout=1)
+        disable_future = executor.submit(disable)
+        assert disable_started.wait(timeout=1)
+        assert not disable_future.done()
+        store.release.set()
+        assert record_future.result(timeout=1)
+        assert not disable_future.result(timeout=1).enabled
+
+    assert not service.record(record.model_copy(update={"message_id": "later"}))
+    assert store.calls == ["add"]
+
+
+def test_memory_disable_serializes_with_candidate_and_clears_late_confirmation() -> None:
+    policy = BlockingMemoryPolicy()
+    service = MemoryService(
+        CountingMemoryStore(),
+        InMemoryFlags(long_term_memory=True),
+        policy=policy,
+        clock=FakeClock(_now()),
+    )
+    disable_started = Event()
+
+    def disable() -> FeatureState:
+        disable_started.set()
+        return service.set_enabled(False)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        candidate = executor.submit(_consider, service, "我的家庭地址是测试路一号")
+        assert policy.entered.wait(timeout=1)
+        disabled = executor.submit(disable)
+        assert disable_started.wait(timeout=1)
+        assert not disabled.done()
+        policy.release.set()
+        assert candidate.result(timeout=1).confirmation is not None
+        assert not disabled.result(timeout=1).enabled
+
+    assert service.pending_confirmations() == ()
+
+
 def test_service_configuration_rejects_nonpositive_time_windows() -> None:
     flags = InMemoryFlags()
     with pytest.raises(ValueError, match="retention_days"):
@@ -350,3 +416,31 @@ class CountingConversationStore:
         del user_id, session_id
         self.calls.append("clear")
         return 0
+
+
+class BlockingConversationStore(CountingConversationStore):
+    def __init__(self) -> None:
+        super().__init__()
+        self.entered = Event()
+        self.release = Event()
+
+    def add(self, record: ConversationRecord) -> bool:
+        del record
+        self.calls.append("add")
+        self.entered.set()
+        if not self.release.wait(timeout=2):
+            raise TimeoutError("test did not release history store")
+        return True
+
+
+class BlockingMemoryPolicy(MemoryPolicy):
+    def __init__(self) -> None:
+        super().__init__()
+        self.entered = Event()
+        self.release = Event()
+
+    def evaluate(self, proposal: MemoryProposal) -> MemoryEvaluation:
+        self.entered.set()
+        if not self.release.wait(timeout=2):
+            raise TimeoutError("test did not release memory policy")
+        return super().evaluate(proposal)

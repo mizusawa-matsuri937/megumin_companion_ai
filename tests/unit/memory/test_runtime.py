@@ -6,11 +6,13 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from pathlib import Path
+from threading import Event
 from typing import Any
 
+import pytest
 from app.core import CancellationToken, TurnService
 from app.memory import MemoryClaim, MemorySensitivity, MemoryType
-from app.memory.runtime import create_memory_runtime
+from app.memory.runtime import _drainable_to_thread, create_memory_runtime
 from app.schemas import (
     FeatureName,
     TurnMetrics,
@@ -144,5 +146,30 @@ def test_disabling_long_term_memory_cancels_and_joins_active_analysis(
         await service.shutdown()
         await runtime.close()
         assert analyzer.close_calls == 1
+
+    asyncio.run(scenario())
+
+
+def test_repeated_cancellation_cannot_release_an_active_sqlite_worker() -> None:
+    async def scenario() -> None:
+        entered = Event()
+        release = Event()
+
+        def blocking_worker() -> str:
+            entered.set()
+            if not release.wait(timeout=2):
+                raise TimeoutError("test did not release worker")
+            return "finished"
+
+        task = asyncio.create_task(_drainable_to_thread(blocking_worker))
+        assert await asyncio.to_thread(entered.wait, 1)
+        task.cancel()
+        await asyncio.sleep(0)
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
 
     asyncio.run(scenario())
