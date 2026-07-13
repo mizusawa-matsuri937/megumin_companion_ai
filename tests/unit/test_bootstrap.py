@@ -12,6 +12,7 @@ from app.clients.tts import GPTSoVITSProvider
 from app.clients.vts import VTSBridgeSnapshot, VTSBridgeState
 from app.config import Settings
 from app.config.settings import (
+    EmotionConfig,
     GPTSoVITSPresetConfig,
     LLMConfig,
     PipelineConfig,
@@ -19,6 +20,9 @@ from app.config.settings import (
     VTSConfig,
 )
 from app.pipelines.audio_player import SystemAudioPlayer
+from app.prompts import EmotionPromptContextBuilder, HistoryMessage
+from app.schemas import ChatRole, ExternalContextBlock, UserMessage
+from app.schemas.ai import ContextOrigin, ContextTrust
 
 
 def test_disabled_provider_builds_no_pipeline() -> None:
@@ -69,6 +73,49 @@ def test_gpt_sovits_wiring_is_explicit_and_cache_defaults_off(tmp_path: Path) ->
     assert pipeline is not None
     assert isinstance(pipeline._tts, GPTSoVITSProvider)
     assert not pipeline._tts._cache_enabled
+    asyncio.run(pipeline.close())
+
+
+def test_disabling_emotion_keeps_prompt_policy_and_external_context() -> None:
+    class Source:
+        def __init__(self) -> None:
+            self.history_calls = 0
+            self.context_calls = 0
+
+        async def history_for(self, _message: UserMessage) -> tuple[HistoryMessage, ...]:
+            self.history_calls += 1
+            return (HistoryMessage(message_id="prior", role=ChatRole.assistant, content="prior"),)
+
+        async def context_for(self, _message: UserMessage) -> tuple[ExternalContextBlock, ...]:
+            self.context_calls += 1
+            return (
+                ExternalContextBlock(
+                    source_id="memory-1",
+                    origin=ContextOrigin.long_term_memory,
+                    trust=ContextTrust.stored_fact,
+                    content="remembered context",
+                    persistable=False,
+                ),
+            )
+
+    source = Source()
+    pipeline = build_dialogue_pipeline(
+        Settings(llm=LLMConfig(provider="mock"), emotion=EmotionConfig(enabled=False)),
+        prompt_context_source=source,
+    )
+    assert pipeline is not None
+    assert isinstance(pipeline._context_builder, EmotionPromptContextBuilder)
+
+    request = asyncio.run(
+        pipeline._context_builder.build(UserMessage(user_id="user", text="hello"))
+    )
+
+    assert source.history_calls == 1
+    assert source.context_calls == 1
+    assert request.messages[0].role is ChatRole.system
+    assert "private desktop companion" in str(request.messages[0].content)
+    assert any("remembered context" in str(message.content) for message in request.messages)
+    assert pipeline._segment_decorator is None
     asyncio.run(pipeline.close())
 
 

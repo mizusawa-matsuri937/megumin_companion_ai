@@ -33,24 +33,28 @@ class EmotionPromptContextBuilder:
         clock: Clock,
         *,
         source: PromptContextSource | None = None,
+        update_emotion: bool = True,
     ) -> None:
         self._prompt_builder = prompt_builder
         self._emotion_engine = emotion_engine
         self._clock = clock
         self._source = source or EmptyPromptContextSource()
+        self._update_emotion = update_emotion
 
     async def build(self, message: UserMessage) -> ChatRequest:
-        occurred_at = max(self._clock.now(), self._emotion_engine.state.last_updated_at)
-        kind = classify_stimulus(message.text)
-        self._emotion_engine.apply(
-            EmotionStimulus(
-                stimulus_id=message.message_id,
-                kind=kind,
-                occurred_at=occurred_at,
-                correlation_id=message.message_id,
-                reason_code=f"deterministic_text_{kind.value}",
+        if self._update_emotion:
+            occurred_at = max(self._clock.now(), self._emotion_engine.state.last_updated_at)
+            self._emotion_engine.decay(at=occurred_at)
+            kind = classify_stimulus(message.text)
+            self._emotion_engine.apply(
+                EmotionStimulus(
+                    stimulus_id=message.message_id,
+                    kind=kind,
+                    occurred_at=occurred_at,
+                    correlation_id=message.message_id,
+                    reason_code=f"deterministic_text_{kind.value}",
+                )
             )
-        )
         history = await self._source.history_for(message)
         context = await self._source.context_for(message)
         return self._prompt_builder.build(

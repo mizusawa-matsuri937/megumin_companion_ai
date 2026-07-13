@@ -55,23 +55,23 @@ def build_dialogue_pipeline(
         player = SystemAudioPlayer()
     else:
         player = SilentAudioPlayer()
-    context_builder = None
+    clock = SystemClock()
+    emotion_engine = EmotionEngine(
+        clock=clock,
+        max_delta_per_event=settings.emotion.max_delta_per_event,
+        max_delta_per_minute=settings.emotion.max_delta_per_minute,
+        label_min_duration=timedelta(seconds=settings.emotion.label_min_duration_seconds),
+        explosion_cooldown=timedelta(seconds=settings.emotion.explosion_cooldown_seconds),
+    )
+    context_builder = EmotionPromptContextBuilder(
+        PromptBuilder(),
+        emotion_engine,
+        clock,
+        source=prompt_context_source,
+        update_emotion=settings.emotion.enabled,
+    )
     segment_decorator = None
     if settings.emotion.enabled:
-        clock = SystemClock()
-        emotion_engine = EmotionEngine(
-            clock=clock,
-            max_delta_per_event=settings.emotion.max_delta_per_event,
-            max_delta_per_minute=settings.emotion.max_delta_per_minute,
-            label_min_duration=timedelta(seconds=settings.emotion.label_min_duration_seconds),
-            explosion_cooldown=timedelta(seconds=settings.emotion.explosion_cooldown_seconds),
-        )
-        context_builder = EmotionPromptContextBuilder(
-            PromptBuilder(),
-            emotion_engine,
-            clock,
-            source=prompt_context_source,
-        )
         segment_decorator = EmotionSegmentDecorator(
             emotion_engine,
             ExpressionCooldown(

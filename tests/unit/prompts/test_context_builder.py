@@ -1,7 +1,7 @@
 """Pipeline adapter tests for deterministic emotion and untrusted context."""
 
 import asyncio
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from app.emotion import EmotionEngine, FakeClock, StimulusKind
 from app.prompts import EmotionPromptContextBuilder, HistoryMessage, PromptBuilder
@@ -46,3 +46,37 @@ def test_classifier_uses_fixed_rules_not_freeform_model_labels() -> None:
     assert classify_stimulus("来聊聊爆裂魔法") is StimulusKind.explosion_topic
     assert classify_stimulus("请保持安静") is StimulusKind.quiet_request
     assert classify_stimulus("普通对话") is StimulusKind.neutral_interaction
+
+
+def test_context_builder_decays_state_before_the_next_stimulus() -> None:
+    async def scenario() -> None:
+        clock = FakeClock(datetime(2026, 7, 13, tzinfo=UTC))
+        engine = EmotionEngine(clock=clock)
+        builder = EmotionPromptContextBuilder(PromptBuilder(), engine, clock)
+
+        await builder.build(UserMessage(text="谢谢，你太厉害了"))
+        elevated = engine.state.embarrassment
+        clock.advance(timedelta(minutes=120))
+        await builder.build(UserMessage(text="普通对话"))
+
+        assert elevated > 0.1
+        assert 0.1 <= engine.state.embarrassment < elevated
+        assert engine.state.last_updated_at == clock.now()
+
+    asyncio.run(scenario())
+
+
+def test_context_builder_can_freeze_emotion_without_dropping_prompt_policy() -> None:
+    async def scenario() -> None:
+        clock = FakeClock(datetime(2026, 7, 13, tzinfo=UTC))
+        engine = EmotionEngine(clock=clock)
+        builder = EmotionPromptContextBuilder(PromptBuilder(), engine, clock, update_emotion=False)
+        before = engine.state
+
+        request = await builder.build(UserMessage(text="谢谢，太厉害了"))
+
+        assert engine.state == before
+        assert request.messages[0].role is ChatRole.system
+        assert "private desktop companion" in str(request.messages[0].content)
+
+    asyncio.run(scenario())
