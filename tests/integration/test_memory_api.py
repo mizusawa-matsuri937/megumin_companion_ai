@@ -1,5 +1,6 @@
 """Private-state API, turn persistence, confirmation, and deletion integration."""
 
+import time
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from pathlib import Path
@@ -217,7 +218,12 @@ def test_opt_in_candidate_analysis_uses_owned_provider_and_successful_user_turn_
             while websocket.receive_json()["type"] != "assistant.completed":
                 pass
 
-        memories = client.get("/api/memory").json()
+        memories: list[dict[str, object]] = []
+        for _ in range(100):
+            memories = client.get("/api/memory").json()
+            if memories:
+                break
+            time.sleep(0.01)
         assert [item["content"] for item in memories] == ["用户喜欢手冲咖啡"]
         assert len(provider.requests) == 1
 

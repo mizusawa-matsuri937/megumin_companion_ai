@@ -110,22 +110,147 @@ class MemoryPromptContextSource(PromptContextSource):
         )
 
 
+class MemoryCandidateSupervisor:
+    """Run best-effort LLM extraction outside turn completion's critical path."""
+
+    def __init__(
+        self,
+        memory: MemoryService,
+        features: FeatureFlagManager,
+        analyzer: MemoryCandidateAnalyzer,
+    ) -> None:
+        self._memory = memory
+        self._features = features
+        self._analyzer = analyzer
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._tasks: dict[asyncio.Task[None], CancellationToken] = {}
+        self._cancellation_started: set[asyncio.Task[None]] = set()
+        self._unsubscribe: Callable[[], None] | None = None
+        self._close_task: asyncio.Task[None] | None = None
+        self._closed = False
+
+    def start(self) -> None:
+        loop = asyncio.get_running_loop()
+        if self._loop is not None:
+            if self._loop is not loop:
+                raise RuntimeError("MemoryCandidateSupervisor 不能跨 event loop 使用")
+            return
+        self._loop = loop
+        self._unsubscribe = self._features.subscribe(self._on_feature_changed)
+
+    def submit(self, message: UserMessage, state: TurnState) -> bool:
+        loop = self._loop
+        if (
+            self._closed
+            or loop is None
+            or not self._features.get(FeatureName.long_term_memory).enabled
+        ):
+            return False
+        token = CancellationToken(f"memory-{state.turn_id}")
+        task = loop.create_task(
+            self._analyze_and_store(message, token),
+            name=f"memory-candidate-{state.turn_id}",
+        )
+        self._tasks[task] = token
+        task.add_done_callback(self._task_done)
+        return True
+
+    async def cancel_active(self) -> None:
+        self._cancel_all_now()
+        await self.wait_idle()
+
+    async def wait_idle(self) -> None:
+        tasks = tuple(self._tasks)
+        if tasks:
+            await asyncio.gather(
+                *(asyncio.shield(task) for task in tasks),
+                return_exceptions=True,
+            )
+
+    async def close(self) -> None:
+        task = self._close_task
+        if task is None:
+            task = asyncio.create_task(self._close_impl(), name="memory-candidate-supervisor-close")
+            self._close_task = task
+        await asyncio.shield(task)
+
+    async def _close_impl(self) -> None:
+        self._closed = True
+        unsubscribe, self._unsubscribe = self._unsubscribe, None
+        if unsubscribe is not None:
+            with suppress(Exception):
+                unsubscribe()
+        self._cancel_all_now()
+        await self.wait_idle()
+
+    async def _analyze_and_store(
+        self,
+        message: UserMessage,
+        token: CancellationToken,
+    ) -> None:
+        try:
+            claims = await self._analyzer.analyze(message, token)
+            token.raise_if_cancelled()
+            source_mode = SourceInputMode(message.input_mode.value)
+            for claim in claims:
+                token.raise_if_cancelled()
+                if not self._features.get(FeatureName.long_term_memory).enabled:
+                    return
+                await _drainable_to_thread(
+                    partial(
+                        self._memory.consider_user_claim,
+                        claim,
+                        user_id=message.user_id,
+                        source_message_id=message.message_id,
+                        source_input_mode=source_mode,
+                        source_text=message.text,
+                        created_at=message.created_at,
+                    )
+                )
+        except asyncio.CancelledError:
+            token.cancel()
+            raise
+        except Exception:
+            # Candidate analysis is optional and must not fail or expose a turn.
+            return
+
+    def _on_feature_changed(self, state: FeatureState) -> None:
+        if state.name is not FeatureName.long_term_memory or state.enabled:
+            return
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            return
+        with suppress(RuntimeError):
+            loop.call_soon_threadsafe(self._cancel_all_now)
+
+    def _cancel_all_now(self) -> None:
+        for task, token in tuple(self._tasks.items()):
+            if task in self._cancellation_started or task.done():
+                continue
+            self._cancellation_started.add(task)
+            token.cancel()
+            task.cancel()
+
+    def _task_done(self, task: asyncio.Task[None]) -> None:
+        self._tasks.pop(task, None)
+        self._cancellation_started.discard(task)
+        if not task.cancelled():
+            with suppress(asyncio.CancelledError):
+                task.exception()
+
+
 class MemoryTurnObserver(TurnObserver):
     """Persist explicit input at acceptance and assistant text only after success."""
 
     def __init__(
         self,
         history: HistoryService,
-        memory: MemoryService,
-        features: FeatureFlagManager,
-        analyzer: MemoryCandidateAnalyzer,
+        candidates: MemoryCandidateSupervisor,
         *,
         clock: Clock | None = None,
     ) -> None:
         self._history = history
-        self._memory = memory
-        self._features = features
-        self._analyzer = analyzer
+        self._candidates = candidates
         self._clock = clock or SystemClock()
 
     async def on_user_accepted(self, message: UserMessage, state: TurnState) -> None:
@@ -168,25 +293,7 @@ class MemoryTurnObserver(TurnObserver):
                     created_at=self._clock.now(),
                 ),
             )
-        if not self._features.get(FeatureName.long_term_memory).enabled:
-            return
-        claims = await self._analyzer.analyze(
-            message,
-            CancellationToken(f"memory-{state.turn_id}"),
-        )
-        source_mode = SourceInputMode(message.input_mode.value)
-        for claim in claims:
-            await asyncio.to_thread(
-                partial(
-                    self._memory.consider_user_claim,
-                    claim,
-                    user_id=message.user_id,
-                    source_message_id=message.message_id,
-                    source_input_mode=source_mode,
-                    source_text=message.text,
-                    created_at=message.created_at,
-                )
-            )
+        self._candidates.submit(message, state)
 
 
 class MemoryRuntime:
@@ -198,6 +305,7 @@ class MemoryRuntime:
         memory: MemoryService,
         memory_repository: MemoryRepository,
         analyzer: MemoryCandidateAnalyzer,
+        candidates: MemoryCandidateSupervisor,
         context_source: MemoryPromptContextSource,
         observer: MemoryTurnObserver,
         *,
@@ -209,14 +317,17 @@ class MemoryRuntime:
         self.memory = memory
         self.memory_repository = memory_repository
         self.analyzer = analyzer
+        self.candidates = candidates
         self.context_source = context_source
         self.observer = observer
         self._clock = clock or SystemClock()
         self._stop = asyncio.Event()
         self._maintenance_task: asyncio.Task[None] | None = None
         self._closed = False
+        self._close_task: asyncio.Task[None] | None = None
 
     def start(self) -> None:
+        self.candidates.start()
         if self._maintenance_task is None:
             self._maintenance_task = asyncio.create_task(
                 self._maintenance_loop(), name="memory-maintenance"
@@ -227,7 +338,10 @@ class MemoryRuntime:
 
     async def set_feature(self, name: FeatureName, enabled: bool) -> FeatureState:
         if name is FeatureName.long_term_memory:
-            return await asyncio.to_thread(self.memory.set_enabled, enabled)
+            state = await asyncio.to_thread(self.memory.set_enabled, enabled)
+            if not enabled:
+                await self.candidates.cancel_active()
+            return state
         return await asyncio.to_thread(
             self.features.set,
             name,
@@ -312,15 +426,30 @@ class MemoryRuntime:
                 await asyncio.to_thread(self.history.cleanup)
 
     async def close(self) -> None:
-        if self._closed:
-            return
+        task = self._close_task
+        if task is None:
+            task = asyncio.create_task(self._close_impl(), name="memory-runtime-close")
+            self._close_task = task
+        await asyncio.shield(task)
+
+    async def _close_impl(self) -> None:
         self._closed = True
         self._stop.set()
         task, self._maintenance_task = self._maintenance_task, None
         if task is not None:
             await asyncio.gather(task, return_exceptions=True)
-        await self.analyzer.close()
-        await asyncio.to_thread(self.database.secure_cleanup)
+        errors: list[Exception] = []
+        for closer in (self.candidates.close, self.analyzer.close):
+            try:
+                await closer()
+            except Exception as exc:
+                errors.append(exc)
+        try:
+            await asyncio.to_thread(self.database.secure_cleanup)
+        except Exception as exc:
+            errors.append(exc)
+        if errors:
+            raise ExceptionGroup("memory runtime resource close failed", errors)
 
 
 async def create_memory_runtime(
@@ -351,13 +480,12 @@ async def create_memory_runtime(
         confirmation_ttl=timedelta(minutes=confirmation_ttl_minutes),
     )
     resolved_analyzer = analyzer or NoopMemoryCandidateAnalyzer()
+    candidates = MemoryCandidateSupervisor(memory, features, resolved_analyzer)
     assembler = MemoryContextAssembler(history, memory)
     context_source = MemoryPromptContextSource(assembler)
     observer = MemoryTurnObserver(
         history,
-        memory,
-        features,
-        resolved_analyzer,
+        candidates,
         clock=clock,
     )
     runtime = MemoryRuntime(
@@ -367,9 +495,21 @@ async def create_memory_runtime(
         memory,
         memory_repository,
         resolved_analyzer,
+        candidates,
         context_source,
         observer,
         clock=clock,
     )
     runtime.start()
     return runtime
+
+
+async def _drainable_to_thread(operation: Callable[[], Any]) -> Any:
+    """Do not release private inputs while their worker still owns the closure."""
+
+    worker = asyncio.create_task(asyncio.to_thread(operation))
+    try:
+        return await asyncio.shield(worker)
+    except asyncio.CancelledError:
+        await asyncio.shield(worker)
+        raise
