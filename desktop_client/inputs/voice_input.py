@@ -18,7 +18,8 @@ from pathlib import Path
 from typing import Any, Protocol
 from uuid import uuid4
 
-from app.schemas import InputMode, UserMessage
+from app.core.contracts import UserMessageSink
+from app.schemas import InputMode, TurnState, UserMessage
 from desktop_client.inputs.stt_contracts import (
     STTProvider,
     TranscriptionRequest,
@@ -270,6 +271,18 @@ class PushToTalkRecorder:
                 self._transcription_task = None
                 if self._state is not RecordingState.closed:
                     self._reset_to_idle()
+
+    async def stop_and_send(
+        self,
+        sink: UserMessageSink,
+        *,
+        session_id: str = "local_session",
+        user_id: str = "local_user",
+    ) -> TurnState:
+        """Finish local STT and submit the normalized voice message once."""
+
+        message = await self.stop(session_id=session_id, user_id=user_id)
+        return await sink.accept(message)
 
     def _write_wav(self, path: Path, pcm: bytes) -> None:
         with wave.open(str(path), "wb") as recording:

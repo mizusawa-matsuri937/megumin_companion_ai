@@ -9,7 +9,7 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
-from app.schemas import InputMode
+from app.schemas import InputMode, TurnState, UserMessage
 from desktop_client.inputs.stt_contracts import TranscriptionRequest, TranscriptionResult
 from desktop_client.inputs.voice_input import (
     PCMCallback,
@@ -92,6 +92,19 @@ class BlockingSTT:
 
     async def close(self) -> None:
         return None
+
+
+class RecordingMessageSink:
+    def __init__(self) -> None:
+        self.messages: list[UserMessage] = []
+
+    async def accept(self, message: UserMessage) -> TurnState:
+        self.messages.append(message)
+        return TurnState(
+            session_id=message.session_id,
+            source_message_id=message.message_id,
+            input_mode=message.input_mode,
+        )
 
 
 class SlowStoppingSource(FakePCMSource):
@@ -193,6 +206,27 @@ def test_cancel_during_recording_discards_pcm_without_invoking_stt() -> None:
         assert recorder.buffered_bytes == 0
         assert stt.paths == []
         assert source.stop_count == 1
+        await recorder.close()
+
+    asyncio.run(scenario())
+
+
+def test_stop_and_send_delivers_one_normalized_voice_message() -> None:
+    async def scenario() -> None:
+        source = FakePCMSource()
+        recorder = PushToTalkRecorder(source, InspectingSTT())
+        sink = RecordingMessageSink()
+        await recorder.start()
+        source.emit(b"\x00\x00" * 16)
+        await asyncio.sleep(0)
+        state = await recorder.stop_and_send(sink, session_id="voice-session", user_id="user-1")
+        assert len(sink.messages) == 1
+        message = sink.messages[0]
+        assert message.session_id == "voice-session"
+        assert message.user_id == "user-1"
+        assert message.input_mode is InputMode.voice
+        assert state.source_message_id == message.message_id
+        _assert_state(recorder, RecordingState.idle)
         await recorder.close()
 
     asyncio.run(scenario())
