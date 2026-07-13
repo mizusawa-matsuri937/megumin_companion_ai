@@ -18,6 +18,12 @@ logging:
 llm:
   provider: mock
   api_key_env: COMPANION_LLM_API_KEY
+  base_url: https://api.openai.com
+  endpoint: /v1/chat/completions
+  model: ""
+  timeout_seconds: 45
+  temperature: 0.8
+  max_tokens: 600
 
 pipeline:
   tts_worker_count: 2

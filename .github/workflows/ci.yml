@@ -1,0 +1,35 @@
+name: macOS quality gate
+
+on:
+  pull_request:
+  push:
+    branches:
+      - "codex/**"
+
+concurrency:
+  group: macos-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          python-version: "3.11"
+      - name: Install locked dependencies
+        run: uv sync --frozen --all-groups --all-extras
+      - name: Tests and branch coverage
+        run: uv run pytest
+      - name: Ruff lint
+        run: uv run ruff check .
+      - name: Ruff format
+        run: uv run ruff format --check .
+      - name: Strict mypy
+        run: uv run mypy

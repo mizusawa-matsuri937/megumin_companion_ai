@@ -52,6 +52,12 @@ def test_health_and_websocket_echo() -> None:
         with client.websocket_connect("/ws/echo") as websocket:
             websocket.send_text("echo-check")
             assert websocket.receive_text() == "echo-check"
+            websocket.send_bytes(b"binary-check")
+            assert websocket.receive_bytes() == b"binary-check"
+
+        state = client.get("/debug/state")
+        assert state.status_code == 200
+        assert state.json()["active_turns"] == []
 
 
 def test_text_and_voice_use_the_same_turn_service() -> None:
@@ -158,3 +164,32 @@ def test_http_interrupt_cancels_active_turn() -> None:
 
     assert cancelled.status_code == 200
     assert cancelled.json()["status"] == "cancelled"
+
+
+def test_websocket_rejects_malformed_commands_without_private_echo() -> None:
+    private = "private-command@example.com"
+    app = create_app(quiet_settings())
+    with TestClient(app) as client, client.websocket_connect("/ws/client") as websocket:
+        websocket.send_json(["not", "an", "object"])
+        assert websocket.receive_json()["error"]["code"] == "unsupported_message_type"
+
+        websocket.send_json({"type": "unknown", "payload": {"text": private}})
+        unsupported = websocket.receive_json()
+        assert unsupported["error"]["code"] == "unsupported_message_type"
+        assert private not in json.dumps(unsupported)
+
+        websocket.send_json({"type": "turn.cancel", "payload": {"session_id": ""}})
+        invalid_cancel = websocket.receive_json()
+        assert invalid_cancel["error"]["code"] == "invalid_turn_cancel"
+        assert "input" not in json.dumps(invalid_cancel)
+
+        websocket.send_json({"type": "user.message", "payload": {"text": "   "}})
+        invalid_message = websocket.receive_json()
+        assert invalid_message["error"]["code"] == "invalid_user_message"
+        assert "input" not in json.dumps(invalid_message)
+
+        websocket.send_json({"type": "turn.cancel", "payload": {}})
+        websocket.send_json(
+            {"type": "user.message", "payload": {"text": "错误后仍可继续", "input_mode": "text"}}
+        )
+        assert websocket.receive_json()["type"] == "turn.accepted"

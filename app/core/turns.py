@@ -4,14 +4,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
+from enum import Enum
 from typing import Any, Protocol
 
 from app.config.logging import log_event
 from app.core.cancellation import CancellationToken
+from app.core.contracts import TurnEventSink
 from app.schemas import (
     PipelineEvent,
-    TurnMetrics,
+    TurnOutcome,
     TurnState,
     TurnStatus,
     UserMessage,
@@ -26,19 +28,39 @@ class TurnPipeline(Protocol):
         state: TurnState,
         token: CancellationToken,
         emit: Callable[[str, dict[str, Any]], Awaitable[None]],
-    ) -> TurnMetrics: ...
+    ) -> TurnOutcome: ...
 
     async def close(self) -> None: ...
+
+
+class TurnObserver(Protocol):
+    async def on_user_accepted(self, message: UserMessage, state: TurnState) -> None: ...
+
+    async def on_turn_completed(
+        self,
+        message: UserMessage,
+        state: TurnState,
+        outcome: TurnOutcome,
+    ) -> None: ...
 
 
 class TurnService:
     """Manage turn isolation, event delivery, cancellation, and shutdown cleanup."""
 
-    def __init__(self, logger: logging.Logger, pipeline: TurnPipeline | None = None) -> None:
+    def __init__(
+        self,
+        logger: logging.Logger,
+        pipeline: TurnPipeline | None = None,
+        *,
+        observers: Sequence[TurnObserver] = (),
+        event_sinks: Sequence[TurnEventSink] = (),
+    ) -> None:
         self._logger = logger
         self._pipeline = pipeline
         self._states: dict[str, TurnState] = {}
-        self._metrics: dict[str, TurnMetrics] = {}
+        self._outcomes: dict[str, TurnOutcome] = {}
+        self._observers = tuple(observers)
+        self._event_sinks = tuple(event_sinks)
         self._tokens: dict[str, CancellationToken] = {}
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._session_turn: dict[str, str] = {}
@@ -77,6 +99,7 @@ class TurnService:
                 payload=state.model_dump(mode="json"),
             )
         )
+        await self._notify_user_accepted(message, state)
 
         if self._pipeline is not None:
             token = CancellationToken(state.turn_id)
@@ -104,7 +127,7 @@ class TurnService:
 
         self._set_status(state.turn_id, TurnStatus.streaming)
         try:
-            metrics = await self._pipeline.run(message, state, token, emit)
+            outcome = await self._pipeline.run(message, state, token, emit)
             token.raise_if_cancelled()
         except asyncio.CancelledError:
             self._set_status(state.turn_id, TurnStatus.cancelled)
@@ -117,8 +140,9 @@ class TurnService:
                 session_id=state.session_id,
             )
             raise
-        except Exception:
-            self._set_status(state.turn_id, TurnStatus.failed, error_code="pipeline_failed")
+        except Exception as exc:
+            error_code = _safe_error_code(exc)
+            self._set_status(state.turn_id, TurnStatus.failed, error_code=error_code)
             await self._publish_state_event(state.turn_id, "turn.failed")
             log_event(
                 self._logger,
@@ -126,10 +150,11 @@ class TurnService:
                 "turn.failed",
                 turn_id=state.turn_id,
                 session_id=state.session_id,
-                error_code="pipeline_failed",
+                error_code=error_code,
             )
         else:
-            self._metrics[state.turn_id] = metrics
+            self._outcomes[state.turn_id] = outcome
+            await self._notify_turn_completed(message, state, outcome)
             completed = self._set_status(state.turn_id, TurnStatus.completed)
             await self._publish(
                 PipelineEvent(
@@ -138,7 +163,7 @@ class TurnService:
                     session_id=state.session_id,
                     payload={
                         "state": completed.model_dump(mode="json"),
-                        "metrics": metrics.model_dump(mode="json"),
+                        "metrics": outcome.metrics.model_dump(mode="json"),
                     },
                 )
             )
@@ -148,7 +173,7 @@ class TurnService:
                 "turn.completed",
                 turn_id=state.turn_id,
                 session_id=state.session_id,
-                **metrics.model_dump(mode="json"),
+                **outcome.metrics.model_dump(mode="json"),
             )
         finally:
             self._tokens.pop(state.turn_id, None)
@@ -209,6 +234,18 @@ class TurnService:
             self._subscribers.pop(session_id, None)
 
     async def _publish(self, event: PipelineEvent) -> None:
+        for sink in self._event_sinks:
+            try:
+                sink.publish(event)
+            except Exception:
+                log_event(
+                    self._logger,
+                    logging.ERROR,
+                    "turn.event_sink_failed",
+                    sink=type(sink).__name__,
+                    event_type=event.type,
+                    turn_id=event.turn_id,
+                )
         queues = {
             *self._subscribers.get(event.session_id, ()),
             *self._subscribers.get("*", ()),
@@ -247,8 +284,15 @@ class TurnService:
                 turn_id: state.model_dump(mode="json") for turn_id, state in self._states.items()
             },
             "metrics": {
-                turn_id: metrics.model_dump(mode="json")
-                for turn_id, metrics in self._metrics.items()
+                turn_id: outcome.metrics.model_dump(mode="json")
+                for turn_id, outcome in self._outcomes.items()
+            },
+            "outcomes": {
+                turn_id: {
+                    "text_length": len(outcome.full_text),
+                    "segment_count": len(outcome.segments),
+                }
+                for turn_id, outcome in self._outcomes.items()
             },
             "subscriber_count": sum(len(group) for group in self._subscribers.values()),
         }
@@ -266,3 +310,50 @@ class TurnService:
             await asyncio.gather(*tasks, return_exceptions=True)
         if self._pipeline is not None:
             await self._pipeline.close()
+        if self._event_sinks:
+            await asyncio.gather(
+                *(sink.close() for sink in self._event_sinks),
+                return_exceptions=True,
+            )
+
+    async def _notify_user_accepted(self, message: UserMessage, state: TurnState) -> None:
+        for observer in self._observers:
+            try:
+                await observer.on_user_accepted(message, state)
+            except Exception:
+                log_event(
+                    self._logger,
+                    logging.ERROR,
+                    "turn.observer_failed",
+                    observer=type(observer).__name__,
+                    phase="user_accepted",
+                    turn_id=state.turn_id,
+                )
+
+    async def _notify_turn_completed(
+        self,
+        message: UserMessage,
+        state: TurnState,
+        outcome: TurnOutcome,
+    ) -> None:
+        for observer in self._observers:
+            try:
+                await observer.on_turn_completed(message, state, outcome)
+            except Exception:
+                log_event(
+                    self._logger,
+                    logging.ERROR,
+                    "turn.observer_failed",
+                    observer=type(observer).__name__,
+                    phase="turn_completed",
+                    turn_id=state.turn_id,
+                )
+
+
+def _safe_error_code(exc: Exception) -> str:
+    code = getattr(exc, "code", None)
+    if isinstance(code, Enum) and isinstance(code.value, str):
+        return code.value
+    if isinstance(code, str) and code:
+        return code
+    return "pipeline_failed"
