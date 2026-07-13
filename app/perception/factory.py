@@ -18,7 +18,7 @@ from app.perception.protocols import (
     WindowCapture,
 )
 from app.perception.rate_limit import SlidingWindowRateLimiter
-from app.schemas import FeatureName
+from app.schemas import FeatureName, FeatureState
 
 
 def build_perception_pipeline(
@@ -38,7 +38,7 @@ def build_perception_pipeline(
     resolved_sanitizer = sanitizer
     if cloud is not None and resolved_sanitizer is None:
         resolved_sanitizer = PillowImageSanitizer()
-    return PerceptionPipeline(
+    pipeline = PerceptionPipeline(
         enabled=lambda: feature_flags.get_feature(FeatureName.vision).enabled,
         cloud_enabled=lambda: feature_flags.get_feature(FeatureName.cloud_vision).enabled,
         window_source=window_source,
@@ -71,3 +71,12 @@ def build_perception_pipeline(
             max_frame_bytes=settings.perception.max_frame_bytes,
         ),
     )
+
+    def on_feature_changed(state: FeatureState) -> None:
+        if state.name is FeatureName.vision:
+            pipeline.notify_vision_enabled(state.enabled)
+        elif state.name is FeatureName.cloud_vision:
+            pipeline.notify_cloud_enabled(state.enabled)
+
+    pipeline.attach_feature_subscription(feature_flags.subscribe(on_feature_changed))
+    return pipeline

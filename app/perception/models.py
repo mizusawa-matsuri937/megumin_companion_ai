@@ -78,6 +78,17 @@ class ImageFrame:
 
 
 @dataclass(frozen=True, slots=True)
+class FrameChangeAssessment:
+    """Opaque comparison result committed only after privacy processing succeeds."""
+
+    window_key: bytes
+    digest: bytes
+    perceptual_hash: int | None
+    changed: bool
+    previous_sensitive: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class OCRSpan:
     text: str
     confidence: float

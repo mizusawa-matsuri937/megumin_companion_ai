@@ -129,25 +129,57 @@ def test_text_redactor_removes_pii_controls_and_bounds_summary() -> None:
 def test_change_detector_uses_window_identity_perceptual_hash_and_digest() -> None:
     detector = FrameChangeDetector(minimum_hash_distance=0.1)
     window = _window()
-    assert detector.should_analyze(window, _frame(b"first", perceptual_hash=0))
-    assert not detector.should_analyze(window, _frame(b"other bytes", perceptual_hash=1))
-    assert detector.should_analyze(window, _frame(b"other bytes", perceptual_hash=(1 << 10) - 1))
+
+    first = detector.compare(window, _frame(b"first", perceptual_hash=0))
+    assert first.changed
+    detector.commit(first, sensitive=False)
+    minor = detector.compare(window, _frame(b"other bytes", perceptual_hash=1))
+    assert not minor.changed
+    detector.commit(minor, sensitive=False)
+    material = detector.compare(
+        window,
+        _frame(b"other bytes", perceptual_hash=(1 << 10) - 1),
+    )
+    assert material.changed
+    detector.commit(material, sensitive=False)
 
     second_window = _window(window_id="window-2")
-    assert detector.should_analyze(second_window, _frame(b"same"))
-    assert not detector.should_analyze(second_window, _frame(b"same"))
-    assert detector.should_analyze(second_window, _frame(b"changed"))
+    first_second = detector.compare(second_window, _frame(b"same"))
+    assert first_second.changed
+    detector.commit(first_second, sensitive=False)
+    unchanged = detector.compare(second_window, _frame(b"same"))
+    assert not unchanged.changed
+    detector.commit(unchanged, sensitive=False)
+    changed = detector.compare(second_window, _frame(b"changed"))
+    assert changed.changed
+    detector.commit(changed, sensitive=False)
     detector.reset()
-    assert detector.should_analyze(second_window, _frame(b"changed"))
+    assert detector.compare(second_window, _frame(b"changed")).changed
     with pytest.raises(ValueError):
         FrameChangeDetector(minimum_hash_distance=1.1)
     with pytest.raises(ValueError):
         FrameChangeDetector(max_windows=0)
 
     bounded = FrameChangeDetector(max_windows=1)
-    assert bounded.should_analyze(window, _frame(b"same"))
-    assert bounded.should_analyze(second_window, _frame(b"same"))
-    assert bounded.should_analyze(window, _frame(b"same"))
+    for current_window in (window, second_window, window):
+        assessment = bounded.compare(current_window, _frame(b"same"))
+        assert assessment.changed
+        bounded.commit(assessment, sensitive=False)
+
+
+def test_change_detector_does_not_commit_failures_and_keeps_sensitive_state() -> None:
+    detector = FrameChangeDetector()
+    window = _window()
+    frame = _frame(b"sensitive")
+
+    failed_attempt = detector.compare(window, frame)
+    assert failed_attempt.changed
+    assert detector.compare(window, frame).changed
+
+    detector.commit(failed_attempt, sensitive=True)
+    unchanged = detector.compare(window, frame)
+    assert not unchanged.changed
+    assert unchanged.previous_sensitive
 
 
 def test_sliding_window_limiter_has_deterministic_boundary() -> None:

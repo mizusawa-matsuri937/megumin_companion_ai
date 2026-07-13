@@ -8,6 +8,11 @@ from collections.abc import Callable, Sequence
 from typing import Any
 
 from app.perception.models import ImageFrame, OCRResult, OCRSpan, PerceptionError, Rect
+from app.perception.thread_jobs import (
+    await_owned_job,
+    drain_owned_jobs,
+    wipe_buffer,
+)
 
 
 class RapidOCRProvider:
@@ -30,18 +35,39 @@ class RapidOCRProvider:
         self._engine: Any | None = None
         self._max_spans = max_spans
         self._max_span_chars = max_span_chars
+        self._jobs: dict[asyncio.Task[OCRResult], asyncio.Event] = {}
+        self._closed = False
+        self._close_lock = asyncio.Lock()
 
     async def extract(self, frame: ImageFrame) -> OCRResult:
+        if self._closed:
+            raise PerceptionError("RapidOCR provider 已关闭")
+        owned_image = bytearray(frame.data)
+        worker = asyncio.create_task(
+            asyncio.to_thread(self._extract_sync, owned_image),
+            name="rapidocr-inference",
+        )
+        cleanup_finished = asyncio.Event()
+        self._jobs[worker] = cleanup_finished
         try:
-            return await asyncio.to_thread(self._extract_sync, bytes(frame.data))
+            return await await_owned_job(worker, discard=OCRResult.wipe)
         except PerceptionError:
+            raise
+        except asyncio.CancelledError:
             raise
         except Exception as exc:
             raise PerceptionError("本地 OCR 处理失败") from exc
+        finally:
+            wipe_buffer(owned_image)
+            self._jobs.pop(worker, None)
+            cleanup_finished.set()
 
-    def _extract_sync(self, image_bytes: bytes) -> OCRResult:
+    def _extract_sync(self, image_buffer: bytearray) -> OCRResult:
         engine = self._get_engine()
-        output: Any = engine(image_bytes)
+        # RapidOCR's public input contract expects immutable bytes.  This copy
+        # exists only inside the owned worker; cancellation waits for the worker
+        # before the mutable source is zeroed and observe() can return.
+        output: Any = engine(bytes(image_buffer))
         spans = self._parse_output(output)
         return OCRResult(spans=spans[: self._max_spans])
 
@@ -120,4 +146,15 @@ class RapidOCRProvider:
         return Rect(x=round(min(xs)), y=round(min(ys)), width=width, height=height)
 
     async def close(self) -> None:
-        self._engine = None
+        async with self._close_lock:
+            if self._closed and not self._jobs:
+                return
+            self._closed = True
+            try:
+                jobs = tuple(self._jobs.items())
+                await drain_owned_jobs(
+                    tuple(job for job, _cleanup in jobs),
+                    cleanup_events=tuple(cleanup for _job, cleanup in jobs),
+                )
+            finally:
+                self._engine = None

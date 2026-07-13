@@ -12,6 +12,7 @@ from app.perception.guards import OCRContentGuard, PreCaptureGuard, TextRedactor
 from app.perception.models import (
     CloudAnalysis,
     ContentGuardDecision,
+    FrameChangeAssessment,
     GuardOutcome,
     ImageFrame,
     ObservationStatus,
@@ -105,8 +106,18 @@ class FakeCapture:
 
 
 class ErrorChangeDetector:
-    def should_analyze(self, _window: WindowInfo, _frame: ImageFrame) -> bool:
+    def compare(
+        self,
+        _window: WindowInfo,
+        _frame: ImageFrame,
+    ) -> FrameChangeAssessment:
         raise RuntimeError("change failure")
+
+    def commit(self, _assessment: FrameChangeAssessment, *, sensitive: bool) -> None:
+        del sensitive
+
+    def reset(self) -> None:
+        return None
 
 
 class FakeOCR:
@@ -125,17 +136,21 @@ class FakeOCR:
         self.results: list[OCRResult] = []
         self.closed = 0
         self.started = asyncio.Event()
+        self.finished = asyncio.Event()
 
     async def extract(self, _frame: ImageFrame) -> OCRResult:
         self.order.append("ocr")
         self.started.set()
-        if self.block:
-            await asyncio.Event().wait()
-        if self.error is not None:
-            raise self.error
-        result = OCRResult(spans=[OCRSpan(self.text, 0.9, Rect(1, 1, 10, 5))])
-        self.results.append(result)
-        return result
+        try:
+            if self.block:
+                await asyncio.Event().wait()
+            if self.error is not None:
+                raise self.error
+            result = OCRResult(spans=[OCRSpan(self.text, 0.9, Rect(1, 1, 10, 5))])
+            self.results.append(result)
+            return result
+        finally:
+            self.finished.set()
 
     async def close(self) -> None:
         self.closed += 1
@@ -192,23 +207,43 @@ class FakeSanitizer:
         *,
         error: Exception | None = None,
         after_sanitize: Callable[[], None] | None = None,
+        block: bool = False,
+        return_input: bool = False,
     ) -> None:
         self.order = order
         self.error = error
         self.after_sanitize = after_sanitize
+        self.block = block
+        self.return_input = return_input
         self.frames: list[ImageFrame] = []
         self.regions: list[tuple[Rect, ...]] = []
+        self.started = asyncio.Event()
+        self.finished = asyncio.Event()
+        self.closed = 0
 
-    async def sanitize(self, _frame: ImageFrame, regions: tuple[Rect, ...]) -> ImageFrame:
+    async def sanitize(self, input_frame: ImageFrame, regions: tuple[Rect, ...]) -> ImageFrame:
         self.order.append("sanitize")
         self.regions.append(regions)
-        if self.error is not None:
-            raise self.error
-        frame = ImageFrame(bytearray(b"sanitized-only"), 50, 25)
-        self.frames.append(frame)
-        if self.after_sanitize is not None:
-            self.after_sanitize()
-        return frame
+        self.started.set()
+        try:
+            if self.block:
+                await asyncio.Event().wait()
+            if self.error is not None:
+                raise self.error
+            frame = (
+                input_frame
+                if self.return_input
+                else ImageFrame(bytearray(b"sanitized-only"), 50, 25)
+            )
+            self.frames.append(frame)
+            if self.after_sanitize is not None:
+                self.after_sanitize()
+            return frame
+        finally:
+            self.finished.set()
+
+    async def close(self) -> None:
+        self.closed += 1
 
 
 class FakeCloud:
@@ -218,6 +253,7 @@ class FakeCloud:
         *,
         error: Exception | None = None,
         analysis: CloudAnalysis | None = None,
+        before_analyze: Callable[[], None] | None = None,
     ) -> None:
         self.order = order
         self.error = error
@@ -226,14 +262,32 @@ class FakeCloud:
             confidence=5.0,
             category="reading",
         )
+        self.before_analyze = before_analyze
         self.frames: list[ImageFrame] = []
 
     async def analyze(self, frame: ImageFrame, _local: SceneAnalysis) -> CloudAnalysis:
         self.order.append("cloud")
         self.frames.append(frame)
+        if self.before_analyze is not None:
+            self.before_analyze()
         if self.error is not None:
             raise self.error
         return self.analysis
+
+
+class FlakyOCR(FakeOCR):
+    def __init__(self, order: list[str]) -> None:
+        super().__init__(order)
+        self.attempts = 0
+
+    async def extract(self, frame: ImageFrame) -> OCRResult:
+        self.attempts += 1
+        if self.attempts == 1:
+            self.error = RuntimeError("synthetic transient OCR failure")
+        try:
+            return await super().extract(frame)
+        finally:
+            self.error = None
 
 
 class FixedLimiter:
@@ -371,6 +425,54 @@ def test_unchanged_frame_skips_ocr_and_still_wipes_capture() -> None:
     asyncio.run(scenario())
 
 
+def test_sensitive_and_failed_frames_cannot_be_bypassed_as_unchanged() -> None:
+    async def scenario() -> None:
+        detector = FrameChangeDetector()
+        order: list[str] = []
+        sensitive_ocr = FakeOCR(order, text="fake.person@example.test")
+        sensitive, _calls, _capture, _ocr = _pipeline(
+            order=order,
+            change=detector,
+            ocr=sensitive_ocr,
+            content=RecordingContentGuard(order),
+        )
+
+        first = await sensitive.observe()
+        second = await sensitive.observe()
+        assert first.status is ObservationStatus.blocked_after_ocr
+        assert second.status is ObservationStatus.unchanged
+        assert second.context is not None and second.context.sensitive
+        assert second.reason_code == "sticky_sensitive_context"
+        assert len(sensitive_ocr.results) == 1
+
+        retry_order: list[str] = []
+        flaky = FlakyOCR(retry_order)
+        retry, _calls, _capture, _ocr = _pipeline(
+            order=retry_order,
+            change=FrameChangeDetector(),
+            ocr=flaky,
+        )
+        assert (await retry.observe()).status is ObservationStatus.ocr_error
+        assert (await retry.observe()).status is ObservationStatus.analyzed_local
+        assert flaky.attempts == 2
+
+        cloud_order: list[str] = []
+        sanitizer = FakeSanitizer(cloud_order)
+        cloud = FakeCloud(cloud_order, error=RuntimeError("synthetic transient cloud failure"))
+        cloud_retry, _calls, _capture, _ocr = _pipeline(
+            order=cloud_order,
+            sanitizer=sanitizer,
+            cloud=cloud,
+        )
+        assert (await cloud_retry.observe()).status is ObservationStatus.cloud_error
+        cloud.error = None
+        assert (await cloud_retry.observe()).status is ObservationStatus.analyzed_cloud
+        assert len(cloud.frames) == 2
+        assert all(frame.data == bytearray() for frame in cloud.frames)
+
+    asyncio.run(scenario())
+
+
 def test_sensitive_ocr_never_reaches_classifier_or_cloud() -> None:
     async def scenario() -> None:
         sentinel = "fake.person@example.test"
@@ -396,11 +498,20 @@ def test_sensitive_ocr_never_reaches_classifier_or_cloud() -> None:
 def test_cloud_path_uses_sanitized_frame_redacts_summary_and_cleans_both_frames() -> None:
     async def scenario() -> None:
         order: list[str] = []
+        capture = FakeCapture(order)
+        ocr = FakeOCR(order)
         sanitizer = FakeSanitizer(order)
-        cloud = FakeCloud(order)
+
+        def assert_raw_inputs_already_wiped() -> None:
+            assert capture.frames[0].data == bytearray()
+            assert ocr.results[0].spans == []
+
+        cloud = FakeCloud(order, before_analyze=assert_raw_inputs_already_wiped)
         limiter = FixedLimiter(True)
-        pipeline, _calls, capture, ocr = _pipeline(
+        pipeline, _calls, _capture, _ocr = _pipeline(
             order=order,
+            capture=capture,
+            ocr=ocr,
             sanitizer=sanitizer,
             cloud=cloud,
             limiter=limiter,
@@ -459,6 +570,63 @@ def test_disabled_or_broken_cloud_feature_never_sanitizes_or_calls_network() -> 
             assert result.status is ObservationStatus.analyzed_local
             assert sanitizer.frames == []
             assert cloud.frames == []
+
+    asyncio.run(scenario())
+
+
+def test_cloud_gate_defaults_closed_and_is_rechecked_after_sanitization() -> None:
+    async def scenario() -> None:
+        order: list[str] = []
+        sanitizer = FakeSanitizer(order)
+        cloud = FakeCloud(order)
+        pipeline = PerceptionPipeline(
+            enabled=EnabledFlag(),
+            window_source=FakeWindowSource(order),
+            window_guard=FakeWindowGuard(order),
+            capture=FakeCapture(order),
+            change_detector=FrameChangeDetector(),
+            ocr=FakeOCR(order),
+            content_guard=FakeContentGuard(order),
+            classifier=FakeClassifier(order),
+            redactor=TextRedactor(),
+            sanitizer=sanitizer,
+            cloud=cloud,
+        )
+        assert (await pipeline.observe()).status is ObservationStatus.analyzed_local
+        assert sanitizer.frames == [] and cloud.frames == []
+        await pipeline.close()
+
+        order = []
+        cloud_flag = EnabledFlag()
+        sanitizer = FakeSanitizer(
+            order,
+            after_sanitize=lambda: setattr(cloud_flag, "enabled", False),
+        )
+        cloud = FakeCloud(order)
+        pipeline, _calls, capture, _ocr = _pipeline(
+            order=order,
+            cloud_enabled=cloud_flag,
+            sanitizer=sanitizer,
+            cloud=cloud,
+        )
+        result = await pipeline.observe()
+        assert result.status is ObservationStatus.analyzed_local
+        assert cloud.frames == []
+        assert capture.frames[0].data == bytearray()
+        assert sanitizer.frames[0].data == bytearray()
+
+        order = []
+        identity = FakeSanitizer(order, return_input=True)
+        cloud = FakeCloud(order)
+        pipeline, _calls, capture, _ocr = _pipeline(
+            order=order,
+            sanitizer=identity,
+            cloud=cloud,
+        )
+        result = await pipeline.observe()
+        assert result.status is ObservationStatus.cloud_error
+        assert cloud.frames == []
+        assert capture.frames[0].data == bytearray()
 
     asyncio.run(scenario())
 
@@ -607,6 +775,58 @@ def test_cancellation_propagates_and_cleans_frame() -> None:
         with pytest.raises(asyncio.CancelledError):
             await task
         assert capture.frames[0].data == bytearray()
+
+    asyncio.run(scenario())
+
+
+def test_vision_disable_and_close_cancel_and_await_inflight_observations() -> None:
+    async def scenario() -> None:
+        order: list[str] = []
+        ocr = FakeOCR(order, block=True)
+        pipeline, _calls, capture, _ocr = _pipeline(order=order, ocr=ocr)
+        observing = asyncio.create_task(pipeline.observe())
+        await ocr.started.wait()
+
+        await pipeline.set_vision_enabled(False)
+        result = await observing
+        assert result.status is ObservationStatus.disabled
+        assert ocr.finished.is_set()
+        assert capture.frames[0].data == bytearray()
+
+        order = []
+        sanitizer = FakeSanitizer(order, block=True)
+        cloud = FakeCloud(order)
+        pipeline, _calls, capture, ocr = _pipeline(
+            order=order,
+            sanitizer=sanitizer,
+            cloud=cloud,
+        )
+        observing = asyncio.create_task(pipeline.observe())
+        await sanitizer.started.wait()
+
+        await pipeline.close()
+        result = await observing
+        assert result.status is ObservationStatus.disabled
+        assert sanitizer.finished.is_set()
+        assert sanitizer.closed == 1
+        assert ocr.closed == 1
+        assert cloud.frames == []
+        assert capture.frames[0].data == bytearray()
+
+    asyncio.run(scenario())
+
+
+def test_same_loop_reenable_supersedes_pending_feature_disable() -> None:
+    async def scenario() -> None:
+        pipeline, _order, _capture, _ocr = _pipeline()
+        assert (await pipeline.observe()).status is ObservationStatus.analyzed_local
+
+        pipeline.notify_vision_enabled(False)
+        pipeline.notify_vision_enabled(True)
+        await asyncio.sleep(0)
+
+        assert (await pipeline.observe()).status is ObservationStatus.unchanged
+        await pipeline.close()
 
     asyncio.run(scenario())
 

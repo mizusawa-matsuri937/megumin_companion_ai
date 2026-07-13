@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
 import pytest
 from app.perception.image_processing import PillowImageSanitizer, PillowSanitizerConfig
-from app.perception.models import ImageFrame, PerceptionError, Rect
+from app.perception.models import ImageFrame, OCRResult, OCRSpan, PerceptionError, Rect
 from app.perception.ocr import RapidOCRProvider
 
 
@@ -36,6 +37,31 @@ class FakeEngine:
 
 def _frame(data: bytes = b"synthetic-image") -> ImageFrame:
     return ImageFrame(data=bytearray(data), width=100, height=50)
+
+
+async def _wait_thread_event(event: threading.Event) -> None:
+    async with asyncio.timeout(1):
+        while not event.is_set():
+            await asyncio.sleep(0)
+
+
+class BlockingRapidOCR(RapidOCRProvider):
+    def __init__(self, *, fail: bool = False) -> None:
+        super().__init__(engine_factory=lambda: None)
+        self.fail = fail
+        self.started = threading.Event()
+        self.release = threading.Event()
+        self.owned_input: bytearray | None = None
+        self.produced: OCRResult | None = None
+
+    def _extract_sync(self, image_buffer: bytearray) -> OCRResult:
+        self.owned_input = image_buffer
+        self.started.set()
+        assert self.release.wait(timeout=2)
+        if self.fail:
+            raise RuntimeError("synthetic private worker failure")
+        self.produced = OCRResult([OCRSpan("synthetic result", 1.0)])
+        return self.produced
 
 
 def test_rapidocr_adapter_parses_current_and_legacy_shapes_and_clamps_values() -> None:
@@ -94,6 +120,78 @@ def test_rapidocr_is_lazy_and_reports_missing_optional_dependency() -> None:
 def test_rapidocr_limits_are_validated() -> None:
     with pytest.raises(ValueError):
         RapidOCRProvider(max_spans=0)
+
+
+def test_rapidocr_cancellation_and_timeout_drain_worker_and_discard_result() -> None:
+    async def scenario() -> None:
+        provider = BlockingRapidOCR()
+        extracting = asyncio.create_task(provider.extract(_frame(b"cancel-private")))
+        await _wait_thread_event(provider.started)
+        extracting.cancel()
+        closing = asyncio.create_task(provider.close())
+        await asyncio.sleep(0.01)
+        assert not extracting.done()
+        assert not closing.done()
+        closing.cancel()
+        await asyncio.sleep(0.01)
+        assert not closing.done()
+
+        provider.release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await closing
+        with pytest.raises(asyncio.CancelledError):
+            await extracting
+        assert provider.owned_input == bytearray()
+        assert provider.produced is not None and provider.produced.spans == []
+        await provider.close()
+
+        timeout_provider = BlockingRapidOCR()
+
+        async def release_later() -> None:
+            await _wait_thread_event(timeout_provider.started)
+            await asyncio.sleep(0.03)
+            timeout_provider.release.set()
+
+        releaser = asyncio.create_task(release_later())
+        with pytest.raises(TimeoutError):
+            async with asyncio.timeout(0.01):
+                await timeout_provider.extract(_frame(b"timeout-private"))
+        await releaser
+        assert timeout_provider.owned_input == bytearray()
+        assert timeout_provider.produced is not None and timeout_provider.produced.spans == []
+        await timeout_provider.close()
+
+        failing_provider = BlockingRapidOCR(fail=True)
+        failed = asyncio.create_task(failing_provider.extract(_frame(b"failure-private")))
+        await _wait_thread_event(failing_provider.started)
+        failed.cancel()
+        failing_provider.release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await failed
+        assert failing_provider.owned_input == bytearray()
+        await failing_provider.close()
+
+    asyncio.run(scenario())
+
+
+def test_rapidocr_close_waits_for_owned_worker() -> None:
+    async def scenario() -> None:
+        provider = BlockingRapidOCR()
+        extracting = asyncio.create_task(provider.extract(_frame()))
+        await _wait_thread_event(provider.started)
+        closing = asyncio.create_task(provider.close())
+        await asyncio.sleep(0.01)
+        assert not closing.done()
+
+        provider.release.set()
+        await closing
+        assert provider.owned_input == bytearray()
+        result = await extracting
+        assert result.text == "synthetic result"
+        with pytest.raises(PerceptionError, match="已关闭"):
+            await provider.extract(_frame())
+
+    asyncio.run(scenario())
 
 
 class FakeConvertedImage:
@@ -160,6 +258,27 @@ class FakeDrawModule:
         return FakeDrawer(image)
 
 
+class BlockingPillowSanitizer(PillowImageSanitizer):
+    def __init__(self) -> None:
+        super().__init__()
+        self.started = threading.Event()
+        self.release = threading.Event()
+        self.owned_input: bytearray | None = None
+        self.produced: ImageFrame | None = None
+
+    def _sanitize_sync(
+        self,
+        image_buffer: bytearray,
+        regions: tuple[Rect, ...],
+    ) -> ImageFrame:
+        del regions
+        self.owned_input = image_buffer
+        self.started.set()
+        assert self.release.wait(timeout=2)
+        self.produced = ImageFrame(bytearray(b"sanitized"), 10, 10)
+        return self.produced
+
+
 def test_pillow_sanitizer_resizes_masks_and_returns_new_frame() -> None:
     async def scenario() -> None:
         opened = FakeOpenedImage()
@@ -212,6 +331,29 @@ def test_pillow_sanitizer_fails_closed_for_limits_dependency_and_decode_error() 
     asyncio.run(scenario())
     with pytest.raises(ValueError):
         PillowSanitizerConfig(max_dimension=0)
+
+
+def test_pillow_cancellation_discards_output_and_close_waits_for_worker() -> None:
+    async def scenario() -> None:
+        sanitizer = BlockingPillowSanitizer()
+        sanitizing = asyncio.create_task(sanitizer.sanitize(_frame(b"private-pixels"), ()))
+        await _wait_thread_event(sanitizer.started)
+        sanitizing.cancel()
+        closing = asyncio.create_task(sanitizer.close())
+        await asyncio.sleep(0.01)
+        assert not sanitizing.done()
+        assert not closing.done()
+
+        sanitizer.release.set()
+        await closing
+        assert sanitizer.owned_input == bytearray()
+        assert sanitizer.produced is not None and sanitizer.produced.data == bytearray()
+        with pytest.raises(asyncio.CancelledError):
+            await sanitizing
+        with pytest.raises(PerceptionError, match="已关闭"):
+            await sanitizer.sanitize(_frame(), ())
+
+    asyncio.run(scenario())
 
 
 def test_optional_rapidocr_real_inference_on_synthetic_image(tmp_path: Path) -> None:

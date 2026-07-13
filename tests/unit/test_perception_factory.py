@@ -23,12 +23,24 @@ from app.schemas import FeatureName, FeatureState
 class Flags:
     def __init__(self) -> None:
         self.values = {name: False for name in FeatureName}
+        self.listeners: set[Callable[[FeatureState], None]] = set()
 
     def get_feature(self, name: FeatureName) -> FeatureState:
         return FeatureState(name=name, enabled=self.values[name])
 
-    def subscribe(self, _listener: Callable[[FeatureState], None]) -> Callable[[], None]:
-        return lambda: None
+    def subscribe(self, listener: Callable[[FeatureState], None]) -> Callable[[], None]:
+        self.listeners.add(listener)
+
+        def unsubscribe() -> None:
+            self.listeners.discard(listener)
+
+        return unsubscribe
+
+    def set(self, name: FeatureName, enabled: bool) -> None:
+        self.values[name] = enabled
+        state = FeatureState(name=name, enabled=enabled)
+        for listener in tuple(self.listeners):
+            listener(state)
 
 
 class WindowSource:
@@ -57,6 +69,20 @@ class OCR:
         return None
 
 
+class BlockingOCR(OCR):
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.finished = asyncio.Event()
+
+    async def extract(self, _frame: ImageFrame) -> OCRResult:
+        self.started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            self.finished.set()
+        raise AssertionError("unreachable")
+
+
 class Sanitizer:
     def __init__(self) -> None:
         self.calls = 0
@@ -64,6 +90,9 @@ class Sanitizer:
     async def sanitize(self, _frame: ImageFrame, _regions: tuple[Rect, ...]) -> ImageFrame:
         self.calls += 1
         return ImageFrame(bytearray(b"sanitized"), 100, 50)
+
+    async def close(self) -> None:
+        return None
 
 
 class Cloud:
@@ -94,13 +123,39 @@ def test_factory_uses_independent_vision_and_cloud_feature_gates() -> None:
         assert (await pipeline.observe()).status is ObservationStatus.disabled
         assert source.calls == 0
 
-        flags.values[FeatureName.vision] = True
+        flags.set(FeatureName.vision, True)
         assert (await pipeline.observe()).status is ObservationStatus.analyzed_local
         assert sanitizer.calls == 0 and cloud.calls == 0
 
-        flags.values[FeatureName.cloud_vision] = True
+        flags.set(FeatureName.cloud_vision, True)
         assert (await pipeline.observe()).status is ObservationStatus.analyzed_cloud
         assert sanitizer.calls == 1 and cloud.calls == 1
         await pipeline.close()
+
+    asyncio.run(scenario())
+
+
+def test_factory_feature_listener_awaits_inflight_vision_shutdown() -> None:
+    async def scenario() -> None:
+        flags = Flags()
+        flags.values[FeatureName.vision] = True
+        ocr = BlockingOCR()
+        pipeline = build_perception_pipeline(
+            Settings(),
+            flags,
+            window_source=WindowSource(),
+            capture=Capture(),
+            ocr=ocr,
+        )
+        observing = asyncio.create_task(pipeline.observe())
+        await ocr.started.wait()
+
+        await asyncio.to_thread(flags.set, FeatureName.vision, False)
+        result = await observing
+        assert result.status is ObservationStatus.disabled
+        assert ocr.finished.is_set()
+
+        await pipeline.close()
+        assert flags.listeners == set()
 
     asyncio.run(scenario())

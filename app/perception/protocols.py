@@ -7,6 +7,7 @@ from typing import Protocol
 from app.perception.models import (
     CloudAnalysis,
     ContentGuardDecision,
+    FrameChangeAssessment,
     ImageFrame,
     OCRResult,
     Rect,
@@ -39,7 +40,11 @@ class ContentGuard(Protocol):
 
 
 class ChangeDetector(Protocol):
-    def should_analyze(self, window: WindowInfo, frame: ImageFrame) -> bool: ...
+    def compare(self, window: WindowInfo, frame: ImageFrame) -> FrameChangeAssessment: ...
+
+    def commit(self, assessment: FrameChangeAssessment, *, sensitive: bool) -> None: ...
+
+    def reset(self) -> None: ...
 
 
 class SceneClassifier(Protocol):
@@ -48,6 +53,8 @@ class SceneClassifier(Protocol):
 
 class ImageSanitizer(Protocol):
     async def sanitize(self, frame: ImageFrame, regions: tuple[Rect, ...]) -> ImageFrame: ...
+
+    async def close(self) -> None: ...
 
 
 class CloudVisionAnalyzer(Protocol):
