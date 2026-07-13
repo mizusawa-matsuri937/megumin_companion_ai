@@ -40,6 +40,19 @@ tts:
   cache_max_bytes: 536870912
   cache_ttl_seconds: 604800
 
+# 默认禁用；首次启用真实 VTS 时仍需用户在 VTube Studio 内人工 Allow。
+vts:
+  enabled: false
+  uri: ws://127.0.0.1:8001
+  plugin_name: Megumin Companion
+  plugin_developer: Local User
+  token_path: data/private/vts-token.json
+  request_timeout_seconds: 5
+  queue_capacity: 16
+  reconnect_initial_seconds: 1
+  reconnect_max_seconds: 30
+  expression_hotkeys: {}
+
 pipeline:
   tts_worker_count: 2
   segment_min_chars: 6

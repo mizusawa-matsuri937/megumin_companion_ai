@@ -97,6 +97,27 @@ class TTSConfig(StrictModel):
     cache_ttl_seconds: float = Field(default=7 * 24 * 60 * 60, gt=0.0)
 
 
+class VTSConfig(StrictModel):
+    enabled: bool = False
+    uri: str = "ws://127.0.0.1:8001"
+    plugin_name: str = Field(default="Megumin Companion", min_length=3, max_length=32)
+    plugin_developer: str = Field(default="Local User", min_length=3, max_length=32)
+    token_path: Path = Path("data/private/vts-token.json")
+    request_timeout_seconds: float = Field(default=5.0, gt=0.0, le=60.0)
+    queue_capacity: int = Field(default=16, ge=1, le=256)
+    reconnect_initial_seconds: float = Field(default=1.0, ge=0.0, le=60.0)
+    reconnect_max_seconds: float = Field(default=30.0, ge=0.0, le=300.0)
+    expression_hotkeys: dict[str, str] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_reconnect_bounds(self) -> VTSConfig:
+        if self.reconnect_max_seconds < self.reconnect_initial_seconds:
+            raise ValueError("reconnect_max_seconds 不能小于 reconnect_initial_seconds")
+        if not self.uri.startswith(("ws://", "wss://")):
+            raise ValueError("VTS uri 必须使用 WebSocket")
+        return self
+
+
 class PipelineConfig(StrictModel):
     tts_worker_count: int = Field(default=2, ge=1, le=8)
     segment_min_chars: int = Field(default=6, ge=1, le=100)
@@ -121,6 +142,7 @@ class Settings(StrictModel):
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
     tts: TTSConfig = Field(default_factory=TTSConfig)
+    vts: VTSConfig = Field(default_factory=VTSConfig)
     pipeline: PipelineConfig = Field(default_factory=PipelineConfig)
 
     _environment: dict[str, str] = PrivateAttr(default_factory=dict)
@@ -168,6 +190,8 @@ ENV_OVERRIDES: dict[str, tuple[str, str]] = {
     "MEGUMIN_LLM_MODEL": ("llm", "model"),
     "MEGUMIN_TTS_PROVIDER": ("tts", "provider"),
     "MEGUMIN_TTS_BASE_URL": ("tts", "base_url"),
+    "MEGUMIN_VTS_ENABLED": ("vts", "enabled"),
+    "MEGUMIN_VTS_URI": ("vts", "uri"),
 }
 
 

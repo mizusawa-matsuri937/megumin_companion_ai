@@ -1,18 +1,22 @@
 """Dependency composition tests for disabled, mock, and real provider modes."""
 
+from __future__ import annotations
+
 import asyncio
 from pathlib import Path
 
 import pytest
-from app.bootstrap import build_dialogue_pipeline
+from app.bootstrap import build_dialogue_pipeline, build_vts_event_sink
 from app.clients.llm import OpenAICompatibleLLMProvider
 from app.clients.tts import GPTSoVITSProvider
+from app.clients.vts import VTSBridgeSnapshot, VTSBridgeState
 from app.config import Settings
 from app.config.settings import (
     GPTSoVITSPresetConfig,
     LLMConfig,
     PipelineConfig,
     TTSConfig,
+    VTSConfig,
 )
 from app.pipelines.audio_player import SystemAudioPlayer
 
@@ -74,3 +78,69 @@ def test_tts_wiring_never_falls_back_to_mock(provider: str) -> None:
 
     with pytest.raises(RuntimeError):
         build_dialogue_pipeline(settings)
+
+
+@pytest.mark.parametrize("hotkeys", [{}, {"happy": "custom-happy"}])
+def test_vts_wiring_starts_bounded_sink(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    hotkeys: dict[str, str],
+) -> None:
+    class FakeVTSBridge:
+        instances: list[FakeVTSBridge] = []
+
+        def __init__(self, *_args: object, **options: object) -> None:
+            self.options = options
+            self.started = False
+            self.closed = False
+            self.instances.append(self)
+
+        def start(self) -> None:
+            self.started = True
+
+        def enqueue_expression(self, _expression: str, *, turn_id: str | None = None) -> bool:
+            return turn_id is not None
+
+        def snapshot(self) -> VTSBridgeSnapshot:
+            return VTSBridgeSnapshot(
+                state=VTSBridgeState.ready,
+                queue_size=0,
+                dropped_actions=0,
+                processed_actions=0,
+                reconnect_count=0,
+                missing_expression_count=0,
+            )
+
+        async def close(self) -> None:
+            self.closed = True
+
+    monkeypatch.setattr("app.bootstrap.VTSBridge", FakeVTSBridge)
+    settings = Settings(
+        vts=VTSConfig(
+            enabled=True,
+            token_path=tmp_path / "token.json",
+            expression_hotkeys=hotkeys,
+            queue_capacity=3,
+        )
+    )
+
+    sink = build_vts_event_sink(settings)
+
+    assert sink is not None
+    bridge = FakeVTSBridge.instances[0]
+    assert bridge.started
+    assert bridge.options["queue_capacity"] == 3
+    asyncio.run(sink.close())
+    assert bridge.closed
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"uri": "http://127.0.0.1:8001"},
+        {"reconnect_initial_seconds": 2.0, "reconnect_max_seconds": 1.0},
+    ],
+)
+def test_vts_settings_reject_invalid_network_bounds(options: dict[str, object]) -> None:
+    with pytest.raises(ValueError):
+        VTSConfig(**options)  # type: ignore[arg-type]

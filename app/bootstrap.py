@@ -7,6 +7,13 @@ from pathlib import Path
 from app.clients.llm import MockLLMProvider, OpenAICompatibleLLMProvider
 from app.clients.llm.base import LLMProvider
 from app.clients.tts import GPTSoVITSPreset, GPTSoVITSProvider, MockTTSProvider, TTSProvider
+from app.clients.vts import (
+    ExpressionMapper,
+    FileTokenStore,
+    VTSBridge,
+    VTSClient,
+    VTSTurnEventSink,
+)
 from app.config import Settings
 from app.config.settings import PROJECT_ROOT
 from app.pipelines import DialoguePipeline
@@ -85,3 +92,29 @@ def _build_tts(settings: Settings) -> TTSProvider:
 
 def _project_path(path: Path) -> Path:
     return path if path.is_absolute() else PROJECT_ROOT / path
+
+
+def build_vts_event_sink(settings: Settings) -> VTSTurnEventSink | None:
+    if not settings.vts.enabled:
+        return None
+    mapper = (
+        ExpressionMapper(settings.vts.expression_hotkeys)
+        if settings.vts.expression_hotkeys
+        else ExpressionMapper()
+    )
+    bridge = VTSBridge(
+        lambda: VTSClient(
+            settings.vts.uri,
+            request_timeout_seconds=settings.vts.request_timeout_seconds,
+        ),
+        FileTokenStore(_project_path(settings.vts.token_path)),
+        plugin_name=settings.vts.plugin_name,
+        plugin_developer=settings.vts.plugin_developer,
+        expression_mapper=mapper,
+        queue_capacity=settings.vts.queue_capacity,
+        reconnect_initial_seconds=settings.vts.reconnect_initial_seconds,
+        reconnect_max_seconds=settings.vts.reconnect_max_seconds,
+    )
+    sink = VTSTurnEventSink(bridge)
+    sink.start()
+    return sink
