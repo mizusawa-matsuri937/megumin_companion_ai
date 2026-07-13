@@ -54,7 +54,7 @@ def test_day4_contracts_serialize() -> None:
 
     assert segment.model_dump(mode="json")["index"] == 0
     assert job.model_dump(mode="json")["timeout_ms"] == 8000
-    assert audio.model_dump(mode="json")["audio_path"] == "data/cache/test.wav"
+    assert Path(audio.model_dump(mode="json")["audio_path"]) == Path("data/cache/test.wav")
     assert state.model_dump(mode="json")["status"] == "accepted"
 
 

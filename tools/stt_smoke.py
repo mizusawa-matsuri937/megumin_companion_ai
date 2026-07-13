@@ -79,7 +79,7 @@ async def _run() -> None:
     recorder = build_voice_input(settings)
     assert recorder is not None
     try:
-        await asyncio.to_thread(input, "按回车开始录音（可能触发 macOS 麦克风权限提示）...")
+        await asyncio.to_thread(input, "按回车开始录音（可能触发系统麦克风权限提示）...")
         await recorder.start()
         await asyncio.to_thread(input, "正在录音；按回车停止并进行本地转写...")
         message = await recorder.stop()

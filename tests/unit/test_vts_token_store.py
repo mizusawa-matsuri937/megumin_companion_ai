@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import stat
 from pathlib import Path
 
@@ -21,7 +22,10 @@ def test_token_store_round_trip_is_atomic_and_token_repr_is_redacted(tmp_path: P
         assert await store.load() == token
         assert "never-log-this-token" not in repr(token)
         assert list(path.parent.glob("*.tmp")) == []
-        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+        # Windows protects files with ACLs rather than POSIX mode bits. The
+        # Windows integration plan validates and hardens that separate boundary.
+        if os.name != "nt":
+            assert stat.S_IMODE(path.stat().st_mode) == 0o600
         payload = json.loads(path.read_text(encoding="utf-8"))
         assert payload["authentication_token"] == "never-log-this-token"
 

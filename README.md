@@ -4,6 +4,8 @@
 
 完整实现、测试证据、九个堆叠 Draft PR 与延期项见 [`docs/ai_backend_mac_implementation_report.md`](docs/ai_backend_mac_implementation_report.md)。这次交付不包含 Windows UI、前台窗口捕获、全局热键、打包或真实设备体验，也不宣称 Gate B～G 已通过。
 
+Windows 当前基线、剩余风险、16 个有效开发日安排与各阶段人工关卡见 [`docs/windows_development_plan.md`](docs/windows_development_plan.md)。
+
 ## 架构
 
 ```text
@@ -47,7 +49,15 @@ uv run ruff format --check .
 uv run mypy
 ```
 
-pytest 对 `app` 与 `desktop_client` 统计分支覆盖，并设置 90% 综合门槛。CI 在 GitHub `macos-latest` 执行同一组命令。
+Windows 11 可在 PowerShell 中一键完成 `uv`、Python 3.11、锁定依赖和完整门禁初始化：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools/setup_windows.ps1
+```
+
+若只需安装环境、不立即执行完整门禁，可增加 `-SkipQualityGate`。脚本不会创建 `.env`、下载 Whisper 模型、安装 GPT-SoVITS/VTube Studio，也不会写入真实密钥或用户资产；这些能力按需单独配置。
+
+pytest 对 `app` 与 `desktop_client` 统计分支覆盖，并设置 90% 综合门槛。CI 在 GitHub `macos-latest` 与 `windows-latest` 执行同一组命令。
 
 ## 启动后端
 

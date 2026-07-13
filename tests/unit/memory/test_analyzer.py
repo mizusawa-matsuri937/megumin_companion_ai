@@ -174,7 +174,26 @@ def _malformed_responses() -> list[str]:
     ]
 
 
-@pytest.mark.parametrize("response", _malformed_responses())
+@pytest.mark.parametrize(
+    "response",
+    _malformed_responses(),
+    ids=[
+        "not-json",
+        "markdown-fence",
+        "top-level-list",
+        "extra-top-level-field",
+        "claims-not-list",
+        "claim-not-object",
+        "duplicate-json-key",
+        "nan-score",
+        "extra-claim-field",
+        "coerced-score",
+        "ungrounded-evidence",
+        "duplicate-claim",
+        "too-many-claims",
+        "oversized-response",
+    ],
+)
 def test_malformed_or_ungrounded_response_is_all_or_nothing(response: str) -> None:
     async def scenario() -> None:
         provider = _FakeLLMProvider(response)
