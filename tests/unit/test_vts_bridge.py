@@ -83,6 +83,19 @@ class _FakeClient:
         self._closed.set()
 
 
+class _SlowCloseClient(_FakeClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self.close_started = asyncio.Event()
+        self.finish_close = asyncio.Event()
+
+    async def close(self) -> None:
+        self.close_count += 1
+        self.close_started.set()
+        await self.finish_close.wait()
+        self._closed.set()
+
+
 async def _wait_until(predicate: Callable[[], bool], timeout: float = 1.0) -> None:
     async def poll() -> None:
         while not predicate():
@@ -124,6 +137,45 @@ def test_closed_bridge_is_idempotent_and_rejects_new_actions() -> None:
         await bridge.close()
         await bridge.close()
         assert not bridge.enqueue_expression("happy")
+        with pytest.raises(RuntimeError, match="已关闭"):
+            bridge.start()
+
+    asyncio.run(scenario())
+
+
+def test_concurrent_close_waiters_join_the_same_bridge_cleanup() -> None:
+    async def scenario() -> None:
+        client = _SlowCloseClient()
+        bridge = VTSBridge(
+            lambda: client,
+            _MemoryTokenStore(VTSToken("Companion", "Local User", "valid-token")),
+            plugin_name="Companion",
+            plugin_developer="Local User",
+            reconnect_initial_seconds=0,
+            reconnect_max_seconds=0,
+        )
+        bridge.start()
+        await _wait_until(lambda: bridge.snapshot().state is VTSBridgeState.ready)
+
+        first_close = asyncio.create_task(bridge.close())
+        await asyncio.wait_for(client.close_started.wait(), timeout=1)
+        second_close = asyncio.create_task(bridge.close())
+        await asyncio.sleep(0)
+        assert not first_close.done()
+        assert not second_close.done()
+        assert not bridge.enqueue_expression("happy")
+
+        first_close.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await first_close
+        assert not second_close.done()
+
+        client.finish_close.set()
+        await asyncio.wait_for(second_close, timeout=1)
+        await bridge.close()
+
+        assert client._closed.is_set()
+        assert bridge.snapshot().state is VTSBridgeState.stopped
         with pytest.raises(RuntimeError, match="已关闭"):
             bridge.start()
 

@@ -180,3 +180,151 @@ def test_mismatched_response_type_is_rejected() -> None:
             await server.wait_closed()
 
     asyncio.run(scenario())
+
+
+class _LifecycleConnection:
+    def __init__(self) -> None:
+        self.close_count = 0
+        self._closed = asyncio.Event()
+
+    async def send(self, _message: str) -> None:
+        return None
+
+    async def recv(self) -> str:
+        await self._closed.wait()
+        raise OSError("closed")
+
+    async def close(self) -> None:
+        self.close_count += 1
+        self._closed.set()
+
+
+class _FailingCloseConnection(_LifecycleConnection):
+    async def close(self) -> None:
+        await super().close()
+        raise RuntimeError("close failed")
+
+
+def test_connection_factory_error_is_mapped_and_retryable() -> None:
+    async def scenario() -> None:
+        factory_calls = 0
+
+        async def factory(_uri: str) -> _LifecycleConnection:
+            nonlocal factory_calls
+            factory_calls += 1
+            raise OSError("offline")
+
+        client = VTSClient(connection_factory=factory)
+        for _attempt in range(2):
+            with pytest.raises(VTSConnectionError):
+                await client.connect()
+        assert factory_calls == 2
+        await client.close()
+
+    asyncio.run(scenario())
+
+
+def test_close_cancels_inflight_connect_and_all_waiters_join_cleanup() -> None:
+    async def scenario() -> None:
+        factory_started = asyncio.Event()
+        factory_cancelled = asyncio.Event()
+        finish_factory_cleanup = asyncio.Event()
+        connection = _LifecycleConnection()
+
+        async def factory(_uri: str) -> _LifecycleConnection:
+            factory_started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                # A connection factory may need asynchronous cleanup and may
+                # return a socket even after observing cancellation.
+                factory_cancelled.set()
+                await finish_factory_cleanup.wait()
+                return connection
+            raise AssertionError("blocking factory unexpectedly completed")
+
+        client = VTSClient(connection_factory=factory)
+        connecting = asyncio.create_task(client.connect())
+        await asyncio.wait_for(factory_started.wait(), timeout=1)
+
+        first_close = asyncio.create_task(client.close())
+        await asyncio.wait_for(factory_cancelled.wait(), timeout=1)
+        second_close = asyncio.create_task(client.close())
+        await asyncio.sleep(0)
+        assert not first_close.done()
+        assert not second_close.done()
+        assert not client.connected
+
+        first_close.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await first_close
+        assert not second_close.done()
+
+        finish_factory_cleanup.set()
+        await asyncio.wait_for(second_close, timeout=1)
+        with pytest.raises(VTSConnectionError):
+            await connecting
+
+        assert connection.close_count == 1
+        assert not client.connected
+        await asyncio.wait_for(client.wait_closed(), timeout=1)
+        await client.close()
+        with pytest.raises(VTSConnectionError):
+            await client.connect()
+
+    asyncio.run(scenario())
+
+
+def test_concurrent_connect_calls_share_one_connection_factory() -> None:
+    async def scenario() -> None:
+        factory_started = asyncio.Event()
+        release_factory = asyncio.Event()
+        factory_calls = 0
+        connection = _LifecycleConnection()
+
+        async def factory(_uri: str) -> _LifecycleConnection:
+            nonlocal factory_calls
+            factory_calls += 1
+            factory_started.set()
+            await release_factory.wait()
+            return connection
+
+        client = VTSClient(connection_factory=factory)
+        first = asyncio.create_task(client.connect())
+        await asyncio.wait_for(factory_started.wait(), timeout=1)
+        second = asyncio.create_task(client.connect())
+        await asyncio.sleep(0)
+        release_factory.set()
+        await asyncio.gather(first, second)
+
+        assert factory_calls == 1
+        assert client.connected
+        await client.connect()
+        assert factory_calls == 1
+        await client.close()
+        assert connection.close_count == 1
+
+    asyncio.run(scenario())
+
+
+def test_close_finishes_receiver_cleanup_before_reporting_socket_error() -> None:
+    async def scenario() -> None:
+        connection = _FailingCloseConnection()
+
+        async def factory(_uri: str) -> _FailingCloseConnection:
+            return connection
+
+        client = VTSClient(connection_factory=factory)
+        await client.connect()
+
+        with pytest.raises(ExceptionGroup, match="connection close failed"):
+            await client.close()
+        assert not client.connected
+        await asyncio.wait_for(client.wait_closed(), timeout=1)
+        assert connection.close_count == 1
+
+        with pytest.raises(ExceptionGroup, match="connection close failed"):
+            await client.close()
+        assert connection.close_count == 1
+
+    asyncio.run(scenario())

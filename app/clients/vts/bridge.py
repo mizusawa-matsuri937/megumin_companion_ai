@@ -108,6 +108,7 @@ class VTSBridge:
         self._stop = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
         self._active_client: BridgeClient | None = None
+        self._close_task: asyncio.Task[None] | None = None
         self._closed = False
 
     def start(self) -> None:
@@ -299,10 +300,15 @@ class VTSBridge:
             self._state_listener(self.snapshot())
 
     async def close(self) -> None:
-        if self._closed:
-            return
-        self._closed = True
-        self._stop.set()
+        task = self._close_task
+        if task is None:
+            self._closed = True
+            self._stop.set()
+            task = asyncio.create_task(self._close(), name="vts-bridge-close")
+            self._close_task = task
+        await asyncio.shield(task)
+
+    async def _close(self) -> None:
         active_client = self._active_client
         if active_client is not None:
             await _safe_close(active_client)

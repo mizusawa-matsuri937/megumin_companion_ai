@@ -80,25 +80,54 @@ class VTSClient:
         self._connection_factory = connection_factory or _default_connection_factory
         self._connection: WebSocketConnection | None = None
         self._receiver: asyncio.Task[None] | None = None
+        self._connect_task: asyncio.Task[WebSocketConnection] | None = None
+        self._close_task: asyncio.Task[None] | None = None
         self._pending: dict[str, tuple[str, asyncio.Future[dict[str, Any]]]] = {}
         self._send_lock = asyncio.Lock()
         self._closed_event = asyncio.Event()
         self._closed_event.set()
+        self._closed = False
 
     @property
     def connected(self) -> bool:
-        return self._connection is not None and not self._closed_event.is_set()
+        return not self._closed and self._connection is not None and not self._closed_event.is_set()
 
     async def connect(self) -> None:
+        if self._closed:
+            raise VTSConnectionError
         if self.connected:
             return
+        task = self._connect_task
+        if task is None:
+            task = asyncio.create_task(
+                self._open_connection(),
+                name="vts-connect",
+            )
+            self._connect_task = task
         try:
-            connection = await self._connection_factory(self._uri)
+            connection = await asyncio.shield(task)
         except (OSError, TimeoutError, ConnectionClosed) as exc:
+            if self._connect_task is task:
+                self._connect_task = None
             raise VTSConnectionError from exc
+        except BaseException:
+            if task.done() and self._connect_task is task:
+                self._connect_task = None
+            raise
+        if self._closed:
+            # The shared close task owns the connection returned by an in-flight
+            # factory and will close it before returning.
+            raise VTSConnectionError
+        if self._connection is not None and not self._closed_event.is_set():
+            return
+        if self._connect_task is task:
+            self._connect_task = None
         self._connection = connection
         self._closed_event.clear()
         self._receiver = asyncio.create_task(self._receive_loop(), name="vts-receiver")
+
+    async def _open_connection(self) -> WebSocketConnection:
+        return await self._connection_factory(self._uri)
 
     async def request(
         self,
@@ -222,14 +251,43 @@ class VTSClient:
         future.set_result(data)
 
     async def close(self) -> None:
+        task = self._close_task
+        if task is None:
+            # Publish the terminal state before yielding so no new connection
+            # can be installed after shutdown starts.
+            self._closed = True
+            task = asyncio.create_task(self._close(), name="vts-client-close")
+            self._close_task = task
+        await asyncio.shield(task)
+
+    async def _close(self) -> None:
+        connecting = self._connect_task
+        pending_connection: WebSocketConnection | None = None
+        if connecting is not None:
+            if not connecting.done():
+                connecting.cancel()
+            outcome = (await asyncio.gather(connecting, return_exceptions=True))[0]
+            if not isinstance(outcome, BaseException):
+                pending_connection = outcome
+            if self._connect_task is connecting:
+                self._connect_task = None
+
         receiver = self._receiver
         self._receiver = None
         if receiver is not None and not receiver.done():
             receiver.cancel()
         connection = self._connection
         self._connection = None
-        if connection is not None:
-            await connection.close()
+        connections = [connection] if connection is not None else []
+        if pending_connection is not None and pending_connection is not connection:
+            connections.append(pending_connection)
+        close_results = await asyncio.gather(
+            *(item.close() for item in connections),
+            return_exceptions=True,
+        )
         if receiver is not None:
             await asyncio.gather(receiver, return_exceptions=True)
         self._closed_event.set()
+        errors = [result for result in close_results if isinstance(result, Exception)]
+        if errors:
+            raise ExceptionGroup("VTS connection close failed", errors)
