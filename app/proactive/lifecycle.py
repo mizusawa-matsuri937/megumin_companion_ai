@@ -61,8 +61,7 @@ class ProactiveLifecycle:
                 token.cancel()
             if task is not None and not task.done():
                 task.cancel()
-        if task is not None:
-            await asyncio.gather(task, return_exceptions=True)
+        await self._join_and_clear(task)
 
     async def end_user_turn(self, turn_id: str = "user") -> None:
         async with self._lock:
@@ -73,6 +72,18 @@ class ProactiveLifecycle:
             task = self._task
         if task is not None:
             await asyncio.gather(task, return_exceptions=True)
+
+    async def cancel_active(self) -> None:
+        """Cancel current proactive work without permanently closing the lifecycle."""
+
+        async with self._lock:
+            token = self._token
+            task = self._task
+            if token is not None:
+                token.cancel()
+            if task is not None and task is not asyncio.current_task() and not task.done():
+                task.cancel()
+        await self._join_and_clear(task)
 
     async def _run(
         self,
@@ -98,14 +109,20 @@ class ProactiveLifecycle:
 
     async def close(self) -> None:
         async with self._lock:
-            if self._closed:
-                return
-            self._closed = True
+            if not self._closed:
+                self._closed = True
             token = self._token
             task = self._task
             if token is not None:
                 token.cancel()
-            if task is not None and not task.done():
+            if task is not None and task is not asyncio.current_task() and not task.done():
                 task.cancel()
-        if task is not None:
+        await self._join_and_clear(task)
+
+    async def _join_and_clear(self, task: asyncio.Task[None] | None) -> None:
+        if task is not None and task is not asyncio.current_task():
             await asyncio.gather(task, return_exceptions=True)
+        async with self._lock:
+            if self._task is task and task is not None and task.done():
+                self._task = None
+                self._token = None

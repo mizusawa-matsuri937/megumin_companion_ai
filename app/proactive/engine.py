@@ -63,7 +63,14 @@ class ProactiveEngine:
             return ProactiveSuppression.user_active
         if context.focus_mode:
             return ProactiveSuppression.focus_mode
-        if context.sensitive or (context.perception is not None and context.perception.sensitive):
+        if context.sensitive:
+            return ProactiveSuppression.sensitive
+        if trigger.trigger_type is ProactiveTriggerType.visual_change:
+            if not context.vision_enabled or context.perception is None:
+                return ProactiveSuppression.visual_context_unavailable
+            if context.perception.sensitive:
+                return ProactiveSuppression.sensitive
+        elif context.perception is not None and context.perception.sensitive:
             return ProactiveSuppression.sensitive
         if context.do_not_disturb:
             return ProactiveSuppression.do_not_disturb

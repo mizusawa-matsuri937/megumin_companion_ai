@@ -26,6 +26,7 @@ class ProactiveSuppression(StrEnum):
     proactive_active = "proactive_active"
     focus_mode = "focus_mode"
     sensitive = "sensitive"
+    visual_context_unavailable = "visual_context_unavailable"
     do_not_disturb = "do_not_disturb"
     quiet_hours = "quiet_hours"
     cooldown = "cooldown"
@@ -59,6 +60,7 @@ class ProactivePolicy:
     )
 
     def __post_init__(self) -> None:
+        trigger_weights = dict(self.trigger_weights)
         if not 0.0 <= self.minimum_score <= 1.0:
             raise ValueError("minimum_score 必须位于 0..1")
         if self.cooldown < timedelta(0) or self.idle_minimum < timedelta(0):
@@ -67,10 +69,11 @@ class ProactivePolicy:
             raise ValueError("daily_limit 必须大于 0")
         if not 0 <= self.quiet_start_hour <= 23 or not 0 <= self.quiet_end_hour <= 23:
             raise ValueError("安静时段小时必须位于 0..23")
-        if set(self.trigger_weights) != set(ProactiveTriggerType):
+        if set(trigger_weights) != set(ProactiveTriggerType):
             raise ValueError("trigger_weights 必须覆盖全部 trigger type")
-        if any(not 0.0 <= value <= 1.0 for value in self.trigger_weights.values()):
+        if any(not 0.0 <= value <= 1.0 for value in trigger_weights.values()):
             raise ValueError("trigger weight 必须位于 0..1")
+        object.__setattr__(self, "trigger_weights", MappingProxyType(trigger_weights))
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,6 +108,7 @@ class ProactiveContext:
     focus_mode: bool = False
     sensitive: bool = False
     do_not_disturb: bool = False
+    vision_enabled: bool = False
     last_user_activity: datetime | None = None
     last_proactive_at: datetime | None = None
     proactive_today: int = 0

@@ -1,6 +1,7 @@
 """Scoring, timezone, cooldown, and privacy suppression tests."""
 
 from datetime import UTC, datetime, timedelta
+from typing import cast
 
 import pytest
 from app.proactive import (
@@ -124,3 +125,16 @@ def test_invalid_timezone_and_policy_are_rejected() -> None:
         ProactiveEngine(ProactivePolicy(timezone="Mars/Olympus"))
     with pytest.raises(ValueError):
         ProactivePolicy(daily_limit=0)
+
+
+def test_policy_copies_and_freezes_custom_trigger_weights() -> None:
+    weights = dict(ProactivePolicy().trigger_weights)
+    policy = ProactivePolicy(trigger_weights=weights)
+    original = policy.trigger_weights[ProactiveTriggerType.idle]
+
+    weights[ProactiveTriggerType.idle] = 1.0
+    assert policy.trigger_weights[ProactiveTriggerType.idle] == original
+    with pytest.raises(TypeError):
+        cast(dict[ProactiveTriggerType, float], policy.trigger_weights)[
+            ProactiveTriggerType.idle
+        ] = 1.0
