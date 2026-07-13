@@ -61,6 +61,17 @@ emotion:
   explosion_cooldown_seconds: 300
   expression_cooldown_seconds: 4
 
+storage:
+  enabled: true
+  database_path: data/private/companion.sqlite3
+  busy_timeout_ms: 5000
+
+memory:
+  history_retention_days: 7
+  confirmation_ttl_minutes: 15
+  # 真实 LLM 的结构化候选分析需另行显式开启；长期记忆 feature 本身仍默认关闭。
+  candidate_analysis_enabled: false
+
 pipeline:
   tts_worker_count: 2
   segment_min_chars: 6

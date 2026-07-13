@@ -6,8 +6,9 @@ from datetime import datetime
 from enum import StrEnum
 from uuid import uuid4
 
-from app.emotion.models import EmotionLabel
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from app.emotion.models import EmotionLabel
 
 
 def _id(prefix: str) -> str:

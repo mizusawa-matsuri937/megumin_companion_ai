@@ -6,8 +6,8 @@ import asyncio
 from pathlib import Path
 
 import pytest
-from app.bootstrap import build_dialogue_pipeline, build_vts_event_sink
-from app.clients.llm import OpenAICompatibleLLMProvider
+from app.bootstrap import build_dialogue_pipeline, build_llm_provider, build_vts_event_sink
+from app.clients.llm import MockLLMProvider, OpenAICompatibleLLMProvider
 from app.clients.tts import GPTSoVITSProvider
 from app.clients.vts import VTSBridgeSnapshot, VTSBridgeState
 from app.config import Settings
@@ -26,7 +26,14 @@ from app.schemas.ai import ContextOrigin, ContextTrust
 
 
 def test_disabled_provider_builds_no_pipeline() -> None:
+    assert build_llm_provider(Settings(llm=LLMConfig(provider=" NONE "))) is None
     assert build_dialogue_pipeline(Settings(llm=LLMConfig(provider=" NONE "))) is None
+
+
+def test_mock_provider_factory_is_explicit() -> None:
+    provider = build_llm_provider(Settings(llm=LLMConfig(provider=" mock ")))
+    assert isinstance(provider, MockLLMProvider)
+    asyncio.run(provider.close())
 
 
 def test_real_provider_requires_model() -> None:

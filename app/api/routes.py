@@ -5,12 +5,28 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from pydantic import ValidationError
 
 from app import __version__
 from app.core import TurnService
-from app.schemas import PipelineEvent, TurnInterruptRequest, TurnState, UserMessage
+from app.memory import (
+    ConfirmationNotFoundError,
+    CredentialRejectedError,
+    FeatureDisabledError,
+)
+from app.memory.runtime import MemoryRuntime
+from app.schemas import (
+    FeatureName,
+    FeaturePatchRequest,
+    HistoryClearRequest,
+    MemoryConfirmRequest,
+    MemoryUpdateRequest,
+    PipelineEvent,
+    TurnInterruptRequest,
+    TurnState,
+    UserMessage,
+)
 
 router = APIRouter()
 
@@ -20,6 +36,13 @@ def _turn_service(connection: Request | WebSocket) -> TurnService:
     if not isinstance(service, TurnService):
         raise RuntimeError("TurnService 尚未初始化")
     return service
+
+
+def _memory_runtime(request: Request) -> MemoryRuntime:
+    runtime = getattr(request.app.state, "memory_runtime", None)
+    if not isinstance(runtime, MemoryRuntime):
+        raise HTTPException(status_code=503, detail="private_state_runtime_disabled")
+    return runtime
 
 
 def _safe_validation_errors(exc: ValidationError) -> list[dict[str, Any]]:
@@ -50,6 +73,132 @@ async def interrupt(payload: TurnInterruptRequest, request: Request) -> TurnStat
 @router.get("/debug/state")
 async def debug_state(request: Request) -> dict[str, Any]:
     return _turn_service(request).snapshot()
+
+
+@router.get("/api/features")
+async def list_features(request: Request) -> list[dict[str, Any]]:
+    states = await _memory_runtime(request).list_features()
+    return [state.model_dump(mode="json") for state in states]
+
+
+@router.patch("/api/features/{feature}")
+async def patch_feature(
+    feature: FeatureName,
+    payload: FeaturePatchRequest,
+    request: Request,
+) -> dict[str, Any]:
+    state = await _memory_runtime(request).set_feature(feature, payload.enabled)
+    return state.model_dump(mode="json")
+
+
+@router.get("/api/memory")
+async def list_memories(
+    request: Request,
+    user_id: str = Query(default="local_user", min_length=1, max_length=128),
+    include_superseded: bool = False,
+) -> list[dict[str, Any]]:
+    items = await _memory_runtime(request).list_memories(
+        user_id=user_id,
+        include_superseded=include_superseded,
+    )
+    return [item.model_dump(mode="json") for item in items]
+
+
+@router.get("/api/memory/search")
+async def search_memories(
+    request: Request,
+    query: str = Query(min_length=1, max_length=5_000),
+    user_id: str = Query(default="local_user", min_length=1, max_length=128),
+    limit: int = Query(default=10, ge=1, le=100),
+) -> list[dict[str, Any]]:
+    items = await _memory_runtime(request).search_memories(
+        user_id=user_id,
+        query=query,
+        limit=limit,
+    )
+    return [item.model_dump(mode="json") for item in items]
+
+
+@router.get("/api/memory/confirmations")
+async def list_memory_confirmations(request: Request) -> list[dict[str, Any]]:
+    pending = await _memory_runtime(request).pending_confirmations()
+    return [item.model_dump(mode="json") for item in pending]
+
+
+@router.post("/api/memory/confirm/{confirmation_id}")
+async def confirm_memory(
+    confirmation_id: str,
+    payload: MemoryConfirmRequest,
+    request: Request,
+) -> dict[str, Any]:
+    try:
+        item = await _memory_runtime(request).confirm_memory(
+            confirmation_id,
+            approved=payload.approved,
+        )
+    except ConfirmationNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="confirmation_not_found") from exc
+    except FeatureDisabledError as exc:
+        raise HTTPException(status_code=409, detail="long_term_memory_disabled") from exc
+    return {"approved": payload.approved, "memory": item.model_dump(mode="json") if item else None}
+
+
+@router.get("/api/memory/export")
+async def export_memories(
+    request: Request,
+    user_id: str = Query(default="local_user", min_length=1, max_length=128),
+) -> dict[str, Any]:
+    return await _memory_runtime(request).export(user_id=user_id)
+
+
+@router.delete("/api/memory")
+async def clear_memories(
+    request: Request,
+    user_id: str = Query(default="local_user", min_length=1, max_length=128),
+) -> dict[str, int]:
+    deleted = await _memory_runtime(request).clear_memories(user_id=user_id)
+    return {"deleted": deleted}
+
+
+@router.patch("/api/memory/{memory_id}")
+async def update_memory(
+    memory_id: str,
+    payload: MemoryUpdateRequest,
+    request: Request,
+    user_id: str = Query(default="local_user", min_length=1, max_length=128),
+) -> dict[str, Any]:
+    try:
+        item = await _memory_runtime(request).update_memory(
+            memory_id,
+            user_id=user_id,
+            content=payload.content,
+        )
+    except CredentialRejectedError as exc:
+        raise HTTPException(status_code=422, detail="credential_content_forbidden") from exc
+    if item is None:
+        raise HTTPException(status_code=404, detail="memory_not_found")
+    return item.model_dump(mode="json")
+
+
+@router.delete("/api/memory/{memory_id}")
+async def delete_memory(
+    memory_id: str,
+    request: Request,
+    user_id: str = Query(default="local_user", min_length=1, max_length=128),
+) -> dict[str, bool]:
+    deleted = await _memory_runtime(request).delete_memory(memory_id, user_id=user_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="memory_not_found")
+    return {"deleted": True}
+
+
+@router.post("/api/history/clear")
+async def clear_history(payload: HistoryClearRequest, request: Request) -> dict[str, int]:
+    deleted = await _memory_runtime(request).clear_history(
+        user_id=payload.user_id,
+        session_id=payload.session_id,
+    )
+    return {"deleted": deleted}
 
 
 @router.websocket("/ws/echo")

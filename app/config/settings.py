@@ -127,6 +127,18 @@ class EmotionConfig(StrictModel):
     expression_cooldown_seconds: float = Field(default=4.0, ge=0.0, le=300.0)
 
 
+class StorageConfig(StrictModel):
+    enabled: bool = False
+    database_path: Path = Path("data/private/companion.sqlite3")
+    busy_timeout_ms: int = Field(default=5_000, ge=0, le=60_000)
+
+
+class MemoryConfig(StrictModel):
+    history_retention_days: int = Field(default=7, ge=1, le=365)
+    confirmation_ttl_minutes: float = Field(default=15.0, gt=0.0, le=1440.0)
+    candidate_analysis_enabled: bool = False
+
+
 class PipelineConfig(StrictModel):
     tts_worker_count: int = Field(default=2, ge=1, le=8)
     segment_min_chars: int = Field(default=6, ge=1, le=100)
@@ -153,6 +165,8 @@ class Settings(StrictModel):
     tts: TTSConfig = Field(default_factory=TTSConfig)
     vts: VTSConfig = Field(default_factory=VTSConfig)
     emotion: EmotionConfig = Field(default_factory=EmotionConfig)
+    storage: StorageConfig = Field(default_factory=StorageConfig)
+    memory: MemoryConfig = Field(default_factory=MemoryConfig)
     pipeline: PipelineConfig = Field(default_factory=PipelineConfig)
 
     _environment: dict[str, str] = PrivateAttr(default_factory=dict)
@@ -202,6 +216,12 @@ ENV_OVERRIDES: dict[str, tuple[str, str]] = {
     "MEGUMIN_TTS_BASE_URL": ("tts", "base_url"),
     "MEGUMIN_VTS_ENABLED": ("vts", "enabled"),
     "MEGUMIN_VTS_URI": ("vts", "uri"),
+    "MEGUMIN_STORAGE_ENABLED": ("storage", "enabled"),
+    "MEGUMIN_DATABASE_PATH": ("storage", "database_path"),
+    "MEGUMIN_MEMORY_CANDIDATE_ANALYSIS_ENABLED": (
+        "memory",
+        "candidate_analysis_enabled",
+    ),
 }
 
 
