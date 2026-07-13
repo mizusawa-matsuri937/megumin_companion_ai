@@ -14,7 +14,7 @@ logging:
   file_enabled: true
   file_path: data/logs/app.jsonl
 
-# Day 5-7 默认使用不联网的确定性 Mock。Day 10 改为真实 provider 后才要求密钥。
+# 默认使用不联网的确定性 Mock；切换到真实 provider 时才要求专用密钥和 model。
 llm:
   provider: mock
   api_key_env: COMPANION_LLM_API_KEY
