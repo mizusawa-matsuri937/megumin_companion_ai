@@ -29,6 +29,8 @@ def build_dialogue_pipeline(settings: Settings) -> DialoguePipeline | None:
             model=settings.llm.model,
             api_key=api_key,
             timeout_seconds=settings.llm.timeout_seconds,
+            default_temperature=settings.llm.temperature,
+            default_max_tokens=settings.llm.max_tokens,
         )
 
     cache_path = settings.pipeline.audio_cache_path

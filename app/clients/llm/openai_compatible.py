@@ -28,6 +28,8 @@ class OpenAICompatibleLLMProvider:
         api_key: str,
         endpoint: str = "/v1/chat/completions",
         timeout_seconds: float = 45.0,
+        default_temperature: float | None = None,
+        default_max_tokens: int | None = None,
         client: httpx.AsyncClient | None = None,
     ) -> None:
         if not base_url.startswith(("https://", "http://")):
@@ -36,8 +38,14 @@ class OpenAICompatibleLLMProvider:
             raise ValueError("LLM model 不能为空")
         if not api_key.strip():
             raise ValueError("LLM api_key 不能为空")
+        if default_temperature is not None and not 0.0 <= default_temperature <= 2.0:
+            raise ValueError("LLM default_temperature 必须介于 0 和 2 之间")
+        if default_max_tokens is not None and not 1 <= default_max_tokens <= 100_000:
+            raise ValueError("LLM default_max_tokens 必须介于 1 和 100000 之间")
         self._model = model
         self._endpoint = endpoint if endpoint.startswith("/") else f"/{endpoint}"
+        self._default_temperature = default_temperature
+        self._default_max_tokens = default_max_tokens
         self._owns_client = client is None
         self._client = client or httpx.AsyncClient(
             base_url=base_url.rstrip("/"),
@@ -108,10 +116,16 @@ class OpenAICompatibleLLMProvider:
             "messages": [_serialize_message(message) for message in request.messages],
             "stream": stream,
         }
-        if request.temperature is not None:
-            payload["temperature"] = request.temperature
-        if request.max_tokens is not None:
-            payload["max_tokens"] = request.max_tokens
+        temperature = (
+            request.temperature if request.temperature is not None else self._default_temperature
+        )
+        max_tokens = (
+            request.max_tokens if request.max_tokens is not None else self._default_max_tokens
+        )
+        if temperature is not None:
+            payload["temperature"] = temperature
+        if max_tokens is not None:
+            payload["max_tokens"] = max_tokens
         if request.response_format == "json_object":
             payload["response_format"] = {"type": "json_object"}
         return payload

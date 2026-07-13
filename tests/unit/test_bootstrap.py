@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 from app.bootstrap import build_dialogue_pipeline
+from app.clients.llm import OpenAICompatibleLLMProvider
 from app.config import Settings
 from app.config.settings import LLMConfig, PipelineConfig
 from app.pipelines.audio_player import SystemAudioPlayer
@@ -21,7 +22,13 @@ def test_real_provider_requires_model() -> None:
 
 def test_real_provider_absolute_cache_and_system_player(tmp_path: Path) -> None:
     settings = Settings(
-        llm=LLMConfig(provider="compatible", model="test-model", api_key_env="TEST_KEY"),
+        llm=LLMConfig(
+            provider="compatible",
+            model="test-model",
+            api_key_env="TEST_KEY",
+            temperature=0.65,
+            max_tokens=777,
+        ),
         pipeline=PipelineConfig(audio_cache_path=tmp_path, playback_mode="system"),
     )
     settings._environment = {"TEST_KEY": "fake-test-key"}
@@ -30,4 +37,7 @@ def test_real_provider_absolute_cache_and_system_player(tmp_path: Path) -> None:
 
     assert pipeline is not None
     assert isinstance(pipeline._audio_player, SystemAudioPlayer)
+    assert isinstance(pipeline._llm, OpenAICompatibleLLMProvider)
+    assert pipeline._llm._default_temperature == 0.65
+    assert pipeline._llm._default_max_tokens == 777
     asyncio.run(pipeline.close())

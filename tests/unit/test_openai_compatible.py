@@ -89,6 +89,41 @@ def test_complete_returns_text_usage_and_json_mode() -> None:
     asyncio.run(scenario())
 
 
+def test_configured_generation_defaults_apply_and_request_values_win() -> None:
+    seen: list[dict[str, object]] = []
+
+    def handler(incoming: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(incoming.content))
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]},
+        )
+
+    async def scenario() -> None:
+        client = httpx.AsyncClient(
+            base_url="https://provider.invalid", transport=httpx.MockTransport(handler)
+        )
+        provider = OpenAICompatibleLLMProvider(
+            base_url="https://provider.invalid",
+            model="test-model",
+            api_key="fake-test-key",
+            default_temperature=0.8,
+            default_max_tokens=600,
+            client=client,
+        )
+        without_overrides = request().model_copy(update={"temperature": None, "max_tokens": None})
+        await provider.complete(without_overrides, CancellationToken("turn-defaults"))
+        await provider.complete(request(), CancellationToken("turn-overrides"))
+        await client.aclose()
+
+    asyncio.run(scenario())
+
+    assert seen[0]["temperature"] == 0.8
+    assert seen[0]["max_tokens"] == 600
+    assert seen[1]["temperature"] == 0.2
+    assert seen[1]["max_tokens"] == 50
+
+
 @pytest.mark.parametrize(
     ("status", "code", "retryable"),
     [
@@ -143,6 +178,20 @@ def test_invalid_provider_configuration_and_closed_lifecycle() -> None:
         OpenAICompatibleLLMProvider(base_url="https://example.invalid", model=" ", api_key="k")
     with pytest.raises(ValueError, match="api_key"):
         OpenAICompatibleLLMProvider(base_url="https://example.invalid", model="m", api_key=" ")
+    with pytest.raises(ValueError, match="default_temperature"):
+        OpenAICompatibleLLMProvider(
+            base_url="https://example.invalid",
+            model="m",
+            api_key="k",
+            default_temperature=2.1,
+        )
+    with pytest.raises(ValueError, match="default_max_tokens"):
+        OpenAICompatibleLLMProvider(
+            base_url="https://example.invalid",
+            model="m",
+            api_key="k",
+            default_max_tokens=0,
+        )
 
     async def scenario() -> None:
         provider = OpenAICompatibleLLMProvider(
