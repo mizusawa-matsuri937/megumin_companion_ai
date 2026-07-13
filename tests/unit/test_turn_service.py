@@ -81,6 +81,22 @@ class RecordingObserver:
             raise RuntimeError("observer output must stay isolated")
 
 
+class RecordingSink:
+    def __init__(self, *, fail: bool = False) -> None:
+        self.fail = fail
+        self.events: list[str] = []
+        self.closed = False
+
+    def publish(self, event: Any) -> bool:
+        self.events.append(event.type)
+        if self.fail:
+            raise RuntimeError("event sink must stay isolated")
+        return True
+
+    async def close(self) -> None:
+        self.closed = True
+
+
 def logger() -> logging.Logger:
     instance = logging.getLogger("test.turn_service")
     instance.handlers = [logging.NullHandler()]
@@ -104,7 +120,14 @@ def test_success_records_safe_outcome_and_observers_are_isolated() -> None:
         pipeline = ControllablePipeline()
         good = RecordingObserver()
         bad = RecordingObserver(fail=True)
-        service = TurnService(logger(), pipeline, observers=(bad, good))
+        good_sink = RecordingSink()
+        bad_sink = RecordingSink(fail=True)
+        service = TurnService(
+            logger(),
+            pipeline,
+            observers=(bad, good),
+            event_sinks=(bad_sink, good_sink),
+        )
         queue = service.subscribe("session-a")
         wildcard = service.subscribe("*")
 
@@ -121,6 +144,9 @@ def test_success_records_safe_outcome_and_observers_are_isolated() -> None:
         }
         assert good.accepted == good.completed == [state.turn_id]
         assert bad.accepted == bad.completed == [state.turn_id]
+        assert good_sink.events == bad_sink.events
+        assert good_sink.events[0] == "turn.accepted"
+        assert good_sink.events[-1] == "assistant.completed"
 
         service.unsubscribe("session-a", queue)
         service.unsubscribe("session-a", queue)
@@ -130,6 +156,7 @@ def test_success_records_safe_outcome_and_observers_are_isolated() -> None:
         await service.shutdown()
         await service.shutdown()
         assert pipeline.closed
+        assert good_sink.closed and bad_sink.closed
         with pytest.raises(RuntimeError, match="已关闭"):
             await service.accept(UserMessage(text="关闭后输入"))
 
