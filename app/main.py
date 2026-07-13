@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import sys
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from datetime import timedelta
 from pathlib import Path
@@ -94,7 +95,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 (app.state.vts_event_sink,) if app.state.vts_event_sink is not None else ()
             )
             observers = (memory_runtime.observer,) if memory_runtime is not None else ()
-            app.state.turn_service = TurnService(
+            turn_service = TurnService(
                 logger,
                 build_dialogue_pipeline(
                     resolved_settings,
@@ -106,6 +107,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 event_sinks=event_sinks,
                 priority_controller=proactive_runtime,
             )
+            app.state.turn_service = turn_service
+            if proactive_runtime is not None:
+                proactive_runtime.start(turn_service.run_proactive)
             log_event(
                 logger,
                 logging.INFO,
@@ -116,24 +120,43 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
             yield
         finally:
-            service = getattr(app.state, "turn_service", None)
-            if isinstance(service, TurnService):
-                await service.shutdown()
-            else:
-                sink = getattr(app.state, "vts_event_sink", None)
-                if sink is not None:
-                    await sink.close()
             proactive = getattr(app.state, "proactive_runtime", None)
-            if isinstance(proactive, ProactiveRuntime):
-                await proactive.close()
+            service = getattr(app.state, "turn_service", None)
+            sink = getattr(app.state, "vts_event_sink", None)
             runtime = getattr(app.state, "memory_runtime", None)
+            cancelled: asyncio.CancelledError | None = None
+            resources: list[tuple[str, Callable[[], Awaitable[None]]]] = []
+            if isinstance(proactive, ProactiveRuntime):
+                resources.append(("proactive", proactive.close))
+            if isinstance(service, TurnService):
+                resources.append(("turn_service", service.shutdown))
+            if sink is not None:
+                # TurnService normally owns the sink; the second idempotent close
+                # also covers partial startup and an unexpected service-close error.
+                resources.append(("vts_event_sink", sink.close))
             if isinstance(runtime, MemoryRuntime):
-                await runtime.close()
+                resources.append(("memory", runtime.close))
             elif standalone_analyzer_provider is not None:
-                await standalone_analyzer_provider.close()
-            log_event(logger, logging.INFO, "application.stopped")
-            for handler in logger.handlers:
-                handler.flush()
+                resources.append(("memory_analyzer_provider", standalone_analyzer_provider.close))
+            try:
+                for resource_name, closer in resources:
+                    try:
+                        await closer()
+                    except asyncio.CancelledError as exc:
+                        cancelled = exc
+                    except Exception:
+                        log_event(
+                            logger,
+                            logging.ERROR,
+                            "application.resource_close_failed",
+                            resource=resource_name,
+                        )
+                log_event(logger, logging.INFO, "application.stopped")
+            finally:
+                for handler in logger.handlers:
+                    handler.flush()
+            if cancelled is not None:
+                raise cancelled
 
     app = FastAPI(
         title=resolved_settings.app.name,

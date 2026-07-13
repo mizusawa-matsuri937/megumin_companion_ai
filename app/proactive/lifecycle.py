@@ -27,6 +27,7 @@ class ProactiveLifecycle:
         self._user_turns: set[str] = set()
         self._task: asyncio.Task[None] | None = None
         self._token: CancellationToken | None = None
+        self._cancellation_started = False
         self._closed = False
 
     def snapshot(self) -> ProactiveLifecycleSnapshot:
@@ -50,17 +51,14 @@ class ProactiveLifecycle:
             )
             self._token = token
             self._task = task
+            self._cancellation_started = False
             return True
 
     async def begin_user_turn(self, turn_id: str = "user") -> None:
         async with self._lock:
             self._user_turns.add(turn_id)
-            token = self._token
             task = self._task
-            if token is not None:
-                token.cancel()
-            if task is not None and not task.done():
-                task.cancel()
+            self._signal_cancel_locked()
         await self._join_and_clear(task)
 
     async def end_user_turn(self, turn_id: str = "user") -> None:
@@ -70,19 +68,14 @@ class ProactiveLifecycle:
     async def wait_idle(self) -> None:
         async with self._lock:
             task = self._task
-        if task is not None:
-            await asyncio.gather(task, return_exceptions=True)
+        await self._join_and_clear(task)
 
     async def cancel_active(self) -> None:
         """Cancel current proactive work without permanently closing the lifecycle."""
 
         async with self._lock:
-            token = self._token
             task = self._task
-            if token is not None:
-                token.cancel()
-            if task is not None and task is not asyncio.current_task() and not task.done():
-                task.cancel()
+            self._signal_cancel_locked()
         await self._join_and_clear(task)
 
     async def _run(
@@ -106,23 +99,39 @@ class ProactiveLifecycle:
                 if self._task is task:
                     self._task = None
                     self._token = None
+                    self._cancellation_started = False
 
     async def close(self) -> None:
         async with self._lock:
             if not self._closed:
                 self._closed = True
-            token = self._token
             task = self._task
-            if token is not None:
-                token.cancel()
-            if task is not None and task is not asyncio.current_task() and not task.done():
-                task.cancel()
+            self._signal_cancel_locked()
         await self._join_and_clear(task)
 
     async def _join_and_clear(self, task: asyncio.Task[None] | None) -> None:
         if task is not None and task is not asyncio.current_task():
-            await asyncio.gather(task, return_exceptions=True)
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                current = asyncio.current_task()
+                if current is not None and current.cancelling():
+                    raise
+            except Exception:
+                pass
         async with self._lock:
             if self._task is task and task is not None and task.done():
                 self._task = None
                 self._token = None
+                self._cancellation_started = False
+
+    def _signal_cancel_locked(self) -> None:
+        if self._cancellation_started:
+            return
+        token = self._token
+        task = self._task
+        if token is not None:
+            token.cancel()
+        if task is not None and task is not asyncio.current_task() and not task.done():
+            self._cancellation_started = True
+            task.cancel()

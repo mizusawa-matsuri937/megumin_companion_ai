@@ -24,6 +24,7 @@ class RecordingAudioPlayer:
     def __init__(self) -> None:
         self.played_indices: list[int] = []
         self.stop_count = 0
+        self.close_calls = 0
 
     async def play(self, result: AudioResult, token: CancellationToken) -> None:
         token.raise_if_cancelled()
@@ -34,7 +35,7 @@ class RecordingAudioPlayer:
         self.stop_count += 1
 
     async def close(self) -> None:
-        return None
+        self.close_calls += 1
 
 
 class CapturingLLM:
@@ -179,3 +180,41 @@ def test_text_only_proactive_turn_has_no_user_message_or_audio_work(tmp_path: Pa
     assert stop_count == 0
     assert close_calls == 1
     assert not list(tmp_path.rglob("*.wav"))
+
+
+def test_pipeline_close_attempts_all_resources_once_after_failures(tmp_path: Path) -> None:
+    async def scenario() -> tuple[tuple[object, ...], int, int, int]:
+        class FailingLLM(CapturingLLM):
+            async def close(self) -> None:
+                await super().close()
+                raise RuntimeError("private llm close failure")
+
+        class FailingTTS(MockTTSProvider):
+            def __init__(self) -> None:
+                super().__init__(tmp_path, duration_ms=1)
+                self.close_calls = 0
+
+            async def close(self) -> None:
+                self.close_calls += 1
+                raise RuntimeError("private tts close failure")
+
+        class FailingPlayer(RecordingAudioPlayer):
+            async def close(self) -> None:
+                await super().close()
+                raise RuntimeError("private player close failure")
+
+        llm = FailingLLM()
+        tts = FailingTTS()
+        player = FailingPlayer()
+        pipeline = DialoguePipeline(llm, tts, player)
+        results = await asyncio.gather(
+            pipeline.close(),
+            pipeline.close(),
+            return_exceptions=True,
+        )
+        return results, llm.close_calls, tts.close_calls, player.close_calls
+
+    results, llm_calls, tts_calls, player_calls = asyncio.run(scenario())
+
+    assert all(isinstance(result, ExceptionGroup) for result in results)
+    assert (llm_calls, tts_calls, player_calls) == (1, 1, 1)
