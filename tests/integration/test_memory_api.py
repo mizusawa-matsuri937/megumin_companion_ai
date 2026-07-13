@@ -24,6 +24,7 @@ from app.memory import (
     SourceInputMode,
 )
 from app.memory.runtime import MemoryRuntime
+from app.proactive import ProactiveRuntime
 from app.schemas import ChatCompletion, ChatRequest
 from fastapi.testclient import TestClient
 
@@ -88,12 +89,21 @@ def test_feature_memory_and_history_control_plane(tmp_path: Path) -> None:
     with TestClient(app) as client:
         runtime = app.state.memory_runtime
         assert isinstance(runtime, MemoryRuntime)
+        assert isinstance(app.state.proactive_runtime, ProactiveRuntime)
+        assert not app.state.proactive_runtime.snapshot().scheduler_active
 
         features = client.get("/api/features")
         assert features.status_code == 200
         by_name = {item["name"]: item["enabled"] for item in features.json()}
         assert by_name["recent_history"] is True
         assert by_name["long_term_memory"] is False
+
+        proactive_enabled = client.patch("/api/features/proactive", json={"enabled": True})
+        assert proactive_enabled.status_code == 200
+        assert app.state.proactive_runtime.snapshot().scheduler_active
+        proactive_disabled = client.patch("/api/features/proactive", json={"enabled": False})
+        assert proactive_disabled.status_code == 200
+        assert not app.state.proactive_runtime.snapshot().scheduler_active
 
         enabled = client.patch("/api/features/long_term_memory", json={"enabled": True})
         assert enabled.json() == {
@@ -228,3 +238,32 @@ def test_opt_in_candidate_analysis_uses_owned_provider_and_successful_user_turn_
         assert len(provider.requests) == 1
 
     assert provider.closed == 1
+
+
+def test_application_shutdown_attempts_memory_after_turn_service_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = create_app(stateful_settings(tmp_path / "shutdown.sqlite3"))
+    memory_closed = 0
+
+    with TestClient(app) as client:
+        assert client.get("/health").status_code == 200
+        runtime = app.state.memory_runtime
+        service = app.state.turn_service
+        assert isinstance(runtime, MemoryRuntime)
+        assert service is not None
+        original_memory_close = runtime.close
+
+        async def failing_service_close() -> None:
+            raise RuntimeError("synthetic private shutdown failure")
+
+        async def recording_memory_close() -> None:
+            nonlocal memory_closed
+            memory_closed += 1
+            await original_memory_close()
+
+        monkeypatch.setattr(service, "shutdown", failing_service_close)
+        monkeypatch.setattr(runtime, "close", recording_memory_close)
+
+    assert memory_closed == 1

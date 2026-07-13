@@ -1,12 +1,14 @@
 """HTTP, WebSocket, shared routing, and lifecycle smoke tests."""
 
+import asyncio
 import json
 from pathlib import Path
 
+import pytest
 from app.config import Settings
 from app.config.settings import LLMConfig, LoggingConfig, PipelineConfig
 from app.core import TurnService
-from app.main import create_app
+from app.main import _settle_resource_close, create_app
 from app.schemas import TurnState, UserMessage
 from fastapi.testclient import TestClient
 
@@ -205,3 +207,57 @@ def test_websocket_rejects_malformed_commands_without_private_echo() -> None:
             {"type": "user.message", "payload": {"text": "错误后仍可继续", "input_mode": "text"}}
         )
         assert websocket.receive_json()["type"] == "turn.accepted"
+
+
+def test_partial_startup_closes_already_started_event_sink(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Sink:
+        def __init__(self) -> None:
+            self.closed = 0
+
+        async def close(self) -> None:
+            self.closed += 1
+
+    sink = Sink()
+
+    def fail_pipeline(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("synthetic startup failure")
+
+    monkeypatch.setattr("app.main.build_vts_event_sink", lambda _settings: sink)
+    monkeypatch.setattr("app.main.build_dialogue_pipeline", fail_pipeline)
+
+    with (
+        pytest.raises(RuntimeError, match="startup failure"),
+        TestClient(create_app(quiet_settings())),
+    ):
+        pass
+    assert sink.closed == 1
+
+
+def test_lifespan_close_drains_resource_after_repeated_outer_cancellation() -> None:
+    async def scenario() -> None:
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        finished = False
+
+        async def closer() -> None:
+            nonlocal finished
+            entered.set()
+            await release.wait()
+            finished = True
+
+        settling = asyncio.create_task(_settle_resource_close(closer))
+        await entered.wait()
+        settling.cancel()
+        await asyncio.sleep(0)
+        settling.cancel()
+        await asyncio.sleep(0)
+        assert not settling.done()
+        release.set()
+        cancelled, failure = await settling
+        assert cancelled is not None
+        assert failure is None
+        assert finished
+
+    asyncio.run(scenario())

@@ -152,6 +152,16 @@ class PerceptionConfig(StrictModel):
     cloud_period_seconds: float = Field(default=60.0, gt=0.0, le=86_400.0)
 
 
+class ProactiveConfig(StrictModel):
+    minimum_score: float = Field(default=0.62, ge=0.0, le=1.0)
+    cooldown_seconds: float = Field(default=1_200.0, ge=0.0, le=604_800.0)
+    idle_minimum_seconds: float = Field(default=180.0, ge=0.0, le=86_400.0)
+    perception_max_age_seconds: float = Field(default=30.0, gt=0.0, le=3_600.0)
+    daily_limit: int = Field(default=8, ge=1, le=1_000)
+    quiet_start_hour: int = Field(default=23, ge=0, le=23)
+    quiet_end_hour: int = Field(default=8, ge=0, le=23)
+
+
 class PipelineConfig(StrictModel):
     tts_worker_count: int = Field(default=2, ge=1, le=8)
     segment_min_chars: int = Field(default=6, ge=1, le=100)
@@ -181,6 +191,7 @@ class Settings(StrictModel):
     storage: StorageConfig = Field(default_factory=StorageConfig)
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
     perception: PerceptionConfig = Field(default_factory=PerceptionConfig)
+    proactive: ProactiveConfig = Field(default_factory=ProactiveConfig)
     pipeline: PipelineConfig = Field(default_factory=PipelineConfig)
 
     _environment: dict[str, str] = PrivateAttr(default_factory=dict)

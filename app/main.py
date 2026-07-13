@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import sys
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
+from datetime import timedelta
 from pathlib import Path
 
 if __package__ in {None, ""}:
@@ -30,6 +32,35 @@ from app.config.settings import PROJECT_ROOT  # noqa: E402
 from app.core import TurnService  # noqa: E402
 from app.memory.analyzer import LLMMemoryCandidateAnalyzer  # noqa: E402
 from app.memory.runtime import MemoryRuntime, create_memory_runtime  # noqa: E402
+from app.proactive import ProactivePolicy, ProactiveRuntime  # noqa: E402
+
+
+async def _settle_resource_close(
+    closer: Callable[[], Awaitable[None]],
+) -> tuple[asyncio.CancelledError | None, Exception | None]:
+    """Drain one shared closer despite repeated cancellation of the lifespan task."""
+
+    try:
+        task = asyncio.ensure_future(closer())
+    except Exception as exc:
+        return None, exc
+    cancelled: asyncio.CancelledError | None = None
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError as exc:
+            if cancelled is None:
+                cancelled = exc
+        except Exception:
+            break
+    try:
+        task.result()
+    except asyncio.CancelledError as exc:
+        if cancelled is None:
+            cancelled = exc
+    except Exception as exc:
+        return cancelled, exc
+    return cancelled, None
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -41,6 +72,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.settings = resolved_settings
         app.state.logger = logger
         app.state.memory_runtime = None
+        app.state.proactive_runtime = None
         app.state.turn_service = None
         standalone_analyzer_provider: LLMProvider | None = None
         try:
@@ -67,12 +99,36 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 )
                 standalone_analyzer_provider = None
             app.state.memory_runtime = memory_runtime
+            proactive_runtime = (
+                ProactiveRuntime(
+                    memory_runtime.features,
+                    ProactivePolicy(
+                        timezone=resolved_settings.app.timezone,
+                        minimum_score=resolved_settings.proactive.minimum_score,
+                        cooldown=timedelta(seconds=resolved_settings.proactive.cooldown_seconds),
+                        idle_minimum=timedelta(
+                            seconds=resolved_settings.proactive.idle_minimum_seconds
+                        ),
+                        perception_max_age=timedelta(
+                            seconds=resolved_settings.proactive.perception_max_age_seconds
+                        ),
+                        daily_limit=resolved_settings.proactive.daily_limit,
+                        quiet_start_hour=resolved_settings.proactive.quiet_start_hour,
+                        quiet_end_hour=resolved_settings.proactive.quiet_end_hour,
+                    ),
+                )
+                if memory_runtime is not None
+                else None
+            )
+            app.state.proactive_runtime = proactive_runtime
+            if memory_runtime is not None and proactive_runtime is not None:
+                memory_runtime.add_feature_transition_handler(proactive_runtime.apply_feature_state)
             app.state.vts_event_sink = build_vts_event_sink(resolved_settings)
             event_sinks = (
                 (app.state.vts_event_sink,) if app.state.vts_event_sink is not None else ()
             )
             observers = (memory_runtime.observer,) if memory_runtime is not None else ()
-            app.state.turn_service = TurnService(
+            turn_service = TurnService(
                 logger,
                 build_dialogue_pipeline(
                     resolved_settings,
@@ -82,7 +138,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 ),
                 observers=observers,
                 event_sinks=event_sinks,
+                priority_controller=proactive_runtime,
             )
+            app.state.turn_service = turn_service
+            if proactive_runtime is not None:
+                proactive_runtime.start(turn_service.run_proactive)
             log_event(
                 logger,
                 logging.INFO,
@@ -93,17 +153,42 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
             yield
         finally:
+            proactive = getattr(app.state, "proactive_runtime", None)
             service = getattr(app.state, "turn_service", None)
-            if isinstance(service, TurnService):
-                await service.shutdown()
+            sink = getattr(app.state, "vts_event_sink", None)
             runtime = getattr(app.state, "memory_runtime", None)
+            cancelled: asyncio.CancelledError | None = None
+            resources: list[tuple[str, Callable[[], Awaitable[None]]]] = []
+            if isinstance(proactive, ProactiveRuntime):
+                resources.append(("proactive", proactive.close))
+            if isinstance(service, TurnService):
+                resources.append(("turn_service", service.shutdown))
+            if sink is not None:
+                # TurnService normally owns the sink; the second idempotent close
+                # also covers partial startup and an unexpected service-close error.
+                resources.append(("vts_event_sink", sink.close))
             if isinstance(runtime, MemoryRuntime):
-                await runtime.close()
+                resources.append(("memory", runtime.close))
             elif standalone_analyzer_provider is not None:
-                await standalone_analyzer_provider.close()
-            log_event(logger, logging.INFO, "application.stopped")
-            for handler in logger.handlers:
-                handler.flush()
+                resources.append(("memory_analyzer_provider", standalone_analyzer_provider.close))
+            try:
+                for resource_name, closer in resources:
+                    close_cancelled, failure = await _settle_resource_close(closer)
+                    if cancelled is None and close_cancelled is not None:
+                        cancelled = close_cancelled
+                    if failure is not None:
+                        log_event(
+                            logger,
+                            logging.ERROR,
+                            "application.resource_close_failed",
+                            resource=resource_name,
+                        )
+                log_event(logger, logging.INFO, "application.stopped")
+            finally:
+                for handler in logger.handlers:
+                    handler.flush()
+            if cancelled is not None:
+                raise cancelled
 
     app = FastAPI(
         title=resolved_settings.app.name,

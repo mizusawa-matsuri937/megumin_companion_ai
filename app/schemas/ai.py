@@ -4,12 +4,27 @@ from __future__ import annotations
 
 import base64
 import binascii
+from datetime import datetime
 from enum import StrEnum
 from typing import Annotated, Any, Literal
 
 from pydantic import Field, field_validator, model_validator
 
-from app.schemas.messages import ContractModel, DialogueSegment, TurnMetrics, prefixed_id
+from app.schemas.messages import (
+    ContractModel,
+    DialogueSegment,
+    TurnMetrics,
+    prefixed_id,
+    utc_now,
+)
+
+_PROACTIVE_OBJECTIVES = {
+    "idle": "用户已一段时间没有互动；生成一句简短、低打扰的陪伴式问候。",
+    "task_complete": "用户刚完成一项任务；生成一句简短、克制的祝贺。",
+    "emotion_shift": "系统检测到情绪状态变化；生成一句不作诊断的温和关心。",
+    "visual_change": "系统检测到已通过隐私检查的普通场景变化；生成一句不引用屏幕内容的简短回应。",
+    "scheduled": "执行一次用户预先允许的简短、低打扰问候。",
+}
 
 
 class ChatRole(StrEnum):
@@ -107,15 +122,29 @@ class PerceptionContext(ContractModel):
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     observation_id: str = Field(default_factory=lambda: prefixed_id("obs"))
     sensitive: bool = False
+    observed_at: datetime = Field(default_factory=utc_now)
+    generation: int = Field(default=0, ge=0)
+
+    @field_validator("observed_at")
+    @classmethod
+    def require_aware_observation_time(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("perception observed_at 必须包含时区")
+        return value
 
 
 class ProactiveIntent(ContractModel):
     intent_id: str = Field(default_factory=lambda: prefixed_id("intent"))
-    trigger_type: str = Field(min_length=1)
+    trigger_type: Literal["idle", "task_complete", "emotion_shift", "visual_change", "scheduled"]
     instruction: str = Field(min_length=1, max_length=2_000)
     score: float = Field(ge=0.0, le=1.0)
     voice_allowed: bool = True
-    reason: str = Field(min_length=1, max_length=500)
+    reason: str = Field(pattern=r"^[a-z][a-z0-9_]{0,63}$")
+
+    @model_validator(mode="after")
+    def replace_caller_text_with_fixed_objective(self) -> ProactiveIntent:
+        self.instruction = _PROACTIVE_OBJECTIVES[self.trigger_type]
+        return self
 
 
 class FeatureName(StrEnum):
