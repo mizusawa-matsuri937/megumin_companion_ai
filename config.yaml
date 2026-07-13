@@ -88,6 +88,7 @@ proactive:
   minimum_score: 0.62
   cooldown_seconds: 1200
   idle_minimum_seconds: 180
+  perception_max_age_seconds: 30
   daily_limit: 8
   quiet_start_hour: 23
   quiet_end_hour: 8

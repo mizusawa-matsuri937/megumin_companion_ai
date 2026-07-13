@@ -35,6 +35,34 @@ from app.memory.runtime import MemoryRuntime, create_memory_runtime  # noqa: E40
 from app.proactive import ProactivePolicy, ProactiveRuntime  # noqa: E402
 
 
+async def _settle_resource_close(
+    closer: Callable[[], Awaitable[None]],
+) -> tuple[asyncio.CancelledError | None, Exception | None]:
+    """Drain one shared closer despite repeated cancellation of the lifespan task."""
+
+    try:
+        task = asyncio.ensure_future(closer())
+    except Exception as exc:
+        return None, exc
+    cancelled: asyncio.CancelledError | None = None
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError as exc:
+            if cancelled is None:
+                cancelled = exc
+        except Exception:
+            break
+    try:
+        task.result()
+    except asyncio.CancelledError as exc:
+        if cancelled is None:
+            cancelled = exc
+    except Exception as exc:
+        return cancelled, exc
+    return cancelled, None
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     resolved_settings = settings or load_settings()
 
@@ -81,6 +109,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         idle_minimum=timedelta(
                             seconds=resolved_settings.proactive.idle_minimum_seconds
                         ),
+                        perception_max_age=timedelta(
+                            seconds=resolved_settings.proactive.perception_max_age_seconds
+                        ),
                         daily_limit=resolved_settings.proactive.daily_limit,
                         quiet_start_hour=resolved_settings.proactive.quiet_start_hour,
                         quiet_end_hour=resolved_settings.proactive.quiet_end_hour,
@@ -90,6 +121,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 else None
             )
             app.state.proactive_runtime = proactive_runtime
+            if memory_runtime is not None and proactive_runtime is not None:
+                memory_runtime.add_feature_transition_handler(proactive_runtime.apply_feature_state)
             app.state.vts_event_sink = build_vts_event_sink(resolved_settings)
             event_sinks = (
                 (app.state.vts_event_sink,) if app.state.vts_event_sink is not None else ()
@@ -140,11 +173,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 resources.append(("memory_analyzer_provider", standalone_analyzer_provider.close))
             try:
                 for resource_name, closer in resources:
-                    try:
-                        await closer()
-                    except asyncio.CancelledError as exc:
-                        cancelled = exc
-                    except Exception:
+                    close_cancelled, failure = await _settle_resource_close(closer)
+                    if cancelled is None and close_cancelled is not None:
+                        cancelled = close_cancelled
+                    if failure is not None:
                         log_event(
                             logger,
                             logging.ERROR,

@@ -137,12 +137,13 @@ def test_proactive_prompt_has_no_history_or_current_user_instruction() -> None:
         "private_scheduler_reason" not in str(message.content) for message in request.messages
     )
     assert all("0.91" not in str(message.content) for message in request.messages)
+    assert all(injection not in str(message.content) for message in request.messages)
     assert request.messages[-1].role is ChatRole.user
     envelope = json.loads(str(request.messages[-1].content).split("\n", 1)[1])
     assert envelope == {
         "proactive_intent": {
             "trigger_type": "idle",
-            "objective": injection,
+            "objective": "用户已一段时间没有互动；生成一句简短、低打扰的陪伴式问候。",
             "voice_allowed": False,
         }
     }

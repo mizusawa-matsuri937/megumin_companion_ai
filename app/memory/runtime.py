@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from datetime import datetime
 from functools import partial
@@ -330,6 +330,7 @@ class MemoryRuntime:
         self._closed = False
         self._close_task: asyncio.Task[None] | None = None
         self._feature_update_lock = asyncio.Lock()
+        self._feature_transition_handlers: set[Callable[[FeatureState], Awaitable[None]]] = set()
 
     def start(self) -> None:
         self.candidates.start()
@@ -341,6 +342,17 @@ class MemoryRuntime:
     async def list_features(self) -> list[FeatureState]:
         return self.features.list()
 
+    def add_feature_transition_handler(
+        self,
+        handler: Callable[[FeatureState], Awaitable[None]],
+    ) -> Callable[[], None]:
+        self._feature_transition_handlers.add(handler)
+
+        def unsubscribe() -> None:
+            self._feature_transition_handlers.discard(handler)
+
+        return unsubscribe
+
     async def set_feature(self, name: FeatureName, enabled: bool) -> FeatureState:
         async with self._feature_update_lock:
             if name is FeatureName.long_term_memory:
@@ -349,17 +361,19 @@ class MemoryRuntime:
                     await self.candidates.cancel_active()
                     await asyncio.to_thread(self.memory.finalize_disabled_state)
                 await self.context_source.invalidate()
-                return state
-            if name is FeatureName.recent_history:
+            elif name is FeatureName.recent_history:
                 state = await asyncio.to_thread(self.history.set_enabled, enabled)
                 await self.context_source.invalidate()
-                return state
-            return await asyncio.to_thread(
-                self.features.set,
-                name,
-                enabled,
-                updated_at=self._clock.now(),
-            )
+            else:
+                state = await asyncio.to_thread(
+                    self.features.set,
+                    name,
+                    enabled,
+                    updated_at=self._clock.now(),
+                )
+            for handler in tuple(self._feature_transition_handlers):
+                await handler(state)
+            return state
 
     async def list_memories(
         self, *, user_id: str, include_superseded: bool = False

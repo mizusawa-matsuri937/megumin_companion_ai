@@ -52,6 +52,7 @@ class ProactivePolicy:
     minimum_score: float = 0.62
     cooldown: timedelta = timedelta(minutes=20)
     idle_minimum: timedelta = timedelta(minutes=3)
+    perception_max_age: timedelta = timedelta(seconds=30)
     daily_limit: int = 8
     quiet_start_hour: int = 23
     quiet_end_hour: int = 8
@@ -65,6 +66,8 @@ class ProactivePolicy:
             raise ValueError("minimum_score 必须位于 0..1")
         if self.cooldown < timedelta(0) or self.idle_minimum < timedelta(0):
             raise ValueError("cooldown/idle_minimum 不能为负")
+        if self.perception_max_age <= timedelta(0):
+            raise ValueError("perception_max_age 必须大于 0")
         if self.daily_limit < 1:
             raise ValueError("daily_limit 必须大于 0")
         if not 0 <= self.quiet_start_hour <= 23 or not 0 <= self.quiet_end_hour <= 23:

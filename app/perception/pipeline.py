@@ -314,6 +314,7 @@ class PerceptionPipeline:
                     summary=cloud_summary,
                     confidence=min(1.0, max(0.0, cloud.confidence)),
                     sensitive=False,
+                    generation=self._vision_generation_snapshot(),
                 )
             except Exception:
                 return ObservationResult(
@@ -392,6 +393,7 @@ class PerceptionPipeline:
             summary=self._redactor.redact(analysis.summary),
             confidence=analysis.confidence,
             sensitive=False,
+            generation=self._vision_generation_snapshot(),
         )
 
     def _safe_result(
@@ -415,13 +417,13 @@ class PerceptionPipeline:
             )
         return ObservationResult(status=status, context=context, reason_code=reason_code)
 
-    @staticmethod
-    def _sensitive_context() -> PerceptionContext:
+    def _sensitive_context(self) -> PerceptionContext:
         return PerceptionContext(
             category="sensitive",
             summary="当前屏幕场景已被隐私保护规则拦截。",
             confidence=1.0,
             sensitive=True,
+            generation=self._vision_generation_snapshot(),
         )
 
     def attach_feature_subscription(self, unsubscribe: Callable[[], None]) -> None:
@@ -531,4 +533,8 @@ class PerceptionPipeline:
         with self._feature_state_lock:
             self._vision_generation += 1
             self._vision_permitted = enabled
+            return self._vision_generation
+
+    def _vision_generation_snapshot(self) -> int:
+        with self._feature_state_lock:
             return self._vision_generation

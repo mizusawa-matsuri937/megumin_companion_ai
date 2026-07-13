@@ -16,6 +16,7 @@ ProactiveRunner = Callable[[ProactiveIntent, CancellationToken], Awaitable[None]
 class ProactiveLifecycleSnapshot:
     user_turn_active: bool
     proactive_turn_active: bool
+    active_trigger_type: str | None
     closed: bool
 
 
@@ -27,6 +28,7 @@ class ProactiveLifecycle:
         self._user_turns: set[str] = set()
         self._task: asyncio.Task[None] | None = None
         self._token: CancellationToken | None = None
+        self._intent: ProactiveIntent | None = None
         self._cancellation_started = False
         self._closed = False
 
@@ -35,6 +37,9 @@ class ProactiveLifecycle:
         return ProactiveLifecycleSnapshot(
             user_turn_active=bool(self._user_turns),
             proactive_turn_active=task is not None and not task.done(),
+            active_trigger_type=(
+                self._intent.trigger_type if task is not None and self._intent is not None else None
+            ),
             closed=self._closed,
         )
 
@@ -50,6 +55,7 @@ class ProactiveLifecycle:
                 name=f"proactive-{intent.intent_id}",
             )
             self._token = token
+            self._intent = intent
             self._task = task
             self._cancellation_started = False
             return True
@@ -99,6 +105,7 @@ class ProactiveLifecycle:
                 if self._task is task:
                     self._task = None
                     self._token = None
+                    self._intent = None
                     self._cancellation_started = False
 
     async def close(self) -> None:
@@ -123,6 +130,7 @@ class ProactiveLifecycle:
             if self._task is task and task is not None and task.done():
                 self._task = None
                 self._token = None
+                self._intent = None
                 self._cancellation_started = False
 
     def _signal_cancel_locked(self) -> None:

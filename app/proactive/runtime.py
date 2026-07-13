@@ -63,7 +63,9 @@ class ProactiveRuntime:
         self._scheduler_stop = asyncio.Event()
         self._scheduler_task: asyncio.Task[None] | None = None
         self._disable_task: asyncio.Task[None] | None = None
+        self._pending_revocations: set[FeatureName] = set()
         self._close_task: asyncio.Task[None] | None = None
+        self._latest_perception: PerceptionContext | None = None
         self._closing = False
         self._unsubscribe: Callable[[], None] | None = self._features.subscribe(
             self._on_feature_changed
@@ -118,6 +120,7 @@ class ProactiveRuntime:
         self._bind_loop()
         async with self._state_lock:
             now = self._clock.now()
+            effective_perception = self._effective_perception(perception)
             self._roll_daily_counter(now.astimezone(self._timezone).date())
             lifecycle = self._lifecycle.snapshot()
             decision = self._engine.evaluate(
@@ -137,7 +140,7 @@ class ProactiveRuntime:
                     last_user_activity=self._last_user_activity,
                     last_proactive_at=self._last_proactive_at,
                     proactive_today=self._proactive_today,
-                    perception=perception,
+                    perception=effective_perception,
                 ),
             )
             if decision.intent is None:
@@ -169,6 +172,32 @@ class ProactiveRuntime:
         self._bind_loop()
         await self._lifecycle.wait_idle()
 
+    async def update_perception(self, perception: PerceptionContext | None) -> None:
+        """Publish a sanitized observation and synchronously enforce privacy revocation."""
+
+        self._bind_loop()
+        async with self._state_lock:
+            if perception is None or self._effective_perception(perception) is perception:
+                self._latest_perception = perception
+            active = self._lifecycle.snapshot()
+            must_cancel = (perception is not None and perception.sensitive) or (
+                perception is None
+                and active.active_trigger_type == ProactiveTriggerType.visual_change.value
+            )
+            if must_cancel:
+                await self._lifecycle.cancel_active()
+
+    async def apply_feature_state(self, state: FeatureState) -> None:
+        """Waitable privacy barrier used by the feature PATCH runtime."""
+
+        self._bind_loop()
+        if state.enabled or state.name not in {FeatureName.proactive, FeatureName.vision}:
+            return
+        self._schedule_revocation(state.name)
+        task = self._disable_task
+        if task is not None:
+            await asyncio.shield(task)
+
     async def close(self) -> None:
         loop = self._bind_loop()
         task = self._close_task
@@ -185,28 +214,47 @@ class ProactiveRuntime:
             return False
 
     def _on_feature_changed(self, state: FeatureState) -> None:
-        if state.name != FeatureName.proactive or state.enabled or self._closing:
+        if (
+            state.name not in {FeatureName.proactive, FeatureName.vision}
+            or state.enabled
+            or self._closing
+        ):
             return
         loop = self._loop
         if loop is None or loop.is_closed():
             return
         try:
-            loop.call_soon_threadsafe(self._schedule_disable)
+            loop.call_soon_threadsafe(self._schedule_revocation, state.name)
         except RuntimeError:
             return
 
-    def _schedule_disable(self) -> None:
+    def _schedule_revocation(self, name: FeatureName) -> None:
         if self._closing:
             return
+        self._pending_revocations.add(name)
         task = self._disable_task
         if task is not None and not task.done():
             return
         task = asyncio.create_task(
-            self._lifecycle.cancel_active(),
+            self._apply_pending_revocations(),
             name="proactive-feature-disable",
         )
         self._disable_task = task
         task.add_done_callback(self._disable_finished)
+
+    async def _apply_pending_revocations(self) -> None:
+        while self._pending_revocations:
+            revoked = set(self._pending_revocations)
+            self._pending_revocations.clear()
+            async with self._state_lock:
+                if FeatureName.vision in revoked:
+                    self._latest_perception = None
+                active = self._lifecycle.snapshot()
+                if FeatureName.proactive in revoked or (
+                    FeatureName.vision in revoked
+                    and active.active_trigger_type == ProactiveTriggerType.visual_change.value
+                ):
+                    await self._lifecycle.cancel_active()
 
     def _disable_finished(self, task: asyncio.Task[None]) -> None:
         if self._disable_task is task:
@@ -282,3 +330,11 @@ class ProactiveRuntime:
         if self._daily_date != current:
             self._daily_date = current
             self._proactive_today = 0
+
+    def _effective_perception(self, provided: PerceptionContext | None) -> PerceptionContext | None:
+        current = self._latest_perception
+        if provided is None or current is None:
+            return provided if provided is not None else current
+        provided_order = (provided.generation, provided.observed_at)
+        current_order = (current.generation, current.observed_at)
+        return provided if provided_order >= current_order else current

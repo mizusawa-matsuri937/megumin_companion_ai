@@ -677,6 +677,8 @@ def test_proactive_turn_uses_the_same_direct_cancel_registry(cancel_by_id: bool)
             )
         )
         accepted = await receive_type(queue, "proactive.accepted")
+        assert "reason" not in accepted.payload
+        assert "score" not in accepted.payload
         await pipeline.proactive_started.wait()
 
         terminal = await service.cancel(

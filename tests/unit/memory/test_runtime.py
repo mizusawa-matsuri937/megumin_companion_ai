@@ -24,6 +24,7 @@ from app.memory import (
 from app.memory.runtime import MemoryRuntime, _drainable_to_thread, create_memory_runtime
 from app.schemas import (
     FeatureName,
+    FeatureState,
     TurnMetrics,
     TurnOutcome,
     TurnState,
@@ -363,5 +364,31 @@ def test_history_revocation_retries_an_inflight_snapshot_without_old_history(
             blocker.release.set()
             await asyncio.gather(pending, return_exceptions=True)
             await runtime.close()
+
+    asyncio.run(scenario())
+
+
+def test_feature_patch_waits_for_registered_privacy_transition(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        runtime = await create_memory_runtime(str(tmp_path / "barrier.sqlite3"))
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        observed: list[tuple[FeatureName, bool]] = []
+
+        async def barrier(state: FeatureState) -> None:
+            entered.set()
+            await release.wait()
+            observed.append((state.name, state.enabled))
+
+        unsubscribe = runtime.add_feature_transition_handler(barrier)
+        patch = asyncio.create_task(runtime.set_feature(FeatureName.vision, False))
+        await entered.wait()
+        assert not patch.done()
+        release.set()
+        state = await patch
+        assert not state.enabled
+        assert observed == [(FeatureName.vision, False)]
+        unsubscribe()
+        await runtime.close()
 
     asyncio.run(scenario())

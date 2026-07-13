@@ -230,7 +230,7 @@ def test_visual_trigger_requires_enabled_vision_and_explicit_safe_context() -> N
     async def scenario() -> None:
         flags = Flags(True)
         runtime = ProactiveRuntime(flags, policy(), clock=FakeClock(NOW))
-        safe = PerceptionContext(summary="已脱敏的普通编辑器画面", sensitive=False)
+        safe = PerceptionContext(summary="已脱敏的普通编辑器画面", sensitive=False, observed_at=NOW)
         blocked = ProactiveSuppression.visual_context_unavailable
 
         async def runner(_intent: ProactiveIntent, _token: object) -> None:
@@ -241,12 +241,116 @@ def test_visual_trigger_requires_enabled_vision_and_explicit_safe_context() -> N
         ).suppression is blocked
         flags.set_feature(FeatureName.vision, True)
         assert (await runtime.submit(visual_trigger(), runner)).suppression is blocked
-        sensitive = PerceptionContext(summary="敏感画面已拦截", sensitive=True)
+        sensitive = PerceptionContext(summary="敏感画面已拦截", sensitive=True, observed_at=NOW)
         assert (
             await runtime.submit(visual_trigger(), runner, perception=sensitive)
         ).suppression is ProactiveSuppression.sensitive
         assert (await runtime.submit(visual_trigger(), runner, perception=safe)).intent is not None
         await runtime.wait_idle()
+        await runtime.close()
+
+    asyncio.run(scenario())
+
+
+def test_vision_revocation_cancels_visual_turn_but_not_nonvisual_turn() -> None:
+    async def scenario() -> None:
+        flags = Flags(True, vision_enabled=True)
+        runtime = ProactiveRuntime(flags, policy(), clock=FakeClock(NOW))
+        started = asyncio.Event()
+        cancelled = asyncio.Event()
+
+        async def runner(_intent: ProactiveIntent, _token: object) -> None:
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+
+        safe = PerceptionContext(summary="已脱敏普通场景", observed_at=NOW)
+        assert (await runtime.submit(visual_trigger(), runner, perception=safe)).intent is not None
+        await started.wait()
+        await asyncio.to_thread(flags.set_feature, FeatureName.vision, False)
+        await asyncio.wait_for(cancelled.wait(), timeout=1)
+        await runtime.wait_idle()
+
+        flags.set_feature(FeatureName.vision, True)
+        started.clear()
+        cancelled.clear()
+        assert (await runtime.submit(trigger(), runner)).intent is not None
+        await started.wait()
+        await asyncio.to_thread(flags.set_feature, FeatureName.vision, False)
+        await asyncio.sleep(0)
+        assert runtime.snapshot().proactive_turn_active
+        assert not cancelled.is_set()
+        await runtime.close()
+        assert cancelled.is_set()
+
+    asyncio.run(scenario())
+
+
+def test_sensitive_perception_update_is_a_synchronous_global_suppression() -> None:
+    async def scenario() -> None:
+        flags = Flags(True)
+        runtime = ProactiveRuntime(flags, policy(), clock=FakeClock(NOW))
+        started = asyncio.Event()
+        cancelled = asyncio.Event()
+
+        async def runner(_intent: ProactiveIntent, _token: object) -> None:
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+
+        assert (await runtime.submit(trigger(), runner)).intent is not None
+        await started.wait()
+        await runtime.update_perception(
+            PerceptionContext(summary="敏感场景已拦截", sensitive=True, observed_at=NOW)
+        )
+        assert cancelled.is_set()
+        assert (
+            await runtime.submit(trigger(), runner)
+        ).suppression is ProactiveSuppression.sensitive
+        await runtime.update_perception(
+            PerceptionContext(summary="已脱敏普通场景", observed_at=NOW)
+        )
+
+        async def complete(_intent: ProactiveIntent, _token: object) -> None:
+            return None
+
+        assert (await runtime.submit(trigger(), complete)).intent is not None
+        await runtime.wait_idle()
+        await runtime.close()
+
+    asyncio.run(scenario())
+
+
+def test_waitable_vision_feature_barrier_joins_visual_cleanup() -> None:
+    async def scenario() -> None:
+        runtime = ProactiveRuntime(Flags(True, vision_enabled=True), policy(), clock=FakeClock(NOW))
+        started = asyncio.Event()
+        cleanup_started = asyncio.Event()
+        release_cleanup = asyncio.Event()
+
+        async def runner(_intent: ProactiveIntent, _token: object) -> None:
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cleanup_started.set()
+                await release_cleanup.wait()
+
+        safe = PerceptionContext(summary="已脱敏普通场景", observed_at=NOW)
+        assert (await runtime.submit(visual_trigger(), runner, perception=safe)).intent is not None
+        await started.wait()
+        barrier = asyncio.create_task(
+            runtime.apply_feature_state(FeatureState(name=FeatureName.vision, enabled=False))
+        )
+        await cleanup_started.wait()
+        assert not barrier.done()
+        release_cleanup.set()
+        await barrier
+        assert not runtime.snapshot().proactive_turn_active
         await runtime.close()
 
     asyncio.run(scenario())

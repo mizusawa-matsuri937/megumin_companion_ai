@@ -136,7 +136,7 @@ def test_screen_and_proactive_values_fail_closed_at_runtime_boundary() -> None:
         token = CancellationToken("turn_test")
         screen = PerceptionContext(summary="我喜欢手冲咖啡")
         proactive = ProactiveIntent(
-            trigger_type="silence",
+            trigger_type="idle",
             instruction="我喜欢手冲咖啡",
             score=0.8,
             reason="test",

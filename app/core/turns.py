@@ -357,9 +357,7 @@ class TurnService:
                     payload={
                         "intent_id": intent.intent_id,
                         "trigger_type": intent.trigger_type,
-                        "score": intent.score,
                         "voice_allowed": intent.voice_allowed,
-                        "reason": intent.reason,
                     },
                 )
             )

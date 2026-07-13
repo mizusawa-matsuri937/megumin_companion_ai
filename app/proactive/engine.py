@@ -70,6 +70,9 @@ class ProactiveEngine:
                 return ProactiveSuppression.visual_context_unavailable
             if context.perception.sensitive:
                 return ProactiveSuppression.sensitive
+            age = context.now - context.perception.observed_at
+            if age < timedelta(0) or age > self._policy.perception_max_age:
+                return ProactiveSuppression.visual_context_unavailable
         elif context.perception is not None and context.perception.sensitive:
             return ProactiveSuppression.sensitive
         if context.do_not_disturb:

@@ -1,5 +1,6 @@
 """HTTP, WebSocket, shared routing, and lifecycle smoke tests."""
 
+import asyncio
 import json
 from pathlib import Path
 
@@ -7,7 +8,7 @@ import pytest
 from app.config import Settings
 from app.config.settings import LLMConfig, LoggingConfig, PipelineConfig
 from app.core import TurnService
-from app.main import create_app
+from app.main import _settle_resource_close, create_app
 from app.schemas import TurnState, UserMessage
 from fastapi.testclient import TestClient
 
@@ -232,3 +233,31 @@ def test_partial_startup_closes_already_started_event_sink(
     ):
         pass
     assert sink.closed == 1
+
+
+def test_lifespan_close_drains_resource_after_repeated_outer_cancellation() -> None:
+    async def scenario() -> None:
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        finished = False
+
+        async def closer() -> None:
+            nonlocal finished
+            entered.set()
+            await release.wait()
+            finished = True
+
+        settling = asyncio.create_task(_settle_resource_close(closer))
+        await entered.wait()
+        settling.cancel()
+        await asyncio.sleep(0)
+        settling.cancel()
+        await asyncio.sleep(0)
+        assert not settling.done()
+        release.set()
+        cancelled, failure = await settling
+        assert cancelled is not None
+        assert failure is None
+        assert finished
+
+    asyncio.run(scenario())

@@ -66,7 +66,7 @@ def test_allowed_decision_contains_only_internal_intent() -> None:
 
     assert decision.suppression is ProactiveSuppression.allowed
     assert decision.intent is not None
-    assert decision.intent.instruction == "庆祝刚完成的任务"
+    assert decision.intent.instruction == "用户刚完成一项任务；生成一句简短、克制的祝贺。"
     assert decision.intent.reason == "deterministic_policy_allowed"
 
 
@@ -92,7 +92,7 @@ def test_suppression_precedence(changes: dict[str, object], expected: ProactiveS
 
 
 def test_sensitive_perception_and_quiet_local_time_are_suppressed() -> None:
-    perception = PerceptionContext(summary="已脱敏", sensitive=True)
+    perception = PerceptionContext(summary="已脱敏", sensitive=True, observed_at=NOW)
     assert (
         ProactiveEngine().evaluate(trigger(), context(perception=perception)).suppression
         is ProactiveSuppression.sensitive
@@ -118,6 +118,19 @@ def test_idle_minimum_and_threshold_are_enforced() -> None:
         ProactiveEngine(policy).evaluate(trigger(), context()).suppression
         is ProactiveSuppression.below_threshold
     )
+
+
+def test_visual_context_must_be_fresh_and_cannot_come_from_the_future() -> None:
+    visual = trigger(trigger_type=ProactiveTriggerType.visual_change)
+    for observed_at in (NOW - timedelta(seconds=31), NOW + timedelta(seconds=1)):
+        decision = ProactiveEngine().evaluate(
+            visual,
+            context(
+                vision_enabled=True,
+                perception=PerceptionContext(summary="已脱敏", observed_at=observed_at),
+            ),
+        )
+        assert decision.suppression is ProactiveSuppression.visual_context_unavailable
 
 
 def test_invalid_timezone_and_policy_are_rejected() -> None:
