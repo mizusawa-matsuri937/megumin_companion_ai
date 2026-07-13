@@ -94,3 +94,25 @@ def test_unknown_config_key_is_reported(tmp_path: Path) -> None:
 
     with pytest.raises(ConfigurationError, match="unexpected_section"):
         load_settings(config_path, tmp_path / ".env", environ={})
+
+
+def test_stt_environment_overrides_are_typed_and_do_not_enable_by_default(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "config.yaml"
+    write_config(config_path)
+    defaults = load_settings(config_path, tmp_path / ".env", environ={})
+    assert not defaults.stt.enabled
+
+    settings = load_settings(
+        config_path,
+        tmp_path / ".env",
+        environ={
+            "MEGUMIN_STT_ENABLED": "true",
+            "MEGUMIN_STT_EXECUTABLE": "local/whisper-cli",
+            "MEGUMIN_STT_MODEL_PATH": "local/model.bin",
+        },
+    )
+    assert settings.stt.enabled
+    assert settings.stt.executable == Path("local/whisper-cli")
+    assert settings.stt.model_path == Path("local/model.bin")

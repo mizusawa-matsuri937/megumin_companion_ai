@@ -162,6 +162,31 @@ class ProactiveConfig(StrictModel):
     quiet_end_hour: int = Field(default=8, ge=0, le=23)
 
 
+class STTConfig(StrictModel):
+    enabled: bool = False
+    provider: str = "whisper_cpp"
+    executable: Path = Path("vendor/whisper.cpp/build/bin/whisper-cli")
+    model_path: Path = Path("data/models/whisper/ggml-base.bin")
+    language: str = "auto"
+    threads: int | None = Field(default=None, ge=1)
+    temporary_directory: Path = Path("data/private/stt")
+    terminate_grace_seconds: float = Field(default=0.5, gt=0.0, le=30.0)
+    max_audio_bytes: int = Field(default=64 * 1024 * 1024, ge=44)
+    max_output_bytes: int = Field(default=2 * 1024 * 1024, ge=1)
+    max_recording_seconds: float = Field(default=120.0, gt=0.0, le=3_600.0)
+    transcription_timeout_seconds: float = Field(default=60.0, gt=0.0, le=3_600.0)
+    device: int | str | None = None
+    blocksize: int = Field(default=0, ge=0)
+
+    @model_validator(mode="after")
+    def validate_runtime_names(self) -> STTConfig:
+        if not self.provider.strip():
+            raise ValueError("STT provider 不能为空")
+        if not self.language.strip():
+            raise ValueError("STT language 不能为空")
+        return self
+
+
 class PipelineConfig(StrictModel):
     tts_worker_count: int = Field(default=2, ge=1, le=8)
     segment_min_chars: int = Field(default=6, ge=1, le=100)
@@ -192,6 +217,7 @@ class Settings(StrictModel):
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
     perception: PerceptionConfig = Field(default_factory=PerceptionConfig)
     proactive: ProactiveConfig = Field(default_factory=ProactiveConfig)
+    stt: STTConfig = Field(default_factory=STTConfig)
     pipeline: PipelineConfig = Field(default_factory=PipelineConfig)
 
     _environment: dict[str, str] = PrivateAttr(default_factory=dict)
@@ -247,6 +273,9 @@ ENV_OVERRIDES: dict[str, tuple[str, str]] = {
         "memory",
         "candidate_analysis_enabled",
     ),
+    "MEGUMIN_STT_ENABLED": ("stt", "enabled"),
+    "MEGUMIN_STT_EXECUTABLE": ("stt", "executable"),
+    "MEGUMIN_STT_MODEL_PATH": ("stt", "model_path"),
 }
 
 
