@@ -57,7 +57,7 @@ def test_out_of_order_tts_is_played_in_segment_order_and_cleaned(tmp_path: Path)
         async def emit(event_type: str, payload: dict[str, object]) -> None:
             events.append((event_type, payload))
 
-        metrics = await pipeline.run(message, state, token, emit)
+        outcome = await pipeline.run(message, state, token, emit)
         ready = []
         for name, payload in events:
             if name == "audio.ready":
@@ -65,7 +65,7 @@ def test_out_of_order_tts_is_played_in_segment_order_and_cleaned(tmp_path: Path)
                 assert isinstance(index, int)
                 ready.append(index)
         await pipeline.close()
-        return ready, player.played_indices, metrics.model_dump(mode="json")
+        return ready, player.played_indices, outcome.metrics.model_dump(mode="json")
 
     ready, played, metrics = asyncio.run(scenario())
 

@@ -6,8 +6,12 @@ from collections.abc import AsyncIterator
 from typing import Protocol
 
 from app.core.cancellation import CancellationToken
-from app.schemas import UserMessage
+from app.schemas import ChatCompletion, ChatRequest
 
 
 class LLMProvider(Protocol):
-    def stream(self, message: UserMessage, token: CancellationToken) -> AsyncIterator[str]: ...
+    def stream(self, request: ChatRequest, token: CancellationToken) -> AsyncIterator[str]: ...
+
+    async def complete(self, request: ChatRequest, token: CancellationToken) -> ChatCompletion: ...
+
+    async def close(self) -> None: ...

@@ -56,6 +56,12 @@ class LoggingConfig(StrictModel):
 class LLMConfig(StrictModel):
     provider: str = "none"
     api_key_env: str | None = "COMPANION_LLM_API_KEY"
+    base_url: str = "https://api.openai.com"
+    endpoint: str = "/v1/chat/completions"
+    model: str = ""
+    timeout_seconds: float = Field(default=45.0, gt=0.0, le=300.0)
+    temperature: float = Field(default=0.8, ge=0.0, le=2.0)
+    max_tokens: int = Field(default=600, ge=1, le=100_000)
 
 
 class PipelineConfig(StrictModel):
@@ -124,6 +130,8 @@ ENV_OVERRIDES: dict[str, tuple[str, str]] = {
     "MEGUMIN_LOG_FILE": ("logging", "file_path"),
     "MEGUMIN_LLM_PROVIDER": ("llm", "provider"),
     "MEGUMIN_LLM_API_KEY_ENV": ("llm", "api_key_env"),
+    "MEGUMIN_LLM_BASE_URL": ("llm", "base_url"),
+    "MEGUMIN_LLM_MODEL": ("llm", "model"),
 }
 
 

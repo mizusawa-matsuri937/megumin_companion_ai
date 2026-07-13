@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Callable, Sequence
 
 from app.core.cancellation import CancellationToken
-from app.schemas import UserMessage
+from app.schemas import ChatCompletion, ChatRequest, UserMessage
 
 DEFAULT_RESPONSE = "哼哼，我收到了。Mock 链路正在正常工作！接下来也交给我吧。"
 
@@ -15,7 +15,7 @@ class MockLLMProvider:
         self,
         *,
         deltas: Sequence[str] | None = None,
-        response_factory: Callable[[UserMessage], str] | None = None,
+        response_factory: Callable[[ChatRequest], str] | None = None,
         chunk_size: int = 2,
         first_token_delay_seconds: float = 0.0,
         token_delay_seconds: float = 0.02,
@@ -30,10 +30,16 @@ class MockLLMProvider:
         self._first_token_delay = first_token_delay_seconds
         self._token_delay = token_delay_seconds
 
-    async def stream(self, message: UserMessage, token: CancellationToken) -> AsyncIterator[str]:
+    async def stream(
+        self, request: ChatRequest | UserMessage, token: CancellationToken
+    ) -> AsyncIterator[str]:
+        if isinstance(request, UserMessage):
+            request = ChatRequest.model_validate(
+                {"messages": [{"role": "user", "content": request.text}]}
+            )
         deltas = self._deltas
         if deltas is None:
-            response = self._response_factory(message)
+            response = self._response_factory(request)
             deltas = tuple(
                 response[index : index + self._chunk_size]
                 for index in range(0, len(response), self._chunk_size)
@@ -46,3 +52,10 @@ class MockLLMProvider:
             token.raise_if_cancelled()
             if delta:
                 yield delta
+
+    async def complete(self, request: ChatRequest, token: CancellationToken) -> ChatCompletion:
+        text = "".join([delta async for delta in self.stream(request, token)])
+        return ChatCompletion(text=text, finish_reason="stop", model="mock")
+
+    async def close(self) -> None:
+        return None

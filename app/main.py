@@ -18,52 +18,10 @@ from fastapi.responses import JSONResponse  # noqa: E402
 
 from app import __version__  # noqa: E402
 from app.api.routes import router  # noqa: E402
-from app.clients.llm import MockLLMProvider  # noqa: E402
-from app.clients.tts import MockTTSProvider  # noqa: E402
+from app.bootstrap import build_dialogue_pipeline  # noqa: E402
 from app.config import Settings, load_settings  # noqa: E402
 from app.config.logging import configure_logging, log_event  # noqa: E402
-from app.config.settings import PROJECT_ROOT  # noqa: E402
 from app.core import TurnService  # noqa: E402
-from app.pipelines import DialoguePipeline  # noqa: E402
-from app.pipelines.audio_player import (  # noqa: E402
-    AudioPlayer,
-    SilentAudioPlayer,
-    SystemAudioPlayer,
-)
-
-
-def _build_mock_pipeline(settings: Settings) -> DialoguePipeline | None:
-    if settings.llm.provider.lower() == "none":
-        return None
-    if settings.llm.provider.lower() != "mock":
-        raise RuntimeError(
-            f"当前 Phase 1 只实现 mock provider，收到：{settings.llm.provider}。"
-            "真实 OpenAI-compatible provider 将在 Day 10 接入。"
-        )
-
-    cache_path = settings.pipeline.audio_cache_path
-    if not cache_path.is_absolute():
-        cache_path = PROJECT_ROOT / cache_path
-    llm = MockLLMProvider(token_delay_seconds=settings.pipeline.mock_token_delay_ms / 1000)
-    tts = MockTTSProvider(
-        cache_path,
-        duration_ms=settings.pipeline.mock_audio_duration_ms,
-        volume=settings.pipeline.mock_audio_volume,
-    )
-    player: AudioPlayer
-    if settings.pipeline.playback_mode == "system":
-        player = SystemAudioPlayer()
-    else:
-        player = SilentAudioPlayer()
-    return DialoguePipeline(
-        llm,
-        tts,
-        player,
-        tts_worker_count=settings.pipeline.tts_worker_count,
-        segment_min_chars=settings.pipeline.segment_min_chars,
-        segment_max_chars=settings.pipeline.segment_max_chars,
-        segment_max_words=settings.pipeline.segment_max_words,
-    )
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -74,7 +32,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         logger = configure_logging(resolved_settings)
         app.state.settings = resolved_settings
         app.state.logger = logger
-        app.state.turn_service = TurnService(logger, _build_mock_pipeline(resolved_settings))
+        app.state.turn_service = TurnService(logger, build_dialogue_pipeline(resolved_settings))
         log_event(
             logger,
             logging.INFO,

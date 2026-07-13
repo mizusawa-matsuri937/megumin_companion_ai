@@ -1,6 +1,14 @@
 """LLM provider contracts and the Phase 1 deterministic mock."""
 
 from app.clients.llm.base import LLMProvider
+from app.clients.llm.errors import LLMErrorCode, LLMProviderError
 from app.clients.llm.mock_llm import MockLLMProvider
+from app.clients.llm.openai_compatible import OpenAICompatibleLLMProvider
 
-__all__ = ["LLMProvider", "MockLLMProvider"]
+__all__ = [
+    "LLMErrorCode",
+    "LLMProvider",
+    "LLMProviderError",
+    "MockLLMProvider",
+    "OpenAICompatibleLLMProvider",
+]

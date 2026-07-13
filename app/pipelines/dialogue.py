@@ -11,9 +11,18 @@ from typing import Any
 from app.clients.llm import LLMProvider
 from app.clients.tts import TTSProvider
 from app.core.cancellation import CancellationToken
+from app.core.context import ContextBuilder, DirectContextBuilder
 from app.pipelines.audio_player import AudioPlayer
 from app.pipelines.segmenter import DialogueSegmenter
-from app.schemas import AudioResult, DialogueSegment, TTSJob, TurnMetrics, TurnState, UserMessage
+from app.schemas import (
+    AudioResult,
+    DialogueSegment,
+    TTSJob,
+    TurnMetrics,
+    TurnOutcome,
+    TurnState,
+    UserMessage,
+)
 
 EventEmitter = Callable[[str, dict[str, Any]], Awaitable[None]]
 
@@ -40,6 +49,7 @@ class DialoguePipeline:
         tts: TTSProvider,
         audio_player: AudioPlayer,
         *,
+        context_builder: ContextBuilder | None = None,
         tts_worker_count: int = 2,
         segment_min_chars: int = 6,
         segment_max_chars: int = 42,
@@ -50,6 +60,7 @@ class DialoguePipeline:
         self._llm = llm
         self._tts = tts
         self._audio_player = audio_player
+        self._context_builder = context_builder or DirectContextBuilder()
         self._tts_worker_count = tts_worker_count
         self._segment_min_chars = segment_min_chars
         self._segment_max_chars = segment_max_chars
@@ -61,14 +72,17 @@ class DialoguePipeline:
         state: TurnState,
         token: CancellationToken,
         emit: EventEmitter,
-    ) -> TurnMetrics:
+    ) -> TurnOutcome:
         started = time.perf_counter()
         metrics = TurnMetrics()
+        full_text_parts: list[str] = []
+        completed_segments: list[DialogueSegment] = []
         tts_queue: asyncio.Queue[_IndexedJob | None] = asyncio.Queue()
         audio_queue: asyncio.Queue[_IndexedAudio | None] = asyncio.Queue()
         cleanup: dict[str, AudioResult] = {}
 
         async def stream_to_tts() -> None:
+            request = await self._context_builder.build(message)
             segmenter = DialogueSegmenter(
                 state.turn_id,
                 min_chars=self._segment_min_chars,
@@ -76,16 +90,33 @@ class DialoguePipeline:
                 max_words=self._segment_max_words,
             )
             try:
-                async for delta in self._llm.stream(message, token):
+                async for delta in self._llm.stream(request, token):
                     token.raise_if_cancelled()
+                    full_text_parts.append(delta)
                     if metrics.llm_first_token_ms is None:
                         metrics.llm_first_token_ms = _elapsed_ms(started)
                     await emit("assistant.delta", {"delta": delta})
                     for segment in segmenter.feed(delta):
-                        await self._queue_segment(segment, token, metrics, started, emit, tts_queue)
+                        await self._queue_segment(
+                            segment,
+                            token,
+                            metrics,
+                            completed_segments,
+                            started,
+                            emit,
+                            tts_queue,
+                        )
                 token.raise_if_cancelled()
                 for segment in segmenter.flush():
-                    await self._queue_segment(segment, token, metrics, started, emit, tts_queue)
+                    await self._queue_segment(
+                        segment,
+                        token,
+                        metrics,
+                        completed_segments,
+                        started,
+                        emit,
+                        tts_queue,
+                    )
             finally:
                 for _ in range(self._tts_worker_count):
                     await tts_queue.put(None)
@@ -209,7 +240,11 @@ class DialoguePipeline:
                 group.create_task(ordered_playback())
             token.raise_if_cancelled()
             metrics.turn_total_ms = _elapsed_ms(started)
-            return metrics
+            return TurnOutcome(
+                full_text="".join(full_text_parts),
+                segments=completed_segments,
+                metrics=metrics,
+            )
         finally:
             await self._audio_player.stop(immediate=token.cancelled)
             if cleanup:
@@ -223,6 +258,7 @@ class DialoguePipeline:
         segment: DialogueSegment,
         token: CancellationToken,
         metrics: TurnMetrics,
+        completed_segments: list[DialogueSegment],
         started: float,
         emit: EventEmitter,
         queue: asyncio.Queue[_IndexedJob | None],
@@ -231,6 +267,7 @@ class DialoguePipeline:
         if metrics.llm_first_segment_ms is None:
             metrics.llm_first_segment_ms = _elapsed_ms(started)
         metrics.segment_count += 1
+        completed_segments.append(segment)
         await emit(
             "assistant.segment",
             {**segment.model_dump(mode="json"), "is_final": True},
@@ -253,6 +290,7 @@ class DialoguePipeline:
     async def close(self) -> None:
         await self._audio_player.close()
         await self._tts.close()
+        await self._llm.close()
 
 
 def _elapsed_ms(started: float) -> int:

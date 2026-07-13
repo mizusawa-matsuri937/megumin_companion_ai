@@ -1,5 +1,19 @@
 """Cross-module schemas used by the current application phase."""
 
+from app.schemas.ai import (
+    ChatCompletion,
+    ChatMessage,
+    ChatRequest,
+    ChatRole,
+    ExternalContextBlock,
+    FeatureName,
+    FeatureState,
+    ImageURLContent,
+    PerceptionContext,
+    ProactiveIntent,
+    TextContent,
+    TurnOutcome,
+)
 from app.schemas.messages import (
     AudioResult,
     DialogueSegment,
@@ -16,12 +30,24 @@ from app.schemas.messages import (
 
 __all__ = [
     "AudioResult",
+    "ChatCompletion",
+    "ChatMessage",
+    "ChatRequest",
+    "ChatRole",
     "DialogueSegment",
+    "ExternalContextBlock",
+    "FeatureName",
+    "FeatureState",
+    "ImageURLContent",
     "InputMode",
+    "PerceptionContext",
     "PipelineEvent",
+    "ProactiveIntent",
     "TTSJob",
+    "TextContent",
     "TurnInterruptRequest",
     "TurnMetrics",
+    "TurnOutcome",
     "TurnState",
     "TurnStatus",
     "UserMessage",
