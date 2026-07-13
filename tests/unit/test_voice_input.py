@@ -122,6 +122,23 @@ class RecordingMessageSink:
         )
 
 
+class ControlledWatchdog:
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+        self.delays: list[float] = []
+        self.cancelled = 0
+
+    async def __call__(self, delay: float) -> None:
+        self.delays.append(delay)
+        self.started.set()
+        try:
+            await self.release.wait()
+        except asyncio.CancelledError:
+            self.cancelled += 1
+            raise
+
+
 class SlowStoppingSource(FakePCMSource):
     def __init__(self, *, fail: bool = False) -> None:
         super().__init__()
@@ -272,6 +289,124 @@ def test_audio_device_stays_closed_until_explicit_start_and_wav_is_temporary(
         _assert_state(recorder, RecordingState.closed)
 
     asyncio.run(scenario())
+
+
+def test_wall_clock_watchdog_stops_silent_recording_and_never_sends() -> None:
+    async def scenario() -> None:
+        source = FakePCMSource()
+        stt = InspectingSTT()
+        watchdog = ControlledWatchdog()
+        sink = RecordingMessageSink()
+        recorder = PushToTalkRecorder(
+            source,
+            stt,
+            config=PushToTalkConfig(max_recording_seconds=7),
+            watchdog_wait=watchdog,
+        )
+
+        await recorder.start()
+        await watchdog.started.wait()
+        assert watchdog.delays == [7]
+        watchdog.release.set()
+        for _ in range(20):
+            if recorder.state is RecordingState.timed_out and source.stop_count == 1:
+                break
+            await asyncio.sleep(0)
+
+        _assert_state(recorder, RecordingState.timed_out)
+        assert recorder.buffered_bytes == 0
+        assert source.callback is None
+        assert source.stop_count == 1
+        with pytest.raises(VoiceInputError) as caught:
+            await recorder.stop_and_send(sink)
+        assert caught.value.code is VoiceInputErrorCode.recording_too_long
+        assert sink.messages == []
+        assert stt.paths == []
+        _assert_state(recorder, RecordingState.idle)
+        await recorder.close()
+
+    asyncio.run(scenario())
+
+
+def test_success_cancels_and_joins_watchdog_before_single_message_send() -> None:
+    async def scenario() -> None:
+        source = FakePCMSource()
+        watchdog = ControlledWatchdog()
+        sink = RecordingMessageSink()
+        recorder = PushToTalkRecorder(
+            source,
+            InspectingSTT(),
+            watchdog_wait=watchdog,
+        )
+
+        await recorder.start()
+        await watchdog.started.wait()
+        source.emit(b"\x00\x00" * 16)
+        await asyncio.sleep(0)
+        state = await recorder.stop_and_send(sink)
+
+        assert len(sink.messages) == 1
+        assert state.source_message_id == sink.messages[0].message_id
+        assert watchdog.cancelled == 1
+        assert recorder._recording_watchdog is None
+        assert source.stop_count == 1
+        watchdog.release.set()
+        await asyncio.sleep(0)
+        assert source.stop_count == 1
+        await recorder.close()
+
+    asyncio.run(scenario())
+
+
+def test_timeout_races_join_source_cleanup_before_stop_or_close_returns() -> None:
+    async def stop_scenario() -> None:
+        source = SlowStoppingSource()
+        watchdog = ControlledWatchdog()
+        sink = RecordingMessageSink()
+        recorder = PushToTalkRecorder(
+            source,
+            InspectingSTT(),
+            watchdog_wait=watchdog,
+        )
+        await recorder.start()
+        await watchdog.started.wait()
+        watchdog.release.set()
+        await source.stop_started.wait()
+
+        stopping = asyncio.create_task(recorder.stop_and_send(sink))
+        await asyncio.sleep(0)
+        assert not stopping.done()
+        source.release_stop.set()
+        with pytest.raises(VoiceInputError) as caught:
+            await stopping
+        assert caught.value.code is VoiceInputErrorCode.recording_too_long
+        assert source.stop_count == 1
+        assert sink.messages == []
+        assert recorder.state is RecordingState.idle
+        await recorder.close()
+
+    async def close_scenario() -> None:
+        source = SlowStoppingSource()
+        watchdog = ControlledWatchdog()
+        stt = InspectingSTT()
+        recorder = PushToTalkRecorder(source, stt, watchdog_wait=watchdog)
+        await recorder.start()
+        await watchdog.started.wait()
+        watchdog.release.set()
+        await source.stop_started.wait()
+
+        closing = asyncio.create_task(recorder.close())
+        await asyncio.sleep(0)
+        assert not closing.done()
+        source.release_stop.set()
+        await closing
+        assert recorder.state is RecordingState.closed
+        assert recorder.buffered_bytes == 0
+        assert stt.paths == []
+        assert stt.closed
+
+    asyncio.run(stop_scenario())
+    asyncio.run(close_scenario())
 
 
 def test_cancel_during_recording_discards_pcm_without_invoking_stt() -> None:

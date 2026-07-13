@@ -12,6 +12,7 @@ import importlib
 import tempfile
 import wave
 from collections.abc import Awaitable, Callable
+from contextlib import suppress
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -33,6 +34,7 @@ PCMCallback = Callable[[bytes], None]
 class RecordingState(StrEnum):
     idle = "idle"
     recording = "recording"
+    timed_out = "timed_out"
     transcribing = "transcribing"
     closed = "closed"
 
@@ -148,13 +150,17 @@ class PushToTalkRecorder:
         stt: STTProvider,
         *,
         config: PushToTalkConfig | None = None,
+        watchdog_wait: Callable[[float], Awaitable[None]] | None = None,
     ) -> None:
         self._source = source
         self._stt = stt
         self._config = config or PushToTalkConfig()
+        self._watchdog_wait = watchdog_wait or asyncio.sleep
         self._state = RecordingState.idle
         self._pcm = bytearray()
         self._recording_id: str | None = None
+        self._recording_limit: asyncio.Event | None = None
+        self._recording_watchdog: asyncio.Task[None] | None = None
         self._transcription_task: asyncio.Task[TranscriptionResult] | None = None
         self._operation_task: asyncio.Task[Any] | None = None
         self._send_tasks: set[asyncio.Task[TurnState]] = set()
@@ -186,6 +192,8 @@ class PushToTalkRecorder:
             self._limit_error = None
             self._cancel_requested = False
             self._recording_id = uuid4().hex
+            recording_limit = asyncio.Event()
+            self._recording_limit = recording_limit
             recording_id = self._recording_id
             self._loop = asyncio.get_running_loop()
             self._operation_task = owner
@@ -207,11 +215,18 @@ class PushToTalkRecorder:
                     or self._recording_id != recording_id
                 ):
                     raise asyncio.CancelledError
+                created_watchdog = asyncio.create_task(
+                    self._watch_recording_limit(recording_id, recording_limit),
+                    name=f"voice-recording-watchdog-{recording_id}",
+                )
+                self._recording_watchdog = created_watchdog
+                created_watchdog.add_done_callback(_consume_task_result)
         except BaseException:
             async with self._lock:
+                watchdog_to_stop = self._recording_watchdog
                 if self._recording_id == recording_id:
                     self._reset_to_idle()
-            await _finish_cleanup(self._source.stop())
+            await _finish_cleanup(_stop_capture(self._source, watchdog_to_stop))
             raise
         finally:
             async with self._lock:
@@ -229,6 +244,8 @@ class PushToTalkRecorder:
             self._limit_error = VoiceInputError(
                 VoiceInputErrorCode.recording_too_long, "录音超过最大允许时长"
             )
+            if self._recording_limit is not None:
+                self._recording_limit.set()
             return
         accepted = min(len(frame), remaining)
         accepted -= accepted % frame_size
@@ -238,6 +255,59 @@ class PushToTalkRecorder:
             self._limit_error = VoiceInputError(
                 VoiceInputErrorCode.recording_too_long, "录音超过最大允许时长"
             )
+            if self._recording_limit is not None:
+                self._recording_limit.set()
+
+    async def _watch_recording_limit(
+        self,
+        recording_id: str,
+        limit_reached: asyncio.Event,
+    ) -> None:
+        timer = asyncio.create_task(
+            self._wait_for_recording_deadline(),
+            name=f"voice-recording-timer-{recording_id}",
+        )
+        overflow = asyncio.create_task(
+            limit_reached.wait(),
+            name=f"voice-recording-overflow-{recording_id}",
+        )
+        try:
+            done, pending = await asyncio.wait(
+                (timer, overflow),
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+            for task in done:
+                if not task.cancelled():
+                    # A broken timer must fail closed and stop capture.
+                    with suppress(Exception):
+                        task.result()
+            await self._expire_recording(recording_id)
+        finally:
+            for task in (timer, overflow):
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(timer, overflow, return_exceptions=True)
+
+    async def _wait_for_recording_deadline(self) -> None:
+        await self._watchdog_wait(self._config.max_recording_seconds)
+
+    async def _expire_recording(self, recording_id: str) -> None:
+        async with self._lock:
+            if self._state is not RecordingState.recording or self._recording_id != recording_id:
+                return
+            self._state = RecordingState.timed_out
+            self._limit_error = VoiceInputError(
+                VoiceInputErrorCode.recording_too_long,
+                "录音超过最大允许时长",
+            )
+            _wipe(self._pcm)
+            self._pcm.clear()
+            self._recording_id = None
+            self._recording_limit = None
+        await _finish_cleanup(self._source.stop())
 
     async def stop(
         self,
@@ -248,15 +318,21 @@ class PushToTalkRecorder:
         owner = asyncio.current_task()
         assert owner is not None
         async with self._lock:
-            if self._state is not RecordingState.recording:
+            timed_out = self._state is RecordingState.timed_out
+            if self._state not in {RecordingState.recording, RecordingState.timed_out}:
                 raise VoiceInputError(VoiceInputErrorCode.invalid_state, "当前没有正在进行的录音")
             self._state = RecordingState.transcribing
             pcm, self._pcm = self._pcm, bytearray()
             limit_error = self._limit_error
+            watchdog = self._recording_watchdog
             self._recording_id = None
+            self._recording_limit = None
             self._operation_task = owner
         try:
-            await _finish_cleanup(self._source.stop())
+            if timed_out:
+                await _finish_cleanup(_join_cleanup_task(watchdog))
+            else:
+                await _finish_cleanup(_stop_capture(self._source, watchdog))
             if limit_error is not None:
                 raise limit_error
             if not pcm:
@@ -299,6 +375,8 @@ class PushToTalkRecorder:
             _wipe(pcm)
             async with self._lock:
                 self._transcription_task = None
+                if self._recording_watchdog is watchdog:
+                    self._recording_watchdog = None
                 if self._operation_task is owner:
                     self._operation_task = None
                 if self._state is not RecordingState.closed:
@@ -345,15 +423,23 @@ class PushToTalkRecorder:
             state = self._state
             transcription = self._transcription_task
             operation = self._operation_task
+            watchdog = self._recording_watchdog
             if state is RecordingState.recording:
                 self._state = RecordingState.idle
                 _wipe(self._pcm)
                 self._pcm.clear()
                 self._recording_id = None
+                self._recording_limit = None
                 self._limit_error = None
                 self._cancel_requested = True
                 if operation is not None and not operation.done():
                     operation.cancel()
+            elif state is RecordingState.timed_out:
+                self._state = RecordingState.idle
+                self._recording_id = None
+                self._recording_limit = None
+                self._limit_error = None
+                self._cancel_requested = True
             elif state is RecordingState.transcribing:
                 self._cancel_requested = True
                 if transcription is not None and not transcription.done():
@@ -361,8 +447,17 @@ class PushToTalkRecorder:
         if state is RecordingState.recording:
             if operation is not None and operation is not asyncio.current_task():
                 await _join_task(operation)
-            await _finish_cleanup(self._source.stop())
+            await _finish_cleanup(_stop_capture(self._source, watchdog))
             async with self._lock:
+                if self._recording_watchdog is watchdog:
+                    self._recording_watchdog = None
+                if self._state is not RecordingState.closed:
+                    self._reset_to_idle()
+        elif state is RecordingState.timed_out:
+            await _finish_cleanup(_join_cleanup_task(watchdog))
+            async with self._lock:
+                if self._recording_watchdog is watchdog:
+                    self._recording_watchdog = None
                 if self._state is not RecordingState.closed:
                     self._reset_to_idle()
         elif state is RecordingState.transcribing:
@@ -376,6 +471,8 @@ class PushToTalkRecorder:
         _wipe(self._pcm)
         self._pcm.clear()
         self._recording_id = None
+        self._recording_limit = None
+        self._recording_watchdog = None
         self._limit_error = None
         self._cancel_requested = False
 
@@ -406,6 +503,8 @@ class PushToTalkRecorder:
             _wipe(self._pcm)
             self._pcm.clear()
             self._recording_id = None
+            self._recording_limit = None
+            self._recording_watchdog = None
             self._loop = None
         errors = [
             result
@@ -433,6 +532,22 @@ async def _join_task(task: asyncio.Task[Any]) -> None:
             continue
         except Exception:
             return
+
+
+async def _join_cleanup_task(task: asyncio.Task[Any] | None) -> None:
+    if task is not None:
+        await task
+
+
+async def _stop_capture(
+    source: PCMInputSource,
+    watchdog: asyncio.Task[None] | None,
+) -> None:
+    if watchdog is not None and not watchdog.done():
+        watchdog.cancel()
+    if watchdog is not None:
+        await asyncio.gather(watchdog, return_exceptions=True)
+    await source.stop()
 
 
 async def _drainable_to_thread(operation: Callable[[], Any]) -> Any:
@@ -470,3 +585,12 @@ async def _finish_cleanup(operation: Awaitable[Any]) -> Any:
 def _wipe(value: bytearray) -> None:
     if value:
         value[:] = b"\x00" * len(value)
+
+
+def _consume_task_result(task: asyncio.Task[Any]) -> None:
+    if task.cancelled():
+        return
+    try:
+        task.exception()
+    except asyncio.CancelledError:
+        return
