@@ -14,7 +14,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from contextlib import suppress
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import TypeVar
+from typing import Any, TypeVar
 from uuid import uuid4
 
 import httpx
@@ -133,6 +133,10 @@ class GPTSoVITSProvider:
         self._cache_results: dict[str, Path] = {}
         self._key_locks: dict[str, _KeyLock] = {}
         self._cache_maintenance_lock = asyncio.Lock()
+        self._synthesis_tasks: set[asyncio.Task[AudioResult]] = set()
+        self._synthesis_cancellations: set[asyncio.Task[AudioResult]] = set()
+        self._synthesis_calls: set[asyncio.Future[None]] = set()
+        self._close_task: asyncio.Task[None] | None = None
         self._closed = False
 
     async def probe(self) -> GPTSoVITSProbe:
@@ -165,6 +169,37 @@ class GPTSoVITSProvider:
         token.raise_if_cancelled()
         if self._closed:
             return self._failure(job, "tts_closed")
+
+        # Register the worker and its public call completion without yielding. A
+        # concurrently scheduled close therefore either sees this operation or
+        # flips ``_closed`` first and makes the call fail closed above.
+        call_done: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        worker = asyncio.create_task(
+            self._synthesize(job, segment_index=segment_index, token=token),
+            name=f"gpt-sovits-synthesis-{job.job_id}",
+        )
+        self._synthesis_calls.add(call_done)
+        self._synthesis_tasks.add(worker)
+        worker.add_done_callback(self._synthesis_finished)
+        try:
+            return await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            self._cancel_synthesis(worker)
+            await _join_task(worker)
+            raise
+        finally:
+            self._synthesis_calls.discard(call_done)
+            if not call_done.done():
+                call_done.set_result(None)
+
+    async def _synthesize(
+        self,
+        job: TTSJob,
+        *,
+        segment_index: int,
+        token: CancellationToken,
+    ) -> AudioResult:
+        token.raise_if_cancelled()
 
         preset = self._presets.get(job.style, self._presets[self._default_preset])
         request_payload = asdict(preset)
@@ -202,6 +237,8 @@ class GPTSoVITSProvider:
         final_path = self._result_path(job, segment_index)
         part_path = final_path.with_name(f".{final_path.name}.{uuid4().hex}.part")
         response: httpx.Response | None = None
+        replace_started = False
+        keep_final = False
         try:
             request = self._client.build_request("POST", self._tts_endpoint, json=request_payload)
             response = await _await_with_token(self._client.send(request, stream=True), token)
@@ -218,14 +255,15 @@ class GPTSoVITSProvider:
 
             final_path.parent.mkdir(parents=True, exist_ok=True)
             await self._write_response(response, part_path, token)
-            sample_rate, duration_ms = await asyncio.to_thread(_inspect_wave, part_path)
+            sample_rate, duration_ms = await _run_to_thread(_inspect_wave, part_path)
             token.raise_if_cancelled()
-            await asyncio.to_thread(os.replace, part_path, final_path)
+            replace_started = True
+            await _run_to_thread(os.replace, part_path, final_path)
             self._paths.add(final_path)
             if token.cancelled:
                 await self._discard_path(final_path)
                 token.raise_if_cancelled()
-            return AudioResult(
+            result = AudioResult(
                 job_id=job.job_id,
                 turn_id=job.turn_id,
                 segment_id=job.segment_id,
@@ -234,6 +272,8 @@ class GPTSoVITSProvider:
                 sample_rate=sample_rate,
                 duration_ms=duration_ms,
             )
+            keep_final = True
+            return result
         except _AudioTooLargeError:
             return self._failure(job, "tts_response_too_large")
         except _AudioValidationError:
@@ -243,10 +283,27 @@ class GPTSoVITSProvider:
         except httpx.RequestError:
             return self._failure(job, "tts_unavailable")
         finally:
-            if response is not None:
-                await response.aclose()
-            await asyncio.to_thread(part_path.unlink, missing_ok=True)
-            await asyncio.to_thread(_remove_empty_parent, part_path.parent)
+            await _finish_cleanup(
+                self._cleanup_uncached(
+                    response,
+                    part_path,
+                    final_path if replace_started and not keep_final else None,
+                )
+            )
+
+    async def _cleanup_uncached(
+        self,
+        response: httpx.Response | None,
+        part_path: Path,
+        incomplete_final_path: Path | None,
+    ) -> None:
+        if response is not None:
+            await response.aclose()
+        await _run_to_thread(part_path.unlink, missing_ok=True)
+        if incomplete_final_path is not None:
+            self._paths.discard(incomplete_final_path)
+            await _run_to_thread(incomplete_final_path.unlink, missing_ok=True)
+        await _run_to_thread(_remove_empty_parent, part_path.parent)
 
     async def _write_response(
         self,
@@ -320,20 +377,20 @@ class GPTSoVITSProvider:
         async with self._cache_maintenance_lock:
             token.raise_if_cancelled()
             try:
-                if await asyncio.to_thread(path.is_symlink):
-                    await asyncio.to_thread(_safe_unlink, path)
+                if await _run_to_thread(path.is_symlink):
+                    await _run_to_thread(_safe_unlink, path)
                     return None
-                file_stat = await asyncio.to_thread(path.stat)
+                file_stat = await _run_to_thread(path.stat)
                 if file_stat.st_size > min(self._max_audio_bytes, self._cache_max_bytes):
-                    await asyncio.to_thread(_safe_unlink, path)
+                    await _run_to_thread(_safe_unlink, path)
                     return None
                 if time.time() - file_stat.st_mtime > self._cache_ttl_seconds:
-                    await asyncio.to_thread(_safe_unlink, path)
+                    await _run_to_thread(_safe_unlink, path)
                     return None
-                sample_rate, duration_ms = await asyncio.to_thread(_inspect_wave, path)
-                await asyncio.to_thread(os.utime, path, None)
+                sample_rate, duration_ms = await _run_to_thread(_inspect_wave, path)
+                await _run_to_thread(os.utime, path, None)
             except (FileNotFoundError, OSError, _AudioValidationError):
-                await asyncio.to_thread(_safe_unlink, path)
+                await _run_to_thread(_safe_unlink, path)
                 return None
             token.raise_if_cancelled()
             result = AudioResult(
@@ -363,43 +420,75 @@ class GPTSoVITSProvider:
         assert result.audio_path is not None
         source = result.audio_path
         cached_result: AudioResult | None = None
+        cache_path: Path | None = None
+        cache_part: Path | None = None
+        replaced = False
         try:
-            source_size = (await asyncio.to_thread(source.stat)).st_size
+            source_size = (await _run_to_thread(source.stat)).st_size
             if source_size > self._cache_max_bytes:
                 return result
             cache_path = self._cache_dir / f"{cache_key}.wav"
             cache_part = cache_path.with_name(f".{cache_path.name}.{uuid4().hex}.part")
-            replaced = False
             async with self._cache_maintenance_lock:
                 try:
                     cache_path.parent.mkdir(parents=True, exist_ok=True)
                     token.raise_if_cancelled()
-                    await asyncio.to_thread(shutil.copyfile, source, cache_part)
+                    await _run_to_thread(shutil.copyfile, source, cache_part)
                     token.raise_if_cancelled()
-                    await asyncio.to_thread(os.replace, cache_part, cache_path)
+                    await _run_to_thread(os.replace, cache_part, cache_path)
                     replaced = True
                     token.raise_if_cancelled()
                     cached_result = result.model_copy(update={"audio_path": cache_path})
                     self._cache_results[cached_result.audio_id] = cache_path
                     await self._cleanup_cache_locked()
                 except BaseException:
-                    if cached_result is not None:
-                        self._cache_results.pop(cached_result.audio_id, None)
-                    await asyncio.to_thread(_safe_unlink, cache_part)
-                    if replaced:
-                        await asyncio.to_thread(_safe_unlink, cache_path)
+                    await _finish_cleanup(
+                        self._cleanup_failed_promotion(
+                            cached_result,
+                            cache_part,
+                            cache_path if replaced else None,
+                        )
+                    )
                     raise
             assert cached_result is not None
             await self._discard_path(source)
             return cached_result
         except asyncio.CancelledError:
-            if cached_result is not None:
-                self._cache_results.pop(cached_result.audio_id, None)
-            await self._discard_path(source)
-            await self._cleanup_cache()
+            await _finish_cleanup(
+                self._cleanup_cancelled_promotion(
+                    cached_result,
+                    source,
+                    cache_part,
+                    cache_path if replaced else None,
+                )
+            )
             raise
         except OSError:
             return result
+
+    async def _cleanup_failed_promotion(
+        self,
+        cached_result: AudioResult | None,
+        cache_part: Path | None,
+        cache_path: Path | None,
+    ) -> None:
+        if cached_result is not None:
+            self._cache_results.pop(cached_result.audio_id, None)
+        if cache_part is not None:
+            await _run_to_thread(_safe_unlink, cache_part)
+        if cache_path is not None:
+            await _run_to_thread(_safe_unlink, cache_path)
+
+    async def _cleanup_cancelled_promotion(
+        self,
+        cached_result: AudioResult | None,
+        source: Path,
+        cache_part: Path | None,
+        cache_path: Path | None,
+    ) -> None:
+        await self._cleanup_failed_promotion(cached_result, cache_part, cache_path)
+        await self._discard_path(source)
+        await self._cleanup_cache()
 
     async def _cleanup_cache(self) -> None:
         if not self._cache_enabled or self._cache_dir is None:
@@ -410,7 +499,7 @@ class GPTSoVITSProvider:
     async def _cleanup_cache_locked(self) -> None:
         assert self._cache_dir is not None
         leased = frozenset(self._cache_results.values())
-        await asyncio.to_thread(
+        await _run_to_thread(
             _cleanup_cache_directory,
             self._cache_dir,
             self._cache_max_bytes,
@@ -460,22 +549,50 @@ class GPTSoVITSProvider:
 
     async def _discard_path(self, path: Path) -> None:
         self._paths.discard(path)
-        await asyncio.to_thread(path.unlink, missing_ok=True)
-        await asyncio.to_thread(_remove_empty_parent, path.parent)
+        await _run_to_thread(path.unlink, missing_ok=True)
+        await _run_to_thread(_remove_empty_parent, path.parent)
 
     async def close(self) -> None:
-        if self._closed:
-            return
-        self._closed = True
+        task = self._close_task
+        if task is None:
+            # No await occurs before the terminal state is visible, so new
+            # synthesis calls cannot slip between close and task registration.
+            self._closed = True
+            task = asyncio.create_task(self._close(), name="gpt-sovits-close")
+            self._close_task = task
+        await asyncio.shield(task)
+
+    async def _close(self) -> None:
+        while self._synthesis_tasks or self._synthesis_calls:
+            workers = tuple(self._synthesis_tasks)
+            calls = tuple(self._synthesis_calls)
+            for worker in workers:
+                self._cancel_synthesis(worker)
+            await asyncio.gather(
+                *(_join_task(worker) for worker in workers),
+                *(asyncio.shield(call) for call in calls),
+                return_exceptions=True,
+            )
+
         self._cache_results.clear()
         paths = tuple(self._paths)
         self._paths.clear()
-        await asyncio.gather(*(asyncio.to_thread(path.unlink, missing_ok=True) for path in paths))
+        await asyncio.gather(*(_run_to_thread(path.unlink, missing_ok=True) for path in paths))
         parents = {path.parent for path in paths}
-        await asyncio.gather(*(asyncio.to_thread(_remove_empty_parent, path) for path in parents))
+        await asyncio.gather(*(_run_to_thread(_remove_empty_parent, path) for path in parents))
         await self._cleanup_cache()
         if self._owns_client:
             await self._client.aclose()
+
+    def _cancel_synthesis(self, task: asyncio.Task[AudioResult]) -> None:
+        if task.done() or task in self._synthesis_cancellations:
+            return
+        self._synthesis_cancellations.add(task)
+        task.cancel()
+
+    def _synthesis_finished(self, task: asyncio.Task[AudioResult]) -> None:
+        self._synthesis_tasks.discard(task)
+        self._synthesis_cancellations.discard(task)
 
 
 async def _await_with_token(awaitable: Awaitable[_T], token: CancellationToken) -> _T:
@@ -493,7 +610,53 @@ async def _await_with_token(awaitable: Awaitable[_T], token: CancellationToken) 
         for task in (operation, cancellation):
             if not task.done():
                 task.cancel()
-        await asyncio.gather(operation, cancellation, return_exceptions=True)
+        await _finish_cleanup(asyncio.gather(operation, cancellation, return_exceptions=True))
+
+
+async def _run_to_thread(
+    function: Callable[..., _T],
+    /,
+    *args: Any,
+    **kwargs: Any,
+) -> _T:
+    """Run a file operation to completion even if its waiter is cancelled."""
+
+    return await _finish_cleanup(asyncio.to_thread(function, *args, **kwargs))
+
+
+async def _finish_cleanup(awaitable: Awaitable[_T]) -> _T:
+    """Drain one owned operation before preserving any cancellation request."""
+
+    task = asyncio.ensure_future(awaitable)
+    cancelled = False
+    while True:
+        try:
+            result = await asyncio.shield(task)
+            if cancelled:
+                raise asyncio.CancelledError
+            return result
+        except asyncio.CancelledError:
+            cancelled = True
+            if task.done():
+                await asyncio.gather(task, return_exceptions=True)
+                raise
+
+
+async def _join_task(task: asyncio.Task[Any]) -> None:
+    """Join a task without letting repeated waiter cancellation orphan it."""
+
+    cancelled = False
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            if not task.done():
+                cancelled = True
+        except Exception:
+            break
+    await asyncio.gather(task, return_exceptions=True)
+    if cancelled:
+        raise asyncio.CancelledError
 
 
 def _content_length(response: httpx.Response) -> int | None:

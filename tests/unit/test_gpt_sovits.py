@@ -449,6 +449,172 @@ def test_cancellation_interrupts_blocked_stream_and_cleans_partial(tmp_path: Pat
     asyncio.run(scenario())
 
 
+def test_close_cancels_and_joins_inflight_synthesis_before_returning(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        request_started = asyncio.Event()
+        request_cleanup_started = asyncio.Event()
+        finish_request_cleanup = asyncio.Event()
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            request_started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                # Model a transport that needs asynchronous cleanup and even
+                # suppresses its own cancellation before producing a response.
+                request_cleanup_started.set()
+                await finish_request_cleanup.wait()
+                return httpx.Response(
+                    200,
+                    headers={"content-type": "audio/wav"},
+                    content=_wave_bytes(),
+                    request=request,
+                )
+            raise AssertionError("blocking request unexpectedly completed")
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        output_directory = tmp_path / "ephemeral"
+        cache_directory = tmp_path / "persistent"
+        provider = GPTSoVITSProvider(
+            "http://gpt-sovits.local",
+            output_directory,
+            _presets(),
+            cache_enabled=True,
+            cache_dir=cache_directory,
+            client=client,
+        )
+        token = CancellationToken("turn_close_race")
+        synthesis = asyncio.create_task(
+            provider.synthesize(_job(token), segment_index=0, token=token)
+        )
+        await asyncio.wait_for(request_started.wait(), timeout=1)
+
+        first_close = asyncio.create_task(provider.close())
+        await asyncio.wait_for(request_cleanup_started.wait(), timeout=1)
+        second_close = asyncio.create_task(provider.close())
+        await asyncio.sleep(0)
+
+        rejected = await provider.synthesize(_job(token), segment_index=1, token=token)
+        assert rejected.error_code == "tts_closed"
+        assert not first_close.done()
+        assert not second_close.done()
+
+        # Cancelling one waiter must not cancel the shared close operation.
+        first_close.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await first_close
+        assert not second_close.done()
+
+        finish_request_cleanup.set()
+        await asyncio.wait_for(second_close, timeout=1)
+        with pytest.raises(asyncio.CancelledError):
+            await synthesis
+        await provider.close()
+
+        assert list(tmp_path.rglob("*.wav")) == []
+        assert list(tmp_path.rglob("*.part")) == []
+        assert not cache_directory.exists()
+        await client.aclose()
+
+    asyncio.run(scenario())
+
+
+def test_repeated_cancellation_waits_for_synthesis_cleanup(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        request_started = asyncio.Event()
+        cleanup_started = asyncio.Event()
+        finish_cleanup = asyncio.Event()
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            request_started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cleanup_started.set()
+                await finish_cleanup.wait()
+            raise AssertionError("blocking request unexpectedly completed")
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        provider = GPTSoVITSProvider(
+            "http://gpt-sovits.local",
+            tmp_path,
+            _presets(),
+            client=client,
+        )
+        token = CancellationToken("turn_repeated_cancel")
+        synthesis = asyncio.create_task(
+            provider.synthesize(_job(token), segment_index=0, token=token)
+        )
+        await asyncio.wait_for(request_started.wait(), timeout=1)
+
+        synthesis.cancel()
+        await asyncio.wait_for(cleanup_started.wait(), timeout=1)
+        synthesis.cancel()
+        await asyncio.sleep(0)
+        assert not synthesis.done()
+
+        finish_cleanup.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(synthesis, timeout=1)
+        await provider.close()
+
+        assert list(tmp_path.rglob("*.wav")) == []
+        assert list(tmp_path.rglob("*.part")) == []
+        await client.aclose()
+
+    asyncio.run(scenario())
+
+
+def test_close_during_cache_promotion_removes_wav_and_partial_files(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def scenario() -> None:
+        async def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                headers={"content-type": "audio/wav"},
+                content=_wave_bytes(),
+                request=request,
+            )
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        provider = GPTSoVITSProvider(
+            "http://gpt-sovits.local",
+            tmp_path / "ephemeral",
+            _presets(),
+            cache_enabled=True,
+            cache_dir=tmp_path / "persistent",
+            client=client,
+        )
+        promotion_started = asyncio.Event()
+        maintenance_calls = 0
+
+        async def block_first_cache_maintenance() -> None:
+            nonlocal maintenance_calls
+            maintenance_calls += 1
+            if maintenance_calls == 1:
+                promotion_started.set()
+                await asyncio.Event().wait()
+
+        monkeypatch.setattr(provider, "_cleanup_cache_locked", block_first_cache_maintenance)
+        token = CancellationToken("turn_cache_close")
+        synthesis = asyncio.create_task(
+            provider.synthesize(_job(token), segment_index=0, token=token)
+        )
+        await asyncio.wait_for(promotion_started.wait(), timeout=1)
+
+        await asyncio.wait_for(provider.close(), timeout=1)
+        with pytest.raises(asyncio.CancelledError):
+            await synthesis
+
+        assert list(tmp_path.rglob("*.wav")) == []
+        assert list(tmp_path.rglob("*.part")) == []
+        await client.aclose()
+
+    asyncio.run(scenario())
+
+
 def test_close_cleans_all_outputs_and_discard_ignores_unowned_path(tmp_path: Path) -> None:
     async def scenario() -> None:
         async def handler(request: httpx.Request) -> httpx.Response:
