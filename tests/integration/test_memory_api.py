@@ -90,13 +90,20 @@ def test_feature_memory_and_history_control_plane(tmp_path: Path) -> None:
         runtime = app.state.memory_runtime
         assert isinstance(runtime, MemoryRuntime)
         assert isinstance(app.state.proactive_runtime, ProactiveRuntime)
-        assert app.state.proactive_runtime.snapshot().scheduler_active
+        assert not app.state.proactive_runtime.snapshot().scheduler_active
 
         features = client.get("/api/features")
         assert features.status_code == 200
         by_name = {item["name"]: item["enabled"] for item in features.json()}
         assert by_name["recent_history"] is True
         assert by_name["long_term_memory"] is False
+
+        proactive_enabled = client.patch("/api/features/proactive", json={"enabled": True})
+        assert proactive_enabled.status_code == 200
+        assert app.state.proactive_runtime.snapshot().scheduler_active
+        proactive_disabled = client.patch("/api/features/proactive", json={"enabled": False})
+        assert proactive_disabled.status_code == 200
+        assert not app.state.proactive_runtime.snapshot().scheduler_active
 
         enabled = client.patch("/api/features/long_term_memory", json={"enabled": True})
         assert enabled.json() == {

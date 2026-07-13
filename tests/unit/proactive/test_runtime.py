@@ -598,16 +598,74 @@ def test_scheduler_is_idempotent_and_never_outputs_while_feature_is_off() -> Non
             runtime.start(runner, interval=timedelta(0))
         assert runtime.start(runner, interval=interval)
         assert not runtime.start(runner, interval=interval)
+        assert not runtime.snapshot().scheduler_active
+        assert not any(
+            task.get_name() == "proactive-idle-scheduler" for task in asyncio.all_tasks()
+        )
         await asyncio.sleep(0.02)
         assert not called.is_set()
 
         clock.advance(timedelta(minutes=3))
-        flags.set_feature(FeatureName.proactive, True)
+        await asyncio.to_thread(flags.set_feature, FeatureName.proactive, True)
+        for _ in range(100):
+            if runtime.snapshot().scheduler_active:
+                break
+            await asyncio.sleep(0)
+        assert runtime.snapshot().scheduler_active
         await asyncio.wait_for(called.wait(), timeout=1)
         assert trigger_types == [ProactiveTriggerType.idle.value]
+
+        flags.set_feature(FeatureName.proactive, False)
+        await runtime.apply_feature_state(FeatureState(name=FeatureName.proactive, enabled=False))
+        assert not runtime.snapshot().scheduler_active
+        assert not any(
+            task.get_name() == "proactive-idle-scheduler" for task in asyncio.all_tasks()
+        )
+
+        flags.set_feature(FeatureName.proactive, True)
+        await runtime.apply_feature_state(FeatureState(name=FeatureName.proactive, enabled=True))
+        assert runtime.snapshot().scheduler_active
 
         await runtime.close()
         with pytest.raises(RuntimeError, match="已关闭"):
             runtime.start(runner, interval=interval)
+
+    asyncio.run(scenario())
+
+
+def test_waitable_proactive_disable_stops_scheduler_and_joins_active_cleanup() -> None:
+    async def scenario() -> None:
+        flags = Flags(True)
+        runtime = ProactiveRuntime(flags, policy(), clock=FakeClock(NOW))
+        started = asyncio.Event()
+        cleanup_started = asyncio.Event()
+        release_cleanup = asyncio.Event()
+
+        async def runner(_intent: ProactiveIntent, _token: object) -> None:
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cleanup_started.set()
+                await release_cleanup.wait()
+
+        assert runtime.start(runner, interval=timedelta(hours=1))
+        assert runtime.snapshot().scheduler_active
+        assert (await runtime.submit(trigger(), runner)).intent is not None
+        await started.wait()
+
+        flags.set_feature(FeatureName.proactive, False)
+        barrier = asyncio.create_task(
+            runtime.apply_feature_state(FeatureState(name=FeatureName.proactive, enabled=False))
+        )
+        await cleanup_started.wait()
+        assert not runtime.snapshot().scheduler_active
+        assert not barrier.done()
+
+        release_cleanup.set()
+        await barrier
+        assert not runtime.snapshot().proactive_turn_active
+        assert not runtime.snapshot().scheduler_active
+        await runtime.close()
 
     asyncio.run(scenario())

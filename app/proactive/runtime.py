@@ -63,8 +63,10 @@ class ProactiveRuntime:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._scheduler_stop = asyncio.Event()
         self._scheduler_task: asyncio.Task[None] | None = None
-        self._disable_task: asyncio.Task[None] | None = None
-        self._pending_revocations: set[FeatureName] = set()
+        self._scheduler_runner: ProactiveRunner | None = None
+        self._scheduler_interval = _DEFAULT_SCHEDULER_INTERVAL
+        self._feature_transition_lock = asyncio.Lock()
+        self._feature_transition_tasks: set[asyncio.Task[None]] = set()
         self._close_task: asyncio.Task[None] | None = None
         self._latest_perception: PerceptionContext | None = None
         self._perception_epoch_lock = Lock()
@@ -100,16 +102,12 @@ class ProactiveRuntime:
             raise ValueError("proactive scheduler interval 必须大于 0")
         if self._closing or self._lifecycle.snapshot().closed:
             raise RuntimeError("ProactiveRuntime 已关闭")
-        task = self._scheduler_task
-        if task is not None and not task.done():
+        if self._scheduler_runner is not None:
             return False
-        self._scheduler_stop.clear()
-        task = loop.create_task(
-            self._scheduler_loop(runner, interval),
-            name="proactive-idle-scheduler",
-        )
-        self._scheduler_task = task
-        task.add_done_callback(self._scheduler_finished)
+        self._scheduler_runner = runner
+        self._scheduler_interval = interval
+        if self._feature_enabled(FeatureName.proactive):
+            self._ensure_scheduler(loop)
         return True
 
     async def submit(
@@ -204,12 +202,7 @@ class ProactiveRuntime:
         self._bind_loop()
         if state.name is FeatureName.vision:
             self._set_vision_epoch_state(state.enabled)
-        if state.enabled or state.name not in {FeatureName.proactive, FeatureName.vision}:
-            return
-        self._schedule_revocation(state.name)
-        task = self._disable_task
-        if task is not None:
-            await asyncio.shield(task)
+        await self._apply_feature_transition(state)
 
     async def close(self) -> None:
         loop = self._bind_loop()
@@ -229,57 +222,83 @@ class ProactiveRuntime:
     def _on_feature_changed(self, state: FeatureState) -> None:
         if state.name is FeatureName.vision:
             self._set_vision_epoch_state(state.enabled)
-        if (
-            state.name not in {FeatureName.proactive, FeatureName.vision}
-            or state.enabled
-            or self._closing
-        ):
+        if state.name not in {FeatureName.proactive, FeatureName.vision} or self._closing:
             return
         loop = self._loop
         if loop is None or loop.is_closed():
             return
         try:
-            loop.call_soon_threadsafe(self._schedule_revocation, state.name)
+            loop.call_soon_threadsafe(self._schedule_feature_transition, state)
         except RuntimeError:
             return
 
-    def _schedule_revocation(self, name: FeatureName) -> None:
+    def _schedule_feature_transition(self, state: FeatureState) -> None:
         if self._closing:
             return
-        self._pending_revocations.add(name)
-        task = self._disable_task
-        if task is not None and not task.done():
-            return
         task = asyncio.create_task(
-            self._apply_pending_revocations(),
-            name="proactive-feature-disable",
+            self._apply_feature_transition(state),
+            name=f"proactive-feature-{state.name.value}-{'enable' if state.enabled else 'disable'}",
         )
-        self._disable_task = task
-        task.add_done_callback(self._disable_finished)
+        self._feature_transition_tasks.add(task)
+        task.add_done_callback(self._feature_transition_finished)
 
-    async def _apply_pending_revocations(self) -> None:
-        while self._pending_revocations:
-            revoked = set(self._pending_revocations)
-            self._pending_revocations.clear()
-            async with self._state_lock:
-                if FeatureName.vision in revoked:
-                    self._clear_retired_perception()
-                active = self._lifecycle.snapshot()
-                if FeatureName.proactive in revoked or (
-                    FeatureName.vision in revoked
-                    and active.active_trigger_type == ProactiveTriggerType.visual_change.value
-                ):
+    async def _apply_feature_transition(self, state: FeatureState) -> None:
+        async with self._feature_transition_lock:
+            if state.name is FeatureName.proactive:
+                if state.enabled:
+                    if not self._closing and self._feature_enabled(FeatureName.proactive):
+                        self._ensure_scheduler()
+                    return
+                await self._stop_scheduler()
+                async with self._state_lock:
                     await self._lifecycle.cancel_active()
+                if not self._closing and self._feature_enabled(FeatureName.proactive):
+                    self._ensure_scheduler()
+                return
+            if state.name is FeatureName.vision and not state.enabled:
+                self._clear_retired_perception()
+                active = self._lifecycle.snapshot()
+                if active.active_trigger_type == ProactiveTriggerType.visual_change.value:
+                    async with self._state_lock:
+                        await self._lifecycle.cancel_active()
 
-    def _disable_finished(self, task: asyncio.Task[None]) -> None:
-        if self._disable_task is task:
-            self._disable_task = None
+    def _feature_transition_finished(self, task: asyncio.Task[None]) -> None:
+        self._feature_transition_tasks.discard(task)
         try:
             task.result()
         except asyncio.CancelledError:
             return
         except Exception:
             return
+
+    def _ensure_scheduler(self, loop: asyncio.AbstractEventLoop | None = None) -> None:
+        runner = self._scheduler_runner
+        if runner is None or self._closing or self._lifecycle.snapshot().closed:
+            return
+        task = self._scheduler_task
+        if task is not None and not task.done():
+            return
+        active_loop = loop or self._loop
+        if active_loop is None or active_loop.is_closed():
+            return
+        self._scheduler_stop.clear()
+        task = active_loop.create_task(
+            self._scheduler_loop(runner, self._scheduler_interval),
+            name="proactive-idle-scheduler",
+        )
+        self._scheduler_task = task
+        task.add_done_callback(self._scheduler_finished)
+
+    async def _stop_scheduler(self) -> None:
+        self._scheduler_stop.set()
+        scheduler = self._scheduler_task
+        if scheduler is None or scheduler is asyncio.current_task():
+            return
+        if not scheduler.done():
+            scheduler.cancel()
+        await asyncio.gather(scheduler, return_exceptions=True)
+        if self._scheduler_task is scheduler:
+            self._scheduler_task = None
 
     async def _scheduler_loop(
         self,
@@ -324,14 +343,14 @@ class ProactiveRuntime:
         if unsubscribe is not None:
             with suppress(Exception):
                 unsubscribe()
-        self._scheduler_stop.set()
-        await self._lifecycle.close()
-        scheduler = self._scheduler_task
-        if scheduler is not None and scheduler is not asyncio.current_task():
-            await asyncio.gather(scheduler, return_exceptions=True)
-        disable = self._disable_task
-        if disable is not None and disable is not asyncio.current_task():
-            await asyncio.gather(disable, return_exceptions=True)
+        async with self._feature_transition_lock:
+            await self._stop_scheduler()
+            await self._lifecycle.close()
+        transitions = tuple(
+            task for task in self._feature_transition_tasks if task is not asyncio.current_task()
+        )
+        if transitions:
+            await asyncio.gather(*transitions, return_exceptions=True)
 
     def _bind_loop(self) -> asyncio.AbstractEventLoop:
         loop = asyncio.get_running_loop()
