@@ -86,7 +86,7 @@ uv run mypy
 | PR6 | [#7](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/7) | `codex/perception-privacy` | PR5 | 340 | 93.14% | `5b08e9942466` |
 | PR7 | [#8](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/8) | `codex/proactive-engine` | PR6 | 403 | 92.54% | `fe6ecd3d7fc2` |
 | PR8 | [#9](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/9) | `codex/local-stt` | PR7 | 449 | 92.55% | `37cd737a21be` |
-| PR9 | [#10](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/10) | `codex/ai-backend-report` | PR8 | 460 | 92.71% | E2E `c4721b1`；property `c90fcb7`；报告见 PR head |
+| PR9 | [#10](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/10) | `codex/ai-backend-report` | PR8 | 460 | 92.71% | E2E `c4721b1`；property `c90fcb7`；docs `664b207` |
 
 PR9 最终 460 个测试、Ruff、格式和 strict mypy 全部通过。GitHub workflow 使用 `macos-latest` 和相同 frozen/all-extras 命令；最终 CI 状态记录在第 12 节。
 
@@ -447,7 +447,21 @@ pipeline/event JSON
 
 ## 17. GitHub macOS CI 最终状态
 
-九个 Draft PR 的 head 均配置 `.github/workflows/ci.yml`，在 `macos-latest` 执行 frozen/all-extras 安装、pytest 90% branch gate、Ruff、format 和 strict mypy。最终 push 后应以各 PR 的 GitHub checks 为权威；本节在交付前记录最终 run 状态。
+九个 Draft PR 的实现/文档锚点均在 `macos-latest` 完成 frozen/all-extras 安装、pytest 90% branch gate、Ruff、format 和 strict mypy。每个 head 同时记录 push 与 pull_request 两条成功 run：
+
+| PR | 验证 head | push run | pull_request run | 结果 |
+| --- | --- | --- | --- | --- |
+| PR1 | `3faf33a3` | [29232646284](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29232646284) | [29232648200](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29232648200) | success / success |
+| PR2 | `0c4fcf81` | [29232669289](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29232669289) | [29232671836](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29232671836) | success / success |
+| PR3 | `861dae50` | [29232683036](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29232683036) | [29232685331](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29232685331) | success / success |
+| PR4 | `1682e0a1` | [29232693159](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29232693159) | [29232695436](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29232695436) | success / success |
+| PR5 | `440f79da` | [29232708911](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29232708911) | [29232712157](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29232712157) | success / success |
+| PR6 | `5b08e994` | [29232747830](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29232747830) | [29232749624](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29232749624) | success / success |
+| PR7 | `fe6ecd3d` | [29232763301](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29232763301) | [29232765191](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29232765191) | success / success |
+| PR8 | `37cd737a` | [29232781851](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29232781851) | [29232783976](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29232783976) | success / success |
+| PR9 docs anchor | `664b2073` | [29232932536](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29232932536) | [29232934601](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29232934601) | success / success |
+
+GitHub 给出两个信息性 annotation：`macos-latest` runner 映射迁移，以及部分 action 的 Node 运行时弃用提示；两者没有跳过或失败任何门禁步骤。后续维护应按上游 action 的正式迁移说明升级 action major version。
 
 ## 18. 最终判断
 
