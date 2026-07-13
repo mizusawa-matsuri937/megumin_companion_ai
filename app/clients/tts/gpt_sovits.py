@@ -487,13 +487,13 @@ async def _await_with_token(awaitable: Awaitable[_T], token: CancellationToken) 
             {operation, cancellation}, return_when=asyncio.FIRST_COMPLETED
         )
         if cancellation in done:
-            operation.cancel()
-            await asyncio.gather(operation, return_exceptions=True)
             token.raise_if_cancelled()
         return operation.result()
     finally:
-        cancellation.cancel()
-        await asyncio.gather(cancellation, return_exceptions=True)
+        for task in (operation, cancellation):
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(operation, cancellation, return_exceptions=True)
 
 
 def _content_length(response: httpx.Response) -> int | None:

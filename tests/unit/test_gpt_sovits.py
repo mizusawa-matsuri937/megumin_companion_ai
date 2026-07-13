@@ -13,7 +13,7 @@ from pathlib import Path
 
 import httpx
 import pytest
-from app.clients.tts.gpt_sovits import GPTSoVITSPreset, GPTSoVITSProvider
+from app.clients.tts.gpt_sovits import GPTSoVITSPreset, GPTSoVITSProvider, _await_with_token
 from app.core import CancellationToken
 from app.schemas import AudioResult, TTSJob
 
@@ -366,6 +366,59 @@ class _BlockingStream(httpx.AsyncByteStream):
         self._started.set()
         await asyncio.Event().wait()
         yield b"unreachable"
+
+
+def test_await_with_token_cleans_operation_after_direct_task_cancellation() -> None:
+    async def scenario() -> None:
+        started = asyncio.Event()
+        cleaned = asyncio.Event()
+
+        async def operation() -> None:
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cleaned.set()
+
+        wrapper = asyncio.create_task(
+            _await_with_token(operation(), CancellationToken("turn_direct_cancel"))
+        )
+        await asyncio.wait_for(started.wait(), timeout=1)
+        wrapper.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await wrapper
+
+        assert cleaned.is_set()
+        assert asyncio.all_tasks() == {asyncio.current_task()}
+
+    asyncio.run(scenario())
+
+
+def test_await_with_token_cleans_operation_after_wait_for_timeout() -> None:
+    async def scenario() -> None:
+        started = asyncio.Event()
+        cleaned = asyncio.Event()
+
+        async def operation() -> None:
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cleaned.set()
+
+        wrapper = asyncio.create_task(
+            _await_with_token(operation(), CancellationToken("turn_wait_for_timeout"))
+        )
+        await asyncio.wait_for(started.wait(), timeout=1)
+
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(wrapper, timeout=0.01)
+
+        assert cleaned.is_set()
+        assert asyncio.all_tasks() == {asyncio.current_task()}
+
+    asyncio.run(scenario())
 
 
 def test_cancellation_interrupts_blocked_stream_and_cleans_partial(tmp_path: Path) -> None:
