@@ -53,6 +53,14 @@ vts:
   reconnect_max_seconds: 30
   expression_hotkeys: {}
 
+emotion:
+  enabled: true
+  max_delta_per_event: 0.15
+  max_delta_per_minute: 0.25
+  label_min_duration_seconds: 15
+  explosion_cooldown_seconds: 300
+  expression_cooldown_seconds: 4
+
 pipeline:
   tts_worker_count: 2
   segment_min_chars: 6

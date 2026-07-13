@@ -151,6 +151,18 @@ def test_websocket_streams_complete_mock_pipeline_for_text_and_voice() -> None:
             metrics = events[-1]["payload"]["metrics"]
             assert metrics["llm_first_token_ms"] is not None
             assert metrics["first_sentence_play_ms"] is not None
+            segment = next(event for event in events if event["type"] == "assistant.segment")
+            assert segment["payload"]["emotion"] in {
+                "neutral",
+                "happy",
+                "shy",
+                "proud",
+                "worried",
+                "excited",
+                "focused",
+            }
+            assert 0 < segment["payload"]["tts_speed_factor"] <= 3
+            assert isinstance(segment["payload"]["expression_update"], bool)
 
 
 def test_http_interrupt_cancels_active_turn() -> None:

@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from typing import Literal
 
-from app.schemas.ai import ChatRequest, ChatRole
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from app.schemas.ai import ChatRequest, ChatRole
 
 
 class PromptModel(BaseModel):

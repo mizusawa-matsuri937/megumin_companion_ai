@@ -12,6 +12,7 @@ from app.emotion.models import (
     EmotionLabel,
     EmotionState,
     EmotionStimulus,
+    EmotionSuggestion,
     EmotionTransition,
     StimulusKind,
 )
@@ -125,6 +126,19 @@ class EmotionEngine:
             occurred_at=stimulus.occurred_at,
             requested=requested,
             reason_code=stimulus.reason_code,
+        )
+
+    def apply_suggestion(self, suggestion: EmotionSuggestion) -> EmotionTransition:
+        if suggestion.kind is StimulusKind.time_decay:
+            raise ValueError("LLM suggestion cannot request time decay")
+        return self.apply(
+            EmotionStimulus(
+                stimulus_id=suggestion.suggestion_id,
+                kind=suggestion.kind,
+                intensity=min(0.5, suggestion.intensity * suggestion.confidence),
+                occurred_at=suggestion.occurred_at,
+                reason_code=f"llm_suggestion_{suggestion.kind.value}",
+            )
         )
 
     def decay(self, *, at: datetime | None = None) -> EmotionTransition:

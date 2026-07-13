@@ -101,6 +101,23 @@ class EmotionStimulus(EmotionModel):
         return value
 
 
+class EmotionSuggestion(EmotionModel):
+    """Untrusted LLM hint; the engine still selects and bounds every numeric transition."""
+
+    suggestion_id: str = Field(min_length=1, max_length=128)
+    kind: StimulusKind
+    confidence: float = Field(ge=0.0, le=1.0)
+    intensity: float = Field(default=1.0, ge=0.0, le=1.0)
+    occurred_at: datetime
+
+    @field_validator("occurred_at")
+    @classmethod
+    def require_aware_datetime(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("suggestion occurred_at must be timezone-aware")
+        return value
+
+
 class EmotionTransition(EmotionModel):
     stimulus_id: str
     kind: StimulusKind

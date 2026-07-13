@@ -118,6 +118,15 @@ class VTSConfig(StrictModel):
         return self
 
 
+class EmotionConfig(StrictModel):
+    enabled: bool = True
+    max_delta_per_event: float = Field(default=0.15, gt=0.0, le=1.0)
+    max_delta_per_minute: float = Field(default=0.25, gt=0.0, le=1.0)
+    label_min_duration_seconds: float = Field(default=15.0, ge=0.0, le=300.0)
+    explosion_cooldown_seconds: float = Field(default=300.0, ge=0.0, le=3600.0)
+    expression_cooldown_seconds: float = Field(default=4.0, ge=0.0, le=300.0)
+
+
 class PipelineConfig(StrictModel):
     tts_worker_count: int = Field(default=2, ge=1, le=8)
     segment_min_chars: int = Field(default=6, ge=1, le=100)
@@ -143,6 +152,7 @@ class Settings(StrictModel):
     llm: LLMConfig = Field(default_factory=LLMConfig)
     tts: TTSConfig = Field(default_factory=TTSConfig)
     vts: VTSConfig = Field(default_factory=VTSConfig)
+    emotion: EmotionConfig = Field(default_factory=EmotionConfig)
     pipeline: PipelineConfig = Field(default_factory=PipelineConfig)
 
     _environment: dict[str, str] = PrivateAttr(default_factory=dict)

@@ -11,8 +11,11 @@ from app.emotion.models import (
     EmotionLabel,
     EmotionState,
     EmotionStimulus,
+    EmotionSuggestion,
     StimulusKind,
 )
+from hypothesis import given
+from hypothesis import strategies as st
 
 
 def _time() -> datetime:
@@ -225,3 +228,42 @@ def test_explosion_mode_cannot_reenter_during_cooldown() -> None:
     reentry = engine.apply(_stimulus(clock, 2, StimulusKind.explosion_topic))
     assert reentry.after.dominant_label is EmotionLabel.neutral
     assert reentry.label_change_suppressed
+
+
+@given(
+    confidence=st.floats(min_value=0.0, max_value=1.0, allow_nan=False),
+    intensity=st.floats(min_value=0.0, max_value=1.0, allow_nan=False),
+    kind=st.sampled_from([kind for kind in StimulusKind if kind is not StimulusKind.time_decay]),
+)
+def test_llm_suggestions_remain_bounded_deterministic_inputs(
+    confidence: float,
+    intensity: float,
+    kind: StimulusKind,
+) -> None:
+    clock = FakeClock(_time())
+    engine = EmotionEngine(clock=clock)
+    transition = engine.apply_suggestion(
+        EmotionSuggestion(
+            suggestion_id="llm-hint",
+            kind=kind,
+            confidence=confidence,
+            intensity=intensity,
+            occurred_at=clock.now(),
+        )
+    )
+
+    assert all(0.0 <= transition.after.value(dimension) <= 1.0 for dimension in EmotionDimension)
+    assert all(abs(delta) <= 0.15 for delta in transition.applied_delta.values())
+    assert transition.reason_code == f"llm_suggestion_{kind.value}"
+
+
+def test_llm_suggestion_cannot_invoke_decay() -> None:
+    clock = FakeClock(_time())
+    suggestion = EmotionSuggestion(
+        suggestion_id="invalid",
+        kind=StimulusKind.time_decay,
+        confidence=1.0,
+        occurred_at=clock.now(),
+    )
+    with pytest.raises(ValueError, match="cannot request"):
+        EmotionEngine(clock=clock).apply_suggestion(suggestion)
