@@ -54,6 +54,46 @@ def _presets() -> dict[str, GPTSoVITSPreset]:
 
 
 @pytest.mark.parametrize(
+    "changes",
+    [
+        {"ref_audio_path": " "},
+        {"top_k": 0},
+        {"top_p": 0.0},
+        {"temperature": 0.0},
+        {"speed_factor": 0.0},
+        {"fragment_interval": -0.1},
+    ],
+)
+def test_preset_rejects_invalid_voice_parameters(changes: dict[str, object]) -> None:
+    values: dict[str, object] = {"ref_audio_path": "/voice.wav"}
+    values.update(changes)
+    with pytest.raises(ValueError):
+        GPTSoVITSPreset(**values)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"timeout_seconds": 0.0},
+        {"max_audio_bytes": 43},
+        {"default_preset": "missing"},
+        {"cache_enabled": True, "cache_dir": None},
+        {"cache_max_bytes": 0},
+        {"cache_ttl_seconds": 0.0},
+    ],
+)
+def test_provider_rejects_unsafe_limits(tmp_path: Path, changes: dict[str, object]) -> None:
+    options: dict[str, object] = {
+        "base_url": "http://gpt-sovits.local",
+        "output_directory": tmp_path,
+        "presets": _presets(),
+    }
+    options.update(changes)
+    with pytest.raises(ValueError):
+        GPTSoVITSProvider(**options)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
     ("status", "available", "error_code"),
     [(422, True, None), (404, False, "tts_protocol_error"), (503, False, "tts_unavailable")],
 )
@@ -75,6 +115,32 @@ def test_probe_classifies_api_v2_without_synthesizing(
         assert result.error_code == error_code
         await provider.close()
         assert not client.is_closed
+        await client.aclose()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    ("failure", "error_code"),
+    [
+        (httpx.ReadTimeout("slow"), "tts_timeout"),
+        (httpx.ConnectError("offline"), "tts_unavailable"),
+    ],
+)
+def test_probe_transport_failures_are_safe(
+    tmp_path: Path,
+    failure: httpx.RequestError,
+    error_code: str,
+) -> None:
+    async def scenario() -> None:
+        async def handler(_request: httpx.Request) -> httpx.Response:
+            raise failure
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        provider = GPTSoVITSProvider("http://gpt-sovits.local", tmp_path, _presets(), client=client)
+        assert (await provider.probe()).error_code == error_code
+        await provider.close()
+        assert (await provider.probe()).error_code == "tts_closed"
         await client.aclose()
 
     asyncio.run(scenario())
@@ -142,6 +208,10 @@ def test_synthesize_applies_preset_and_atomically_lands_valid_wave(tmp_path: Pat
 @pytest.mark.parametrize(
     ("response", "error_code"),
     [
+        (httpx.Response(401), "tts_auth_failed"),
+        (httpx.Response(404), "tts_protocol_error"),
+        (httpx.Response(408), "tts_timeout"),
+        (httpx.Response(418), "tts_request_rejected"),
         (httpx.Response(429), "tts_rate_limited"),
         (httpx.Response(503), "tts_unavailable"),
         (
@@ -175,6 +245,75 @@ def test_synthesize_maps_expected_failures_and_leaves_no_files(
         assert result.error_code == error_code
         assert list(tmp_path.rglob("*")) == []
         await provider.close()
+        await client.aclose()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    ("headers", "content", "error_code"),
+    [
+        (
+            {"content-type": "audio/wav", "content-length": "999999"},
+            b"short",
+            "tts_response_too_large",
+        ),
+        ({"content-type": "audio/wav"}, b"", "tts_invalid_audio"),
+    ],
+)
+def test_declared_size_and_empty_body_are_rejected(
+    tmp_path: Path,
+    headers: dict[str, str],
+    content: bytes,
+    error_code: str,
+) -> None:
+    async def scenario() -> None:
+        async def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, headers=headers, content=content, request=request)
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        provider = GPTSoVITSProvider(
+            "http://gpt-sovits.local",
+            tmp_path,
+            _presets(),
+            max_audio_bytes=128,
+            client=client,
+        )
+        token = CancellationToken("turn")
+        result = await provider.synthesize(_job(token), segment_index=0, token=token)
+        assert result.error_code == error_code
+        assert list(tmp_path.rglob("*")) == []
+        await provider.close()
+        await client.aclose()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    ("failure", "error_code"),
+    [
+        (httpx.ReadTimeout("slow"), "tts_timeout"),
+        (httpx.ConnectError("offline"), "tts_unavailable"),
+    ],
+)
+def test_synthesis_transport_failures_and_closed_state(
+    tmp_path: Path,
+    failure: httpx.RequestError,
+    error_code: str,
+) -> None:
+    async def scenario() -> None:
+        async def handler(_request: httpx.Request) -> httpx.Response:
+            raise failure
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        provider = GPTSoVITSProvider("http://gpt-sovits.local", tmp_path, _presets(), client=client)
+        token = CancellationToken("turn")
+        result = await provider.synthesize(_job(token), segment_index=0, token=token)
+        assert result.error_code == error_code
+        await provider.close()
+        assert (
+            await provider.synthesize(_job(token), segment_index=1, token=token)
+        ).error_code == ("tts_closed")
         await client.aclose()
 
     asyncio.run(scenario())
@@ -429,7 +568,9 @@ def test_sensitive_text_and_policy_failure_never_enter_persistent_cache(tmp_path
                     token,
                     job_id=f"job_{index}",
                     turn_id=f"turn_{index}",
-                    text="我的密码是 123456",
+                    text=(
+                        "我的密码是 123456" if index == 0 else "联系 13812345678 或 me@example.com"
+                    ),
                 ),
                 segment_index=index,
                 token=token,

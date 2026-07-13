@@ -27,7 +27,8 @@ _WAVE_CONTENT_TYPES = frozenset({"audio/wav", "audio/wave", "audio/x-wav"})
 _CACHE_PARTIAL_MAX_AGE_SECONDS = 300.0
 _SENSITIVE_TEXT = re.compile(
     r"(?i)(password|passcode|api[-_ ]?key|access[-_ ]?token|secret|"
-    r"验证码|密码|口令|身份证|银行卡|信用卡|手机号|住址|病历)|\d{12,19}"
+    r"验证码|密码|口令|身份证|银行卡|信用卡|手机号|住址|病历)|"
+    r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}|(?<!\d)1[3-9]\d{9}(?!\d)|\d{12,19}"
 )
 
 

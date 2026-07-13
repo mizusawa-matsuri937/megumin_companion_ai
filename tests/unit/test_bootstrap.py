@@ -6,8 +6,14 @@ from pathlib import Path
 import pytest
 from app.bootstrap import build_dialogue_pipeline
 from app.clients.llm import OpenAICompatibleLLMProvider
+from app.clients.tts import GPTSoVITSProvider
 from app.config import Settings
-from app.config.settings import LLMConfig, PipelineConfig
+from app.config.settings import (
+    GPTSoVITSPresetConfig,
+    LLMConfig,
+    PipelineConfig,
+    TTSConfig,
+)
 from app.pipelines.audio_player import SystemAudioPlayer
 
 
@@ -41,3 +47,30 @@ def test_real_provider_absolute_cache_and_system_player(tmp_path: Path) -> None:
     assert pipeline._llm._default_temperature == 0.65
     assert pipeline._llm._default_max_tokens == 777
     asyncio.run(pipeline.close())
+
+
+def test_gpt_sovits_wiring_is_explicit_and_cache_defaults_off(tmp_path: Path) -> None:
+    settings = Settings(
+        llm=LLMConfig(provider="mock"),
+        tts=TTSConfig(
+            provider="gpt-sovits",
+            output_directory=tmp_path / "ephemeral",
+            cache_directory=tmp_path / "persistent",
+            presets={"default": GPTSoVITSPresetConfig(ref_audio_path="/local/reference.wav")},
+        ),
+    )
+
+    pipeline = build_dialogue_pipeline(settings)
+
+    assert pipeline is not None
+    assert isinstance(pipeline._tts, GPTSoVITSProvider)
+    assert not pipeline._tts._cache_enabled
+    asyncio.run(pipeline.close())
+
+
+@pytest.mark.parametrize("provider", ["gpt-sovits", "unsupported"])
+def test_tts_wiring_never_falls_back_to_mock(provider: str) -> None:
+    settings = Settings(llm=LLMConfig(provider="mock"), tts=TTSConfig(provider=provider))
+
+    with pytest.raises(RuntimeError):
+        build_dialogue_pipeline(settings)
