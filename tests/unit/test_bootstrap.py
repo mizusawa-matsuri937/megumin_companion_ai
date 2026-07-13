@@ -20,7 +20,7 @@ from app.config.settings import (
     VTSConfig,
 )
 from app.pipelines.audio_player import SystemAudioPlayer
-from app.prompts import EmotionPromptContextBuilder, HistoryMessage
+from app.prompts import EmotionPromptContextBuilder, HistoryMessage, PromptContextSnapshot
 from app.schemas import ChatRole, ExternalContextBlock, UserMessage
 from app.schemas.ai import ContextOrigin, ContextTrust
 
@@ -82,19 +82,21 @@ def test_disabling_emotion_keeps_prompt_policy_and_external_context() -> None:
             self.history_calls = 0
             self.context_calls = 0
 
-        async def history_for(self, _message: UserMessage) -> tuple[HistoryMessage, ...]:
+        async def snapshot_for(self, _message: UserMessage) -> PromptContextSnapshot:
             self.history_calls += 1
-            return (HistoryMessage(message_id="prior", role=ChatRole.assistant, content="prior"),)
-
-        async def context_for(self, _message: UserMessage) -> tuple[ExternalContextBlock, ...]:
             self.context_calls += 1
-            return (
-                ExternalContextBlock(
-                    source_id="memory-1",
-                    origin=ContextOrigin.long_term_memory,
-                    trust=ContextTrust.stored_fact,
-                    content="remembered context",
-                    persistable=False,
+            return PromptContextSnapshot(
+                history=(
+                    HistoryMessage(message_id="prior", role=ChatRole.assistant, content="prior"),
+                ),
+                blocks=(
+                    ExternalContextBlock(
+                        source_id="memory-1",
+                        origin=ContextOrigin.long_term_memory,
+                        trust=ContextTrust.stored_fact,
+                        content="remembered context",
+                        persistable=False,
+                    ),
                 ),
             )
 

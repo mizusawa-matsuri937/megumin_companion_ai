@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import Protocol
 
 from app.emotion import Clock, EmotionEngine, EmotionStimulus, StimulusKind
@@ -11,18 +11,21 @@ from app.prompts.models import HistoryMessage
 from app.schemas import ChatRequest, ExternalContextBlock, UserMessage
 
 
-class PromptContextSource(Protocol):
-    async def history_for(self, message: UserMessage) -> Sequence[HistoryMessage]: ...
+@dataclass(frozen=True, slots=True)
+class PromptContextSnapshot:
+    """One atomic view of all revocable context for a pending LLM request."""
 
-    async def context_for(self, message: UserMessage) -> Sequence[ExternalContextBlock]: ...
+    history: tuple[HistoryMessage, ...] = ()
+    blocks: tuple[ExternalContextBlock, ...] = ()
+
+
+class PromptContextSource(Protocol):
+    async def snapshot_for(self, message: UserMessage) -> PromptContextSnapshot: ...
 
 
 class EmptyPromptContextSource:
-    async def history_for(self, message: UserMessage) -> Sequence[HistoryMessage]:
-        return ()
-
-    async def context_for(self, message: UserMessage) -> Sequence[ExternalContextBlock]:
-        return ()
+    async def snapshot_for(self, message: UserMessage) -> PromptContextSnapshot:
+        return PromptContextSnapshot()
 
 
 class EmotionPromptContextBuilder:
@@ -55,13 +58,12 @@ class EmotionPromptContextBuilder:
                     reason_code=f"deterministic_text_{kind.value}",
                 )
             )
-        history = await self._source.history_for(message)
-        context = await self._source.context_for(message)
+        snapshot = await self._source.snapshot_for(message)
         return self._prompt_builder.build(
             current_user_text=message.text,
             emotion=self._emotion_engine.state,
-            history=history,
-            context_blocks=context,
+            history=snapshot.history,
+            context_blocks=snapshot.blocks,
         )
 
 
