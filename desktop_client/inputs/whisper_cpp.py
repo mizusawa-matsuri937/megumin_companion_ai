@@ -50,6 +50,8 @@ class WhisperCppProvider:
     def __init__(self, config: WhisperCppConfig) -> None:
         self._config = config
         self._processes: set[asyncio.subprocess.Process] = set()
+        self._termination_tasks: dict[asyncio.subprocess.Process, asyncio.Task[None]] = {}
+        self._close_task: asyncio.Task[None] | None = None
         self._lifecycle_lock = asyncio.Lock()
         self._closed = False
 
@@ -72,8 +74,7 @@ class WhisperCppProvider:
                     )
                 return self._read_result(output_base.with_suffix(".json"))
             finally:
-                async with self._lifecycle_lock:
-                    self._processes.discard(process)
+                await self._terminate(process)
 
     def _validate_preconditions(self, audio_path: Path) -> None:
         if self._closed:
@@ -147,7 +148,30 @@ class WhisperCppProvider:
             raise
 
     async def _terminate(self, process: asyncio.subprocess.Process) -> None:
+        async with self._lifecycle_lock:
+            task = self._termination_tasks.get(process)
+            if task is None:
+                task = asyncio.create_task(
+                    self._terminate_once(process),
+                    name=f"whisper-process-reaper-{process.pid}",
+                )
+                self._termination_tasks[process] = task
+        await _await_cleanup_task(task)
+
+    async def _terminate_once(self, process: asyncio.subprocess.Process) -> None:
+        current = asyncio.current_task()
+        assert current is not None
+        try:
+            await self._terminate_process(process)
+        finally:
+            async with self._lifecycle_lock:
+                self._processes.discard(process)
+                if self._termination_tasks.get(process) is current:
+                    self._termination_tasks.pop(process, None)
+
+    async def _terminate_process(self, process: asyncio.subprocess.Process) -> None:
         if process.returncode is not None:
+            await process.wait()
             return
         try:
             process.terminate()
@@ -199,11 +223,40 @@ class WhisperCppProvider:
 
     async def close(self) -> None:
         async with self._lifecycle_lock:
-            if self._closed:
+            task = self._close_task
+            if task is None:
+                self._closed = True
+                task = asyncio.create_task(self._close_impl(), name="whisper-provider-close")
+                self._close_task = task
+        await asyncio.shield(task)
+
+    async def _close_impl(self) -> None:
+        while True:
+            async with self._lifecycle_lock:
+                processes = tuple(self._processes)
+                cleanup = tuple(self._termination_tasks.values())
+            if not processes and not cleanup:
                 return
-            self._closed = True
-            processes = tuple(self._processes)
-        if processes:
-            await asyncio.gather(*(self._terminate(process) for process in processes))
-        async with self._lifecycle_lock:
-            self._processes.clear()
+            results = await asyncio.gather(
+                *(self._terminate(process) for process in processes),
+                *(_await_cleanup_task(task) for task in cleanup),
+                return_exceptions=True,
+            )
+            errors = [result for result in results if isinstance(result, Exception)]
+            if errors:
+                raise ExceptionGroup("whisper process cleanup failed", errors)
+
+
+async def _await_cleanup_task(task: asyncio.Task[None]) -> None:
+    cancelled = False
+    while True:
+        try:
+            await asyncio.shield(task)
+            if cancelled:
+                raise asyncio.CancelledError
+            return
+        except asyncio.CancelledError:
+            cancelled = True
+            if task.done():
+                await asyncio.gather(task, return_exceptions=True)
+                raise

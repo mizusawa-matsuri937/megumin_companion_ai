@@ -93,6 +93,23 @@ proactive:
   quiet_start_hour: 23
   quiet_end_hour: 8
 
+# 默认禁用，且不会下载模型或请求麦克风权限。启用后需自行配置本机 whisper-cli 与模型。
+stt:
+  enabled: false
+  provider: whisper_cpp
+  executable: vendor/whisper.cpp/build/bin/whisper-cli
+  model_path: data/models/whisper/ggml-base.bin
+  language: auto
+  threads: null
+  temporary_directory: data/private/stt
+  terminate_grace_seconds: 0.5
+  max_audio_bytes: 67108864
+  max_output_bytes: 2097152
+  max_recording_seconds: 120
+  transcription_timeout_seconds: 60
+  device: null
+  blocksize: 0
+
 pipeline:
   tts_worker_count: 2
   segment_min_chars: 6

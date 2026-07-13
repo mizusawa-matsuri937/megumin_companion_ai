@@ -11,7 +11,7 @@ import asyncio
 import importlib
 import tempfile
 import wave
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -20,6 +20,7 @@ from uuid import uuid4
 
 from app.core.contracts import UserMessageSink
 from app.schemas import InputMode, TurnState, UserMessage
+
 from desktop_client.inputs.stt_contracts import (
     STTProvider,
     TranscriptionRequest,
@@ -89,10 +90,12 @@ class SoundDevicePCMInput:
                 device=self._device,
                 callback=on_audio,
             )
-            await asyncio.to_thread(stream.start)
-        except Exception as exc:
+            await _drainable_to_thread(stream.start)
+        except BaseException as exc:
             if "stream" in locals():
-                await asyncio.to_thread(stream.close)
+                await _drainable_to_thread(stream.close)
+            if isinstance(exc, asyncio.CancelledError):
+                raise
             raise VoiceInputError(
                 VoiceInputErrorCode.capture_failed, "无法启动本地麦克风录音"
             ) from exc
@@ -103,9 +106,9 @@ class SoundDevicePCMInput:
         if stream is None:
             return
         try:
-            await asyncio.to_thread(stream.stop)
+            await _drainable_to_thread(stream.stop)
         finally:
-            await asyncio.to_thread(stream.close)
+            await _drainable_to_thread(stream.close)
 
     async def close(self) -> None:
         await self.stop()
@@ -153,10 +156,15 @@ class PushToTalkRecorder:
         self._pcm = bytearray()
         self._recording_id: str | None = None
         self._transcription_task: asyncio.Task[TranscriptionResult] | None = None
+        self._operation_task: asyncio.Task[Any] | None = None
+        self._send_tasks: set[asyncio.Task[TurnState]] = set()
+        self._cancel_task: asyncio.Task[None] | None = None
+        self._close_task: asyncio.Task[None] | None = None
         self._lock = asyncio.Lock()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._limit_error: VoiceInputError | None = None
         self._cancel_requested = False
+        self._closing = False
 
     @property
     def state(self) -> RecordingState:
@@ -167,8 +175,11 @@ class PushToTalkRecorder:
         return len(self._pcm)
 
     async def start(self) -> None:
+        await self._join_cancel_if_running()
+        owner = asyncio.current_task()
+        assert owner is not None
         async with self._lock:
-            if self._state is not RecordingState.idle:
+            if self._closing or self._state is not RecordingState.idle:
                 raise VoiceInputError(VoiceInputErrorCode.invalid_state, "当前不能开始录音")
             self._state = RecordingState.recording
             self._pcm.clear()
@@ -177,6 +188,7 @@ class PushToTalkRecorder:
             self._recording_id = uuid4().hex
             recording_id = self._recording_id
             self._loop = asyncio.get_running_loop()
+            self._operation_task = owner
 
         def accept_from_audio_thread(frame: bytes) -> None:
             loop = self._loop
@@ -189,24 +201,39 @@ class PushToTalkRecorder:
                 sample_rate=self._config.sample_rate,
                 channels=self._config.channels,
             )
+            async with self._lock:
+                if (
+                    self._state is not RecordingState.recording
+                    or self._recording_id != recording_id
+                ):
+                    raise asyncio.CancelledError
         except BaseException:
             async with self._lock:
                 if self._recording_id == recording_id:
                     self._reset_to_idle()
+            await _finish_cleanup(self._source.stop())
             raise
+        finally:
+            async with self._lock:
+                if self._operation_task is owner:
+                    self._operation_task = None
 
     def _append_frame(self, recording_id: str, frame: bytes) -> None:
         if self._state is not RecordingState.recording or self._recording_id != recording_id:
             return
         if not frame:
             return
+        frame_size = self._config.channels * self._config.sample_width_bytes
         remaining = self._config.max_pcm_bytes - len(self._pcm)
         if remaining <= 0:
             self._limit_error = VoiceInputError(
                 VoiceInputErrorCode.recording_too_long, "录音超过最大允许时长"
             )
             return
-        self._pcm.extend(frame[:remaining])
+        accepted = min(len(frame), remaining)
+        accepted -= accepted % frame_size
+        if accepted:
+            self._pcm.extend(frame[:accepted])
         if len(frame) > remaining:
             self._limit_error = VoiceInputError(
                 VoiceInputErrorCode.recording_too_long, "录音超过最大允许时长"
@@ -218,16 +245,18 @@ class PushToTalkRecorder:
         session_id: str = "local_session",
         user_id: str = "local_user",
     ) -> UserMessage:
+        owner = asyncio.current_task()
+        assert owner is not None
         async with self._lock:
             if self._state is not RecordingState.recording:
                 raise VoiceInputError(VoiceInputErrorCode.invalid_state, "当前没有正在进行的录音")
             self._state = RecordingState.transcribing
-            pcm = bytes(self._pcm)
-            self._pcm.clear()
+            pcm, self._pcm = self._pcm, bytearray()
             limit_error = self._limit_error
             self._recording_id = None
+            self._operation_task = owner
         try:
-            await self._source.stop()
+            await _finish_cleanup(self._source.stop())
             if limit_error is not None:
                 raise limit_error
             if not pcm:
@@ -240,7 +269,7 @@ class PushToTalkRecorder:
                 prefix="companion-recording-", dir=temporary_root
             ) as root:
                 audio_path = Path(root) / "input.wav"
-                self._write_wav(audio_path, pcm)
+                await _drainable_to_thread(lambda: self._write_wav(audio_path, pcm))
                 async with self._lock:
                     if self._cancel_requested:
                         raise asyncio.CancelledError
@@ -267,8 +296,11 @@ class PushToTalkRecorder:
                     },
                 )
         finally:
+            _wipe(pcm)
             async with self._lock:
                 self._transcription_task = None
+                if self._operation_task is owner:
+                    self._operation_task = None
                 if self._state is not RecordingState.closed:
                     self._reset_to_idle()
 
@@ -282,9 +314,18 @@ class PushToTalkRecorder:
         """Finish local STT and submit the normalized voice message once."""
 
         message = await self.stop(session_id=session_id, user_id=user_id)
-        return await sink.accept(message)
+        async with self._lock:
+            if self._closing:
+                raise asyncio.CancelledError
+            task = asyncio.create_task(
+                sink.accept(message),
+                name=f"voice-message-send-{message.message_id}",
+            )
+            self._send_tasks.add(task)
+            task.add_done_callback(lambda _completed: self._send_tasks.discard(task))
+        return await task
 
-    def _write_wav(self, path: Path, pcm: bytes) -> None:
+    def _write_wav(self, path: Path, pcm: bytearray) -> None:
         with wave.open(str(path), "wb") as recording:
             recording.setnchannels(self._config.channels)
             recording.setsampwidth(self._config.sample_width_bytes)
@@ -293,21 +334,46 @@ class PushToTalkRecorder:
 
     async def cancel(self) -> None:
         async with self._lock:
+            task = self._cancel_task
+            if task is None or task.done():
+                task = asyncio.create_task(self._cancel_impl(), name="voice-input-cancel")
+                self._cancel_task = task
+        await asyncio.shield(task)
+
+    async def _cancel_impl(self) -> None:
+        async with self._lock:
             state = self._state
-            task = self._transcription_task
+            transcription = self._transcription_task
+            operation = self._operation_task
             if state is RecordingState.recording:
-                self._reset_to_idle()
+                self._state = RecordingState.idle
+                _wipe(self._pcm)
+                self._pcm.clear()
+                self._recording_id = None
+                self._limit_error = None
+                self._cancel_requested = True
+                if operation is not None and not operation.done():
+                    operation.cancel()
             elif state is RecordingState.transcribing:
                 self._cancel_requested = True
-                if task is not None:
-                    task.cancel()
+                if transcription is not None and not transcription.done():
+                    transcription.cancel()
         if state is RecordingState.recording:
-            await self._source.stop()
-        elif state is RecordingState.transcribing and task is not None:
-            await asyncio.gather(task, return_exceptions=True)
+            if operation is not None and operation is not asyncio.current_task():
+                await _join_task(operation)
+            await _finish_cleanup(self._source.stop())
+            async with self._lock:
+                if self._state is not RecordingState.closed:
+                    self._reset_to_idle()
+        elif state is RecordingState.transcribing:
+            if operation is not None and operation is not asyncio.current_task():
+                await _join_task(operation)
+            elif transcription is not None:
+                await _join_task(transcription)
 
     def _reset_to_idle(self) -> None:
         self._state = RecordingState.idle
+        _wipe(self._pcm)
         self._pcm.clear()
         self._recording_id = None
         self._limit_error = None
@@ -315,13 +381,92 @@ class PushToTalkRecorder:
 
     async def close(self) -> None:
         async with self._lock:
-            if self._state is RecordingState.closed:
-                return
-        await self.cancel()
-        await self._source.close()
-        await self._stt.close()
+            task = self._close_task
+            if task is None:
+                self._closing = True
+                task = asyncio.create_task(self._close_impl(), name="voice-input-close")
+                self._close_task = task
+        await asyncio.shield(task)
+
+    async def _close_impl(self) -> None:
+        cancellation = await asyncio.gather(self.cancel(), return_exceptions=True)
+        async with self._lock:
+            sends = tuple(self._send_tasks)
+            for task in sends:
+                if not task.done():
+                    task.cancel()
+        send_results = await asyncio.gather(*sends, return_exceptions=True)
+        resource_results = await asyncio.gather(
+            self._source.close(),
+            self._stt.close(),
+            return_exceptions=True,
+        )
         async with self._lock:
             self._state = RecordingState.closed
+            _wipe(self._pcm)
             self._pcm.clear()
             self._recording_id = None
             self._loop = None
+        errors = [
+            result
+            for result in (*cancellation, *send_results, *resource_results)
+            if isinstance(result, Exception)
+        ]
+        if errors:
+            raise ExceptionGroup("voice input resource close failed", errors)
+
+    async def _join_cancel_if_running(self) -> None:
+        async with self._lock:
+            task = self._cancel_task
+        if task is not None and not task.done():
+            await asyncio.shield(task)
+
+
+async def _join_task(task: asyncio.Task[Any]) -> None:
+    while True:
+        try:
+            await asyncio.shield(task)
+            return
+        except asyncio.CancelledError:
+            if task.done():
+                return
+            continue
+        except Exception:
+            return
+
+
+async def _drainable_to_thread(operation: Callable[[], Any]) -> Any:
+    worker = asyncio.create_task(asyncio.to_thread(operation))
+    cancelled = False
+    while True:
+        try:
+            result = await asyncio.shield(worker)
+            if cancelled:
+                raise asyncio.CancelledError
+            return result
+        except asyncio.CancelledError:
+            cancelled = True
+            if worker.done():
+                await asyncio.gather(worker, return_exceptions=True)
+                raise
+
+
+async def _finish_cleanup(operation: Awaitable[Any]) -> Any:
+    task = asyncio.ensure_future(operation)
+    cancelled = False
+    while True:
+        try:
+            result = await asyncio.shield(task)
+            if cancelled:
+                raise asyncio.CancelledError
+            return result
+        except asyncio.CancelledError:
+            cancelled = True
+            if task.done():
+                await asyncio.gather(task, return_exceptions=True)
+                raise
+
+
+def _wipe(value: bytearray) -> None:
+    if value:
+        value[:] = b"\x00" * len(value)

@@ -31,7 +31,9 @@ audit = Path(sys.argv[2])
 args = sys.argv[3:]
 if mode == "sleep":
     audit.write_text(str(os.getpid()), encoding="utf-8")
-    signal.signal(signal.SIGTERM, lambda *_args: None)
+    def ignore_term(*_args):
+        audit.with_suffix(".term").write_text("term", encoding="utf-8")
+    signal.signal(signal.SIGTERM, ignore_term)
     time.sleep(60)
     raise SystemExit(0)
 
@@ -304,6 +306,72 @@ def test_task_cancellation_terminates_process_and_removes_json_directory(tmp_pat
         assert not _process_exists(pid)
         assert list(scratch.iterdir()) == []
         await provider.close()
+
+    asyncio.run(scenario())
+
+
+def test_repeated_cancellation_cannot_interrupt_process_reaping(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        provider, pid_file, scratch = _provider(tmp_path, "sleep", grace=0.2)
+        audio = tmp_path / "input.wav"
+        _write_pcm_wav(audio)
+        task = asyncio.create_task(
+            provider.transcribe(TranscriptionRequest(audio_path=audio, timeout_seconds=30))
+        )
+        for _ in range(100):
+            if pid_file.exists():
+                break
+            await asyncio.sleep(0.005)
+        task.cancel()
+        term_file = pid_file.with_suffix(".term")
+        for _ in range(100):
+            if term_file.exists():
+                break
+            await asyncio.sleep(0.005)
+        assert term_file.exists()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        pid = int(pid_file.read_text(encoding="utf-8"))
+        assert not _process_exists(pid)
+        assert provider._processes == set()
+        assert list(scratch.iterdir()) == []
+        await provider.close()
+
+    asyncio.run(scenario())
+
+
+def test_concurrent_close_waiters_join_the_same_process_cleanup(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        provider, pid_file, scratch = _provider(tmp_path, "sleep", grace=0.2)
+        audio = tmp_path / "input.wav"
+        _write_pcm_wav(audio)
+        transcription = asyncio.create_task(
+            provider.transcribe(TranscriptionRequest(audio_path=audio, timeout_seconds=30))
+        )
+        for _ in range(100):
+            if pid_file.exists():
+                break
+            await asyncio.sleep(0.005)
+        first_close = asyncio.create_task(provider.close())
+        term_file = pid_file.with_suffix(".term")
+        for _ in range(100):
+            if term_file.exists():
+                break
+            await asyncio.sleep(0.005)
+        second_close = asyncio.create_task(provider.close())
+        await asyncio.sleep(0)
+        assert not first_close.done()
+        assert not second_close.done()
+        first_close.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await first_close
+        await second_close
+        result = await asyncio.gather(transcription, return_exceptions=True)
+        assert isinstance(result[0], STTError)
+        pid = int(pid_file.read_text(encoding="utf-8"))
+        assert not _process_exists(pid)
+        assert list(scratch.iterdir()) == []
 
     asyncio.run(scenario())
 

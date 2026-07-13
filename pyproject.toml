@@ -38,15 +38,15 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["app"]
+packages = ["app", "desktop_client"]
 
 [tool.pytest.ini_options]
-addopts = "-ra --strict-config --strict-markers --cov=app --cov-branch --cov-report=term-missing:skip-covered --cov-fail-under=90"
+addopts = "-ra --strict-config --strict-markers --cov=app --cov=desktop_client --cov-branch --cov-report=term-missing:skip-covered --cov-fail-under=90"
 testpaths = ["tests"]
 
 [tool.coverage.run]
 branch = true
-source = ["app"]
+source = ["app", "desktop_client"]
 
 [tool.coverage.report]
 fail_under = 90
@@ -56,7 +56,7 @@ skip_covered = true
 [tool.ruff]
 target-version = "py311"
 line-length = 100
-src = ["app", "tests"]
+src = ["app", "desktop_client", "tests"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "SIM"]
@@ -72,4 +72,4 @@ strict = true
 pretty = true
 show_error_codes = true
 warn_unreachable = true
-files = ["app", "tests"]
+files = ["app", "desktop_client", "tests"]

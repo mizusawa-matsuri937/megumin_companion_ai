@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 import wave
 from pathlib import Path
 from typing import Any
@@ -94,6 +95,20 @@ class BlockingSTT:
         return None
 
 
+class BlockingCloseSTT(InspectingSTT):
+    def __init__(self) -> None:
+        super().__init__()
+        self.close_started = asyncio.Event()
+        self.release_close = asyncio.Event()
+        self.close_count = 0
+
+    async def close(self) -> None:
+        self.close_count += 1
+        self.close_started.set()
+        await self.release_close.wait()
+        self.closed = True
+
+
 class RecordingMessageSink:
     def __init__(self) -> None:
         self.messages: list[UserMessage] = []
@@ -121,6 +136,45 @@ class SlowStoppingSource(FakePCMSource):
         self.callback = None
         if self.fail:
             raise RuntimeError("device stop failed")
+
+
+class SlowStartingSource(FakePCMSource):
+    def __init__(self) -> None:
+        super().__init__()
+        self.start_entered = asyncio.Event()
+        self.release_start = asyncio.Event()
+        self.start_cancelled = False
+
+    async def start(self, callback: PCMCallback, *, sample_rate: int, channels: int) -> None:
+        self.start_count += 1
+        self.callback = callback
+        self.start_entered.set()
+        try:
+            await self.release_start.wait()
+        except asyncio.CancelledError:
+            self.start_cancelled = True
+            raise
+
+
+class BlockingMessageSink:
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.cancelled = False
+        self.completed = False
+
+    async def accept(self, message: UserMessage) -> TurnState:
+        self.started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            self.cancelled = True
+            raise
+        self.completed = True
+        return TurnState(
+            session_id=message.session_id,
+            source_message_id=message.message_id,
+            input_mode=message.input_mode,
+        )
 
 
 class FakeRawInputStream:
@@ -152,6 +206,33 @@ class FakeSoundDevice:
         stream = FakeRawInputStream(kwargs, fail_start=self.fail_start)
         self.streams.append(stream)
         return stream
+
+
+class BlockingRawInputStream(FakeRawInputStream):
+    def __init__(self, kwargs: dict[str, Any]) -> None:
+        super().__init__(kwargs)
+        self.start_entered = threading.Event()
+        self.release_start = threading.Event()
+        self.active = False
+
+    def start(self) -> None:
+        self.start_entered.set()
+        self.release_start.wait(timeout=5)
+        self.started = True
+        self.active = True
+
+    def close(self) -> None:
+        self.active = False
+        super().close()
+
+
+class BlockingSoundDevice:
+    def __init__(self) -> None:
+        self.stream: BlockingRawInputStream | None = None
+
+    def RawInputStream(self, **kwargs: Any) -> BlockingRawInputStream:  # noqa: N802
+        self.stream = BlockingRawInputStream(kwargs)
+        return self.stream
 
 
 def _assert_state(recorder: PushToTalkRecorder, expected: RecordingState) -> None:
@@ -290,6 +371,22 @@ def test_empty_and_over_limit_recordings_fail_without_stt() -> None:
     asyncio.run(scenario())
 
 
+def test_odd_pcm_frames_are_truncated_to_complete_int16_samples() -> None:
+    async def scenario() -> None:
+        source = FakePCMSource()
+        stt = InspectingSTT()
+        recorder = PushToTalkRecorder(source, stt)
+        await recorder.start()
+        source.emit(b"\x01\x02\x03")
+        await asyncio.sleep(0)
+        assert recorder.buffered_bytes == 2
+        await recorder.stop()
+        assert stt.formats == [(16_000, 1, 2, 1)]
+        await recorder.close()
+
+    asyncio.run(scenario())
+
+
 def test_invalid_transitions_and_start_failure_return_to_idle() -> None:
     async def scenario() -> None:
         source = FakePCMSource(fail_start=True)
@@ -359,6 +456,31 @@ def test_sounddevice_start_failures_are_typed_and_partial_stream_is_closed() -> 
     asyncio.run(scenario())
 
 
+def test_cancelling_sounddevice_start_drains_worker_and_closes_started_stream() -> None:
+    async def scenario() -> None:
+        module = BlockingSoundDevice()
+        source = SoundDevicePCMInput()
+        with patch(
+            "desktop_client.inputs.voice_input.importlib.import_module", return_value=module
+        ):
+            task = asyncio.create_task(
+                source.start(lambda _frame: None, sample_rate=16_000, channels=1)
+            )
+            while module.stream is None or not module.stream.start_entered.is_set():
+                await asyncio.sleep(0)
+            task.cancel()
+            await asyncio.sleep(0)
+            assert not task.done()
+            module.stream.release_start.set()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        assert module.stream.started
+        assert module.stream.closed
+        assert not module.stream.active
+
+    asyncio.run(scenario())
+
+
 def test_configuration_validation_duplicate_start_and_second_overflow_frame() -> None:
     with pytest.raises(ValueError, match="固定"):
         PushToTalkConfig(sample_rate=8_000)
@@ -399,13 +521,77 @@ def test_cancel_between_capture_stop_and_transcription_prevents_stt() -> None:
         await asyncio.sleep(0)
         stop_task = asyncio.create_task(recorder.stop())
         await source.stop_started.wait()
-        await recorder.cancel()
+        cancel_task = asyncio.create_task(recorder.cancel())
+        await asyncio.sleep(0)
+        assert not cancel_task.done()
         source.release_stop.set()
+        await cancel_task
         result = await asyncio.gather(stop_task, return_exceptions=True)
         assert isinstance(result[0], asyncio.CancelledError)
         assert stt.paths == []
         _assert_state(recorder, RecordingState.idle)
         await recorder.close()
+
+    asyncio.run(scenario())
+
+
+def test_close_cancels_inflight_start_and_cannot_leave_microphone_active() -> None:
+    async def scenario() -> None:
+        source = SlowStartingSource()
+        recorder = PushToTalkRecorder(source, InspectingSTT())
+        start_task = asyncio.create_task(recorder.start())
+        await source.start_entered.wait()
+        await recorder.close()
+        result = await asyncio.gather(start_task, return_exceptions=True)
+        assert isinstance(result[0], asyncio.CancelledError)
+        assert source.start_cancelled
+        assert source.callback is None
+        assert source.stop_count >= 1
+        assert source.close_count == 1
+        _assert_state(recorder, RecordingState.closed)
+
+    asyncio.run(scenario())
+
+
+def test_close_cancels_and_joins_inflight_message_delivery() -> None:
+    async def scenario() -> None:
+        source = FakePCMSource()
+        recorder = PushToTalkRecorder(source, InspectingSTT())
+        sink = BlockingMessageSink()
+        await recorder.start()
+        source.emit(b"\x00\x00" * 8)
+        await asyncio.sleep(0)
+        send_task = asyncio.create_task(recorder.stop_and_send(sink))
+        await sink.started.wait()
+        await recorder.close()
+        result = await asyncio.gather(send_task, return_exceptions=True)
+        assert isinstance(result[0], asyncio.CancelledError)
+        assert sink.cancelled
+        assert not sink.completed
+        _assert_state(recorder, RecordingState.closed)
+
+    asyncio.run(scenario())
+
+
+def test_concurrent_recorder_close_waiters_join_one_resource_close() -> None:
+    async def scenario() -> None:
+        source = FakePCMSource()
+        stt = BlockingCloseSTT()
+        recorder = PushToTalkRecorder(source, stt)
+        first = asyncio.create_task(recorder.close())
+        await stt.close_started.wait()
+        second = asyncio.create_task(recorder.close())
+        await asyncio.sleep(0)
+        assert not first.done()
+        assert not second.done()
+        first.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await first
+        stt.release_close.set()
+        await second
+        assert stt.close_count == 1
+        assert source.close_count == 1
+        _assert_state(recorder, RecordingState.closed)
 
     asyncio.run(scenario())
 
