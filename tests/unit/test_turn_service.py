@@ -1,0 +1,197 @@
+"""Turn lifecycle, observer isolation, cancellation, and error mapping tests."""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+from collections.abc import Awaitable, Callable
+from enum import StrEnum
+from typing import Any
+
+import pytest
+from app.core import CancellationToken, TurnService
+from app.schemas import TurnMetrics, TurnOutcome, TurnState, TurnStatus, UserMessage
+
+
+class PipelineErrorCode(StrEnum):
+    unavailable = "provider_unavailable"
+
+
+class PipelineFailure(RuntimeError):
+    def __init__(self, code: PipelineErrorCode | str | None = None) -> None:
+        super().__init__("private upstream failure")
+        self.code = code
+
+
+class ControllablePipeline:
+    def __init__(
+        self,
+        *,
+        failure: Exception | None = None,
+        wait_forever: bool = False,
+    ) -> None:
+        self.failure = failure
+        self.wait_forever = wait_forever
+        self.started = asyncio.Event()
+        self.closed = False
+
+    async def run(
+        self,
+        _message: UserMessage,
+        _state: TurnState,
+        token: CancellationToken,
+        emit: Callable[[str, dict[str, Any]], Awaitable[None]],
+    ) -> TurnOutcome:
+        self.started.set()
+        await emit("assistant.delta", {"delta": "完成"})
+        if self.wait_forever:
+            await token.wait()
+            token.raise_if_cancelled()
+        if self.failure is not None:
+            raise self.failure
+        return TurnOutcome(
+            full_text="完成",
+            segments=[],
+            metrics=TurnMetrics(turn_total_ms=1),
+        )
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+class RecordingObserver:
+    def __init__(self, *, fail: bool = False) -> None:
+        self.fail = fail
+        self.accepted: list[str] = []
+        self.completed: list[str] = []
+
+    async def on_user_accepted(self, _message: UserMessage, state: TurnState) -> None:
+        self.accepted.append(state.turn_id)
+        if self.fail:
+            raise RuntimeError("observer input must stay isolated")
+
+    async def on_turn_completed(
+        self,
+        _message: UserMessage,
+        state: TurnState,
+        _outcome: TurnOutcome,
+    ) -> None:
+        self.completed.append(state.turn_id)
+        if self.fail:
+            raise RuntimeError("observer output must stay isolated")
+
+
+def logger() -> logging.Logger:
+    instance = logging.getLogger("test.turn_service")
+    instance.handlers = [logging.NullHandler()]
+    instance.propagate = False
+    return instance
+
+
+async def receive_type(
+    queue: asyncio.Queue[Any],
+    event_type: str,
+) -> Any:
+    while True:
+        event = await asyncio.wait_for(queue.get(), timeout=1)
+        queue.task_done()
+        if event.type == event_type:
+            return event
+
+
+def test_success_records_safe_outcome_and_observers_are_isolated() -> None:
+    async def scenario() -> None:
+        pipeline = ControllablePipeline()
+        good = RecordingObserver()
+        bad = RecordingObserver(fail=True)
+        service = TurnService(logger(), pipeline, observers=(bad, good))
+        queue = service.subscribe("session-a")
+        wildcard = service.subscribe("*")
+
+        state = await service.accept(UserMessage(text="你好", session_id="session-a"))
+        event = await receive_type(queue, "assistant.completed")
+        wildcard_event = await receive_type(wildcard, "assistant.completed")
+
+        assert event.turn_id == state.turn_id == wildcard_event.turn_id
+        assert service.snapshot()["turns"][state.turn_id]["status"] == "completed"
+        assert service.snapshot()["metrics"][state.turn_id]["turn_total_ms"] == 1
+        assert service.snapshot()["outcomes"][state.turn_id] == {
+            "text_length": 2,
+            "segment_count": 0,
+        }
+        assert good.accepted == good.completed == [state.turn_id]
+        assert bad.accepted == bad.completed == [state.turn_id]
+
+        service.unsubscribe("session-a", queue)
+        service.unsubscribe("session-a", queue)
+        service.unsubscribe("*", wildcard)
+        assert service.snapshot()["subscriber_count"] == 0
+        assert (await service.cancel(turn_id=state.turn_id)) is not None
+        await service.shutdown()
+        await service.shutdown()
+        assert pipeline.closed
+        with pytest.raises(RuntimeError, match="已关闭"):
+            await service.accept(UserMessage(text="关闭后输入"))
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected"),
+    [
+        (PipelineFailure(PipelineErrorCode.unavailable), "provider_unavailable"),
+        (PipelineFailure("custom_failure"), "custom_failure"),
+        (RuntimeError("generic"), "pipeline_failed"),
+    ],
+)
+def test_failure_codes_are_safe_and_terminal(failure: Exception, expected: str) -> None:
+    async def scenario() -> None:
+        service = TurnService(logger(), ControllablePipeline(failure=failure))
+        queue = service.subscribe("local_session")
+        state = await service.accept(UserMessage(text="触发失败"))
+        event = await receive_type(queue, "turn.failed")
+
+        assert event.payload["error_code"] == expected
+        terminal = await service.cancel(turn_id=state.turn_id)
+        assert terminal is not None and terminal.status is TurnStatus.failed
+        await service.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_cancel_without_pipeline_and_unknown_turns() -> None:
+    async def scenario() -> None:
+        service = TurnService(logger())
+        queue = service.subscribe("local_session")
+        state = await service.accept(UserMessage(text="只接受，不运行"))
+        cancelled = await service.cancel(turn_id=state.turn_id)
+
+        assert cancelled is not None and cancelled.status is TurnStatus.cancelled
+        assert (await receive_type(queue, "turn.cancelled")).turn_id == state.turn_id
+        assert await service.cancel(turn_id="turn_missing") is None
+        assert await service.cancel(session_id="missing-session") is None
+        await service.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_cancel_active_pipeline_and_shutdown_cleanup() -> None:
+    async def scenario() -> None:
+        pipeline = ControllablePipeline(wait_forever=True)
+        service = TurnService(logger(), pipeline)
+        queue = service.subscribe("local_session")
+        state = await service.accept(UserMessage(text="长任务"))
+        await pipeline.started.wait()
+        cancelled = await service.cancel(turn_id=state.turn_id, reason="test")
+
+        assert cancelled is not None and cancelled.status is TurnStatus.cancelled
+        assert (await receive_type(queue, "turn.cancelled")).turn_id == state.turn_id
+
+        pipeline.started.clear()
+        second = await service.accept(UserMessage(text="由 shutdown 取消"))
+        await pipeline.started.wait()
+        await service.shutdown()
+        assert service.snapshot()["turns"][second.turn_id]["status"] == "cancelled"
+        assert pipeline.closed
+
+    asyncio.run(scenario())

@@ -7,7 +7,13 @@ import httpx
 import pytest
 from app.clients.llm import LLMErrorCode, LLMProviderError, OpenAICompatibleLLMProvider
 from app.core import CancellationToken
-from app.schemas import ChatMessage, ChatRequest, ChatRole
+from app.schemas import (
+    ChatMessage,
+    ChatRequest,
+    ChatRole,
+    ImageURLContent,
+    TextContent,
+)
 
 
 def make_provider(handler: httpx.MockTransport) -> OpenAICompatibleLLMProvider:
@@ -133,6 +139,10 @@ def test_malformed_stream_and_pre_cancel_are_not_silently_accepted() -> None:
 def test_invalid_provider_configuration_and_closed_lifecycle() -> None:
     with pytest.raises(ValueError, match="HTTP"):
         OpenAICompatibleLLMProvider(base_url="file:///tmp", model="m", api_key="k")
+    with pytest.raises(ValueError, match="model"):
+        OpenAICompatibleLLMProvider(base_url="https://example.invalid", model=" ", api_key="k")
+    with pytest.raises(ValueError, match="api_key"):
+        OpenAICompatibleLLMProvider(base_url="https://example.invalid", model="m", api_key=" ")
 
     async def scenario() -> None:
         provider = OpenAICompatibleLLMProvider(
@@ -142,5 +152,133 @@ def test_invalid_provider_configuration_and_closed_lifecycle() -> None:
         await provider.close()
         with pytest.raises(RuntimeError, match="已关闭"):
             await provider.complete(request(), CancellationToken("turn"))
+
+    asyncio.run(scenario())
+
+
+def test_multimodal_payload_and_list_stream_content() -> None:
+    seen: dict[str, object] = {}
+
+    def handler(incoming: httpx.Request) -> httpx.Response:
+        seen.update(json.loads(incoming.content))
+        return httpx.Response(
+            200,
+            text="\n".join(
+                [
+                    "event: message",
+                    'data: {"choices":[null,{"delta":null},{"delta":{"content":'
+                    '[{"text":"图像"},7,{"ignored":true}]}}]}',
+                    "data: [DONE]",
+                ]
+            ),
+        )
+
+    multimodal = ChatRequest(
+        messages=[
+            ChatMessage(
+                role=ChatRole.user,
+                content=[
+                    TextContent(text="看图"),
+                    ImageURLContent(url="https://example.invalid/image.png", detail="high"),
+                ],
+            )
+        ]
+    )
+
+    async def scenario() -> list[str]:
+        provider = OpenAICompatibleLLMProvider(
+            base_url="https://provider.invalid",
+            endpoint="v1/chat/completions",
+            model="test-model",
+            api_key="fake-test-key",
+            client=httpx.AsyncClient(
+                base_url="https://provider.invalid", transport=httpx.MockTransport(handler)
+            ),
+        )
+        output = [delta async for delta in provider.stream(multimodal, CancellationToken("turn"))]
+        await provider._client.aclose()
+        return output
+
+    assert asyncio.run(scenario()) == ["图像"]
+    assert seen["messages"] == [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "看图"},
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": "https://example.invalid/image.png",
+                        "detail": "high",
+                    },
+                },
+            ],
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    ("operation", "exception", "expected"),
+    [
+        ("stream", httpx.ReadTimeout("slow provider"), LLMErrorCode.timeout),
+        ("stream", httpx.ConnectError("offline"), LLMErrorCode.unavailable),
+        ("complete", httpx.ReadTimeout("slow provider"), LLMErrorCode.timeout),
+        ("complete", httpx.ConnectError("offline"), LLMErrorCode.unavailable),
+    ],
+)
+def test_transport_errors_are_mapped(
+    operation: str,
+    exception: httpx.HTTPError,
+    expected: LLMErrorCode,
+) -> None:
+    def handler(_incoming: httpx.Request) -> httpx.Response:
+        raise exception
+
+    async def scenario() -> None:
+        provider = make_provider(httpx.MockTransport(handler))
+        with pytest.raises(LLMProviderError) as captured:
+            if operation == "stream":
+                _ = [delta async for delta in provider.stream(request(), CancellationToken("turn"))]
+            else:
+                await provider.complete(request(), CancellationToken("turn"))
+        assert captured.value.code is expected
+        assert captured.value.retryable
+        await provider._client.aclose()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"error": {"message": "private remote response"}},
+        {"choices": []},
+        {"choices": [{}]},
+    ],
+)
+def test_remote_and_completion_protocol_errors_are_rejected(body: dict[str, object]) -> None:
+    def handler(_incoming: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=body)
+
+    async def scenario() -> None:
+        provider = make_provider(httpx.MockTransport(handler))
+        with pytest.raises(LLMProviderError) as captured:
+            await provider.complete(request(), CancellationToken("turn"))
+        assert captured.value.code in {LLMErrorCode.rejected, LLMErrorCode.protocol}
+        assert "private remote response" not in str(captured.value)
+        await provider._client.aclose()
+
+    asyncio.run(scenario())
+
+
+def test_non_object_json_is_a_protocol_error() -> None:
+    def handler(_incoming: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text="[]")
+
+    async def scenario() -> None:
+        provider = make_provider(httpx.MockTransport(handler))
+        with pytest.raises(LLMProviderError, match="llm_protocol_error"):
+            await provider.complete(request(), CancellationToken("turn"))
+        await provider._client.aclose()
 
     asyncio.run(scenario())
