@@ -64,6 +64,39 @@ class LLMConfig(StrictModel):
     max_tokens: int = Field(default=600, ge=1, le=100_000)
 
 
+class GPTSoVITSPresetConfig(StrictModel):
+    ref_audio_path: str = Field(min_length=1)
+    prompt_text: str = ""
+    prompt_lang: str = "zh"
+    text_lang: str = "zh"
+    top_k: int = Field(default=5, ge=1)
+    top_p: float = Field(default=1.0, gt=0.0, le=1.0)
+    temperature: float = Field(default=1.0, gt=0.0)
+    text_split_method: str = "cut5"
+    batch_size: int = Field(default=1, ge=1)
+    batch_threshold: float = 0.75
+    split_bucket: bool = True
+    speed_factor: float = Field(default=1.0, gt=0.0)
+    fragment_interval: float = Field(default=0.3, ge=0.0)
+    seed: int = -1
+    parallel_infer: bool = True
+    repetition_penalty: float = Field(default=1.35, gt=0.0)
+
+
+class TTSConfig(StrictModel):
+    provider: str = "mock"
+    base_url: str = "http://127.0.0.1:9880"
+    output_directory: Path = Path("data/cache/audio/gpt-sovits/ephemeral")
+    timeout_seconds: float = Field(default=30.0, gt=0.0, le=300.0)
+    max_audio_bytes: int = Field(default=32 * 1024 * 1024, ge=44)
+    default_preset: str = "default"
+    presets: dict[str, GPTSoVITSPresetConfig] = Field(default_factory=dict)
+    cache_enabled: bool = False
+    cache_directory: Path = Path("data/cache/audio/gpt-sovits/persistent")
+    cache_max_bytes: int = Field(default=512 * 1024 * 1024, ge=1)
+    cache_ttl_seconds: float = Field(default=7 * 24 * 60 * 60, gt=0.0)
+
+
 class PipelineConfig(StrictModel):
     tts_worker_count: int = Field(default=2, ge=1, le=8)
     segment_min_chars: int = Field(default=6, ge=1, le=100)
@@ -87,6 +120,7 @@ class Settings(StrictModel):
     server: ServerConfig = Field(default_factory=ServerConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
+    tts: TTSConfig = Field(default_factory=TTSConfig)
     pipeline: PipelineConfig = Field(default_factory=PipelineConfig)
 
     _environment: dict[str, str] = PrivateAttr(default_factory=dict)
@@ -132,6 +166,8 @@ ENV_OVERRIDES: dict[str, tuple[str, str]] = {
     "MEGUMIN_LLM_API_KEY_ENV": ("llm", "api_key_env"),
     "MEGUMIN_LLM_BASE_URL": ("llm", "base_url"),
     "MEGUMIN_LLM_MODEL": ("llm", "model"),
+    "MEGUMIN_TTS_PROVIDER": ("tts", "provider"),
+    "MEGUMIN_TTS_BASE_URL": ("tts", "base_url"),
 }
 
 

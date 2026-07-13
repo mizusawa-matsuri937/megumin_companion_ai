@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from app.clients.llm import MockLLMProvider, OpenAICompatibleLLMProvider
 from app.clients.llm.base import LLMProvider
-from app.clients.tts import MockTTSProvider
+from app.clients.tts import GPTSoVITSPreset, GPTSoVITSProvider, MockTTSProvider, TTSProvider
 from app.config import Settings
 from app.config.settings import PROJECT_ROOT
 from app.pipelines import DialoguePipeline
@@ -33,14 +35,7 @@ def build_dialogue_pipeline(settings: Settings) -> DialoguePipeline | None:
             default_max_tokens=settings.llm.max_tokens,
         )
 
-    cache_path = settings.pipeline.audio_cache_path
-    if not cache_path.is_absolute():
-        cache_path = PROJECT_ROOT / cache_path
-    tts = MockTTSProvider(
-        cache_path,
-        duration_ms=settings.pipeline.mock_audio_duration_ms,
-        volume=settings.pipeline.mock_audio_volume,
-    )
+    tts = _build_tts(settings)
     player: AudioPlayer
     if settings.pipeline.playback_mode == "system":
         player = SystemAudioPlayer()
@@ -55,3 +50,38 @@ def build_dialogue_pipeline(settings: Settings) -> DialoguePipeline | None:
         segment_max_chars=settings.pipeline.segment_max_chars,
         segment_max_words=settings.pipeline.segment_max_words,
     )
+
+
+def _build_tts(settings: Settings) -> TTSProvider:
+    provider_name = settings.tts.provider.strip().lower()
+    if provider_name == "mock":
+        cache_path = _project_path(settings.pipeline.audio_cache_path)
+        return MockTTSProvider(
+            cache_path,
+            duration_ms=settings.pipeline.mock_audio_duration_ms,
+            volume=settings.pipeline.mock_audio_volume,
+        )
+    if provider_name not in {"gpt-sovits", "gpt_sovits"}:
+        raise RuntimeError(f"不支持的 TTS provider：{settings.tts.provider}")
+    if settings.tts.default_preset not in settings.tts.presets:
+        raise RuntimeError("GPT-SoVITS 已启用，但 default_preset 未配置。")
+    presets = {
+        name: GPTSoVITSPreset(**preset.model_dump())
+        for name, preset in settings.tts.presets.items()
+    }
+    return GPTSoVITSProvider(
+        settings.tts.base_url,
+        _project_path(settings.tts.output_directory),
+        presets,
+        default_preset=settings.tts.default_preset,
+        timeout_seconds=settings.tts.timeout_seconds,
+        max_audio_bytes=settings.tts.max_audio_bytes,
+        cache_enabled=settings.tts.cache_enabled,
+        cache_dir=_project_path(settings.tts.cache_directory),
+        cache_max_bytes=settings.tts.cache_max_bytes,
+        cache_ttl_seconds=settings.tts.cache_ttl_seconds,
+    )
+
+
+def _project_path(path: Path) -> Path:
+    return path if path.is_absolute() else PROJECT_ROOT / path

@@ -25,6 +25,21 @@ llm:
   temperature: 0.8
   max_tokens: 600
 
+# 默认仍为离线 Mock。启用 GPT-SoVITS 时必须显式配置本机 /tts 地址和 preset。
+tts:
+  provider: mock
+  base_url: http://127.0.0.1:9880
+  output_directory: data/cache/audio/gpt-sovits/ephemeral
+  timeout_seconds: 30
+  max_audio_bytes: 33554432
+  default_preset: default
+  presets: {}
+  # 持久缓存涉及对话文本派生音频，默认关闭；启用后仍会跳过敏感文本。
+  cache_enabled: false
+  cache_directory: data/cache/audio/gpt-sovits/persistent
+  cache_max_bytes: 536870912
+  cache_ttl_seconds: 604800
+
 pipeline:
   tts_worker_count: 2
   segment_min_chars: 6
