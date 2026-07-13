@@ -8,7 +8,7 @@ from typing import Protocol
 from app.emotion import Clock, EmotionEngine, EmotionStimulus, StimulusKind
 from app.prompts.builder import PromptBuilder
 from app.prompts.models import HistoryMessage
-from app.schemas import ChatRequest, ExternalContextBlock, UserMessage
+from app.schemas import ChatRequest, ExternalContextBlock, ProactiveIntent, UserMessage
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,6 +64,12 @@ class EmotionPromptContextBuilder:
             emotion=self._emotion_engine.state,
             history=snapshot.history,
             context_blocks=snapshot.blocks,
+        )
+
+    async def build_proactive(self, intent: ProactiveIntent) -> ChatRequest:
+        return self._prompt_builder.build_proactive(
+            intent=intent,
+            emotion=self._emotion_engine.state,
         )
 
 

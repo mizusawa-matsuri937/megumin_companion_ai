@@ -76,6 +76,7 @@ def build_dialogue_pipeline(
         source=prompt_context_source,
         update_emotion=settings.emotion.enabled,
     )
+    proactive_context_builder = context_builder
     segment_decorator = None
     if settings.emotion.enabled:
         segment_decorator = EmotionSegmentDecorator(
@@ -90,6 +91,7 @@ def build_dialogue_pipeline(
         tts,
         player,
         context_builder=context_builder,
+        proactive_context_builder=proactive_context_builder,
         segment_decorator=segment_decorator,
         tts_worker_count=settings.pipeline.tts_worker_count,
         segment_min_chars=settings.pipeline.segment_min_chars,

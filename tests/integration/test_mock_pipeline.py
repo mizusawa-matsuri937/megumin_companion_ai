@@ -2,13 +2,22 @@
 
 import asyncio
 import logging
+from collections.abc import AsyncIterator
 from pathlib import Path
 
 from app.clients.llm import MockLLMProvider
 from app.clients.tts import MockTTSProvider
 from app.core import CancellationToken, TurnService
 from app.pipelines import DialoguePipeline
-from app.schemas import AudioResult, InputMode, TurnState, UserMessage
+from app.schemas import (
+    AudioResult,
+    ChatCompletion,
+    ChatRequest,
+    InputMode,
+    ProactiveIntent,
+    TurnState,
+    UserMessage,
+)
 
 
 class RecordingAudioPlayer:
@@ -26,6 +35,25 @@ class RecordingAudioPlayer:
 
     async def close(self) -> None:
         return None
+
+
+class CapturingLLM:
+    def __init__(self) -> None:
+        self.requests: list[ChatRequest] = []
+        self.close_calls = 0
+
+    async def stream(self, request: ChatRequest, token: CancellationToken) -> AsyncIterator[str]:
+        token.raise_if_cancelled()
+        self.requests.append(request)
+        yield "主动问候完成。"
+
+    async def complete(self, request: ChatRequest, token: CancellationToken) -> ChatCompletion:
+        token.raise_if_cancelled()
+        self.requests.append(request)
+        return ChatCompletion(text="主动问候完成。")
+
+    async def close(self) -> None:
+        self.close_calls += 1
 
 
 def test_out_of_order_tts_is_played_in_segment_order_and_cleaned(tmp_path: Path) -> None:
@@ -112,3 +140,42 @@ def test_new_input_is_a_hard_barrier_for_old_turn_events(tmp_path: Path) -> None
     assert ("turn.cancelled", first_id) in observed[:new_accepted_index]
     assert all(turn_id != first_id for _event_type, turn_id in observed[new_accepted_index:])
     assert ("assistant.completed", second_id) in observed
+
+
+def test_text_only_proactive_turn_has_no_user_message_or_audio_work(tmp_path: Path) -> None:
+    async def scenario() -> tuple[list[str], ChatRequest, int, int]:
+        llm = CapturingLLM()
+        tts = MockTTSProvider(tmp_path, duration_ms=1, synthesis_delay_seconds=0)
+        player = RecordingAudioPlayer()
+        pipeline = DialoguePipeline(llm, tts, player)
+        intent = ProactiveIntent(
+            trigger_type="idle",
+            instruction="进行一次低打扰问候",
+            score=0.8,
+            reason="test",
+            voice_allowed=False,
+        )
+        state = TurnState(
+            session_id="local_session",
+            source_message_id=intent.intent_id,
+            input_mode=InputMode.text,
+        )
+        token = CancellationToken(state.turn_id)
+        events: list[str] = []
+
+        async def emit(event_type: str, _payload: dict[str, object]) -> None:
+            events.append(event_type)
+
+        outcome = await pipeline.run_proactive(intent, state, token, emit)
+        assert outcome.full_text == "主动问候完成。"
+        await pipeline.close()
+        return events, llm.requests[0], player.stop_count, llm.close_calls
+
+    events, request, stop_count, close_calls = asyncio.run(scenario())
+
+    assert events == ["assistant.delta", "assistant.segment"]
+    assert "PROACTIVE_INTENT_DATA" in str(request.messages[-1].content)
+    assert "score" not in str(request.messages[-1].content)
+    assert stop_count == 0
+    assert close_calls == 1
+    assert not list(tmp_path.rglob("*.wav"))

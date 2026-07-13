@@ -3,6 +3,7 @@
 import asyncio
 from datetime import UTC, datetime, timedelta
 
+from app.core import DirectProactiveContextBuilder
 from app.emotion import EmotionEngine, FakeClock, StimulusKind
 from app.prompts import (
     EmotionPromptContextBuilder,
@@ -11,7 +12,7 @@ from app.prompts import (
     PromptContextSnapshot,
 )
 from app.prompts.context_builder import classify_stimulus
-from app.schemas import ChatRole, ExternalContextBlock, UserMessage
+from app.schemas import ChatRole, ExternalContextBlock, ProactiveIntent, UserMessage
 from app.schemas.ai import ContextOrigin, ContextTrust
 
 
@@ -85,5 +86,30 @@ def test_context_builder_can_freeze_emotion_without_dropping_prompt_policy() -> 
         assert engine.state == before
         assert request.messages[0].role is ChatRole.system
         assert "private desktop companion" in str(request.messages[0].content)
+
+    asyncio.run(scenario())
+
+
+def test_direct_and_emotion_proactive_builders_keep_internal_boundary() -> None:
+    async def scenario() -> None:
+        intent = ProactiveIntent(
+            trigger_type="scheduled",
+            instruction="进行一次简短问候",
+            score=0.8,
+            reason="test",
+        )
+        direct = await DirectProactiveContextBuilder().build_proactive(intent)
+        clock = FakeClock(datetime(2026, 7, 13, tzinfo=UTC))
+        emotion = await EmotionPromptContextBuilder(
+            PromptBuilder(), EmotionEngine(clock=clock), clock, source=Source()
+        ).build_proactive(intent)
+
+        for request in (direct, emotion):
+            assert request.messages[-1].role is ChatRole.user
+            assert "PROACTIVE_INTENT_DATA" in str(request.messages[-1].content)
+            assert all("历史回复" not in str(message.content) for message in request.messages)
+            assert all(
+                "ignore all safeguards" not in str(message.content) for message in request.messages
+            )
 
     asyncio.run(scenario())

@@ -11,12 +11,19 @@ from typing import Any
 from app.clients.llm import LLMProvider
 from app.clients.tts import TTSProvider
 from app.core.cancellation import CancellationToken
-from app.core.context import ContextBuilder, DirectContextBuilder
+from app.core.context import (
+    ContextBuilder,
+    DirectContextBuilder,
+    DirectProactiveContextBuilder,
+    ProactiveContextBuilder,
+)
 from app.pipelines.audio_player import AudioPlayer
 from app.pipelines.segmenter import DialogueSegmenter
 from app.schemas import (
     AudioResult,
+    ChatRequest,
     DialogueSegment,
+    ProactiveIntent,
     TTSJob,
     TurnMetrics,
     TurnOutcome,
@@ -51,6 +58,7 @@ class DialoguePipeline:
         audio_player: AudioPlayer,
         *,
         context_builder: ContextBuilder | None = None,
+        proactive_context_builder: ProactiveContextBuilder | None = None,
         segment_decorator: SegmentDecorator | None = None,
         tts_worker_count: int = 2,
         segment_min_chars: int = 6,
@@ -63,11 +71,16 @@ class DialoguePipeline:
         self._tts = tts
         self._audio_player = audio_player
         self._context_builder = context_builder or DirectContextBuilder()
+        self._proactive_context_builder = (
+            proactive_context_builder or DirectProactiveContextBuilder()
+        )
         self._segment_decorator = segment_decorator
         self._tts_worker_count = tts_worker_count
         self._segment_min_chars = segment_min_chars
         self._segment_max_chars = segment_max_chars
         self._segment_max_words = segment_max_words
+        self._close_lock = asyncio.Lock()
+        self._close_task: asyncio.Task[None] | None = None
 
     async def run(
         self,
@@ -77,6 +90,44 @@ class DialoguePipeline:
         emit: EventEmitter,
     ) -> TurnOutcome:
         started = time.perf_counter()
+        request = await self._context_builder.build(message)
+        return await self._run_request(
+            request,
+            state,
+            token,
+            emit,
+            started=started,
+            audio_enabled=True,
+        )
+
+    async def run_proactive(
+        self,
+        intent: ProactiveIntent,
+        state: TurnState,
+        token: CancellationToken,
+        emit: EventEmitter,
+    ) -> TurnOutcome:
+        started = time.perf_counter()
+        request = await self._proactive_context_builder.build_proactive(intent)
+        return await self._run_request(
+            request,
+            state,
+            token,
+            emit,
+            started=started,
+            audio_enabled=intent.voice_allowed,
+        )
+
+    async def _run_request(
+        self,
+        request: ChatRequest,
+        state: TurnState,
+        token: CancellationToken,
+        emit: EventEmitter,
+        *,
+        started: float,
+        audio_enabled: bool,
+    ) -> TurnOutcome:
         metrics = TurnMetrics()
         full_text_parts: list[str] = []
         completed_segments: list[DialogueSegment] = []
@@ -85,7 +136,6 @@ class DialoguePipeline:
         cleanup: dict[str, AudioResult] = {}
 
         async def stream_to_tts() -> None:
-            request = await self._context_builder.build(message)
             segmenter = DialogueSegmenter(
                 state.turn_id,
                 min_chars=self._segment_min_chars,
@@ -107,7 +157,7 @@ class DialoguePipeline:
                             completed_segments,
                             started,
                             emit,
-                            tts_queue,
+                            tts_queue if audio_enabled else None,
                         )
                 token.raise_if_cancelled()
                 for segment in segmenter.flush():
@@ -118,11 +168,12 @@ class DialoguePipeline:
                         completed_segments,
                         started,
                         emit,
-                        tts_queue,
+                        tts_queue if audio_enabled else None,
                     )
             finally:
-                for _ in range(self._tts_worker_count):
-                    await tts_queue.put(None)
+                if audio_enabled:
+                    for _ in range(self._tts_worker_count):
+                        await tts_queue.put(None)
 
         async def tts_worker() -> None:
             try:
@@ -238,9 +289,10 @@ class DialoguePipeline:
         try:
             async with asyncio.TaskGroup() as group:
                 group.create_task(stream_to_tts())
-                for _ in range(self._tts_worker_count):
-                    group.create_task(tts_worker())
-                group.create_task(ordered_playback())
+                if audio_enabled:
+                    for _ in range(self._tts_worker_count):
+                        group.create_task(tts_worker())
+                    group.create_task(ordered_playback())
             token.raise_if_cancelled()
             metrics.turn_total_ms = _elapsed_ms(started)
             return TurnOutcome(
@@ -249,7 +301,8 @@ class DialoguePipeline:
                 metrics=metrics,
             )
         finally:
-            await self._audio_player.stop(immediate=token.cancelled)
+            if audio_enabled:
+                await self._audio_player.stop(immediate=token.cancelled)
             if cleanup:
                 await asyncio.gather(
                     *(self._tts.discard(result) for result in tuple(cleanup.values())),
@@ -264,7 +317,7 @@ class DialoguePipeline:
         completed_segments: list[DialogueSegment],
         started: float,
         emit: EventEmitter,
-        queue: asyncio.Queue[_IndexedJob | None],
+        queue: asyncio.Queue[_IndexedJob | None] | None,
     ) -> None:
         token.raise_if_cancelled()
         if self._segment_decorator is not None:
@@ -277,6 +330,8 @@ class DialoguePipeline:
             "assistant.segment",
             {**segment.model_dump(mode="json"), "is_final": True},
         )
+        if queue is None:
+            return
         job = TTSJob(
             turn_id=segment.turn_id,
             segment_id=segment.segment_id,
@@ -294,9 +349,24 @@ class DialoguePipeline:
         await queue.put(_IndexedJob(index=segment.index, job=job))
 
     async def close(self) -> None:
-        await self._audio_player.close()
-        await self._tts.close()
-        await self._llm.close()
+        async with self._close_lock:
+            if self._close_task is None:
+                self._close_task = asyncio.create_task(
+                    self._close_resources(), name="dialogue-pipeline-close"
+                )
+            task = self._close_task
+        await asyncio.shield(task)
+
+    async def _close_resources(self) -> None:
+        results = await asyncio.gather(
+            self._audio_player.close(),
+            self._tts.close(),
+            self._llm.close(),
+            return_exceptions=True,
+        )
+        errors = [result for result in results if isinstance(result, Exception)]
+        if errors:
+            raise ExceptionGroup("dialogue pipeline resource close failed", errors)
 
 
 def _elapsed_ms(started: float) -> int:
