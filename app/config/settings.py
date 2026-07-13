@@ -139,6 +139,19 @@ class MemoryConfig(StrictModel):
     candidate_analysis_enabled: bool = False
 
 
+class PerceptionConfig(StrictModel):
+    operation_timeout_seconds: float = Field(default=10.0, gt=0.0, le=120.0)
+    max_frame_bytes: int = Field(default=20 * 1024 * 1024, ge=1)
+    minimum_hash_distance: float = Field(default=0.08, ge=0.0, le=1.0)
+    max_tracked_windows: int = Field(default=128, ge=1, le=10_000)
+    ocr_max_spans: int = Field(default=2_000, ge=1, le=20_000)
+    ocr_max_span_chars: int = Field(default=2_000, ge=1, le=20_000)
+    max_ocr_text_chars: int = Field(default=100_000, ge=1, le=1_000_000)
+    max_summary_chars: int = Field(default=2_000, ge=1, le=20_000)
+    cloud_max_calls: int = Field(default=6, ge=1, le=10_000)
+    cloud_period_seconds: float = Field(default=60.0, gt=0.0, le=86_400.0)
+
+
 class PipelineConfig(StrictModel):
     tts_worker_count: int = Field(default=2, ge=1, le=8)
     segment_min_chars: int = Field(default=6, ge=1, le=100)
@@ -167,6 +180,7 @@ class Settings(StrictModel):
     emotion: EmotionConfig = Field(default_factory=EmotionConfig)
     storage: StorageConfig = Field(default_factory=StorageConfig)
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
+    perception: PerceptionConfig = Field(default_factory=PerceptionConfig)
     pipeline: PipelineConfig = Field(default_factory=PipelineConfig)
 
     _environment: dict[str, str] = PrivateAttr(default_factory=dict)

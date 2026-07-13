@@ -249,6 +249,7 @@ class FixedLimiter:
 def _pipeline(
     *,
     enabled: EnabledFlag | None = None,
+    cloud_enabled: EnabledFlag | None = None,
     order: list[str] | None = None,
     source: FakeWindowSource | None = None,
     guard: FakeWindowGuard | PreCaptureGuard | None = None,
@@ -268,6 +269,7 @@ def _pipeline(
     return (
         PerceptionPipeline(
             enabled=enabled or EnabledFlag(),
+            cloud_enabled=cloud_enabled or EnabledFlag(),
             window_source=source or FakeWindowSource(calls),
             window_guard=guard or FakeWindowGuard(calls),
             capture=capture_impl,
@@ -437,6 +439,26 @@ def test_cloud_rate_limit_returns_local_result_without_sanitization() -> None:
         assert result.context is not None and result.context.category == "coding"
         assert limiter.calls == 1
         assert sanitizer.frames == [] and cloud.frames == []
+
+    asyncio.run(scenario())
+
+
+def test_disabled_or_broken_cloud_feature_never_sanitizes_or_calls_network() -> None:
+    async def scenario() -> None:
+        for flag in (EnabledFlag(False), RaisingEnabledFlag()):
+            order: list[str] = []
+            sanitizer = FakeSanitizer(order)
+            cloud = FakeCloud(order)
+            pipeline, _calls, _capture, _ocr = _pipeline(
+                order=order,
+                cloud_enabled=flag,
+                sanitizer=sanitizer,
+                cloud=cloud,
+            )
+            result = await pipeline.observe()
+            assert result.status is ObservationStatus.analyzed_local
+            assert sanitizer.frames == []
+            assert cloud.frames == []
 
     asyncio.run(scenario())
 

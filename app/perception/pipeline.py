@@ -62,6 +62,7 @@ class PerceptionPipeline:
         self,
         *,
         enabled: Callable[[], bool],
+        cloud_enabled: Callable[[], bool] | None = None,
         window_source: ActiveWindowSource,
         window_guard: WindowGuard,
         capture: WindowCapture,
@@ -78,6 +79,7 @@ class PerceptionPipeline:
         if (sanitizer is None) != (cloud is None):
             raise ValueError("cloud vision 与 image sanitizer 必须同时配置")
         self._enabled = enabled
+        self._cloud_enabled = cloud_enabled or (lambda: True)
         self._window_source = window_source
         self._window_guard = window_guard
         self._capture = capture
@@ -170,7 +172,7 @@ class PerceptionPipeline:
                     reason_code="scene_classification_failed",
                 )
 
-            if self._cloud is None or self._sanitizer is None:
+            if self._cloud is None or self._sanitizer is None or not self._is_cloud_enabled():
                 return ObservationResult(
                     status=ObservationStatus.analyzed_local,
                     context=local_context,
@@ -223,6 +225,12 @@ class PerceptionPipeline:
     def _is_enabled(self) -> bool:
         try:
             return self._enabled()
+        except Exception:
+            return False
+
+    def _is_cloud_enabled(self) -> bool:
+        try:
+            return self._cloud_enabled()
         except Exception:
             return False
 
