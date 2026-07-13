@@ -1,0 +1,318 @@
+"""GPT-SoVITS API v2 adapter with bounded, atomic WAV handling."""
+
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import os
+import wave
+from collections.abc import Awaitable, Mapping
+from contextlib import suppress
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from typing import TypeVar
+from uuid import uuid4
+
+import httpx
+
+from app.core.cancellation import CancellationToken
+from app.schemas import AudioResult, TTSJob
+
+_T = TypeVar("_T")
+_WAVE_CONTENT_TYPES = frozenset({"audio/wav", "audio/wave", "audio/x-wav"})
+
+
+@dataclass(frozen=True, slots=True)
+class GPTSoVITSPreset:
+    """Voice-affecting parameters accepted by GPT-SoVITS ``/tts``."""
+
+    ref_audio_path: str
+    prompt_text: str = ""
+    prompt_lang: str = "zh"
+    text_lang: str = "zh"
+    top_k: int = 5
+    top_p: float = 1.0
+    temperature: float = 1.0
+    text_split_method: str = "cut5"
+    batch_size: int = 1
+    batch_threshold: float = 0.75
+    split_bucket: bool = True
+    speed_factor: float = 1.0
+    fragment_interval: float = 0.3
+    seed: int = -1
+    parallel_infer: bool = True
+    repetition_penalty: float = 1.35
+
+    def __post_init__(self) -> None:
+        if not self.ref_audio_path.strip():
+            raise ValueError("ref_audio_path 不能为空")
+        if self.top_k < 1 or self.batch_size < 1:
+            raise ValueError("top_k 和 batch_size 必须大于 0")
+        if not 0.0 < self.top_p <= 1.0 or self.temperature <= 0.0:
+            raise ValueError("top_p/temperature 超出有效范围")
+        if self.speed_factor <= 0.0 or self.fragment_interval < 0.0:
+            raise ValueError("speed_factor 必须为正且 fragment_interval 不能为负")
+
+
+@dataclass(frozen=True, slots=True)
+class GPTSoVITSProbe:
+    available: bool
+    protocol: str | None
+    status_code: int | None = None
+    error_code: str | None = None
+
+
+class _AudioValidationError(ValueError):
+    pass
+
+
+class _AudioTooLargeError(ValueError):
+    pass
+
+
+class GPTSoVITSProvider:
+    """Synthesize one segment at a time without retaining a persistent cache."""
+
+    def __init__(
+        self,
+        base_url: str,
+        output_directory: Path,
+        presets: Mapping[str, GPTSoVITSPreset],
+        *,
+        default_preset: str = "default",
+        timeout_seconds: float = 30.0,
+        max_audio_bytes: int = 32 * 1024 * 1024,
+        client: httpx.AsyncClient | None = None,
+    ) -> None:
+        if timeout_seconds <= 0.0:
+            raise ValueError("timeout_seconds 必须大于 0")
+        if max_audio_bytes < 44:
+            raise ValueError("max_audio_bytes 必须至少容纳 WAV header")
+        if default_preset not in presets:
+            raise ValueError("default_preset 必须存在于 presets")
+        self._output_directory = output_directory
+        self._presets = dict(presets)
+        self._default_preset = default_preset
+        self._max_audio_bytes = max_audio_bytes
+        self._tts_endpoint = httpx.URL(base_url.rstrip("/") + "/").join("tts")
+        self._owns_client = client is None
+        self._client = client or httpx.AsyncClient(
+            timeout=httpx.Timeout(timeout_seconds),
+        )
+        self._paths: set[Path] = set()
+        self._closed = False
+
+    async def probe(self) -> GPTSoVITSProbe:
+        """Identify an API v2 ``/tts`` route without generating or saving audio."""
+
+        if self._closed:
+            return GPTSoVITSProbe(False, None, error_code="tts_closed")
+        try:
+            response = await self._client.post(self._tts_endpoint, json={})
+        except httpx.TimeoutException:
+            return GPTSoVITSProbe(False, None, error_code="tts_timeout")
+        except httpx.RequestError:
+            return GPTSoVITSProbe(False, None, error_code="tts_unavailable")
+        if response.status_code in {200, 400, 405, 422}:
+            return GPTSoVITSProbe(True, "api_v2", status_code=response.status_code)
+        return GPTSoVITSProbe(
+            False,
+            None,
+            status_code=response.status_code,
+            error_code=("tts_unavailable" if response.status_code >= 500 else "tts_protocol_error"),
+        )
+
+    async def synthesize(
+        self,
+        job: TTSJob,
+        *,
+        segment_index: int,
+        token: CancellationToken,
+    ) -> AudioResult:
+        token.raise_if_cancelled()
+        if self._closed:
+            return self._failure(job, "tts_closed")
+
+        preset = self._presets.get(job.style, self._presets[self._default_preset])
+        request_payload = asdict(preset)
+        request_payload.update(
+            {
+                "text": job.text,
+                "speed_factor": preset.speed_factor * job.speed_factor,
+                "media_type": "wav",
+                "streaming_mode": False,
+            }
+        )
+        final_path = self._result_path(job, segment_index)
+        part_path = final_path.with_name(f".{final_path.name}.{uuid4().hex}.part")
+        response: httpx.Response | None = None
+        try:
+            request = self._client.build_request("POST", self._tts_endpoint, json=request_payload)
+            response = await _await_with_token(self._client.send(request, stream=True), token)
+            error_code = self._response_error(response)
+            if error_code is not None:
+                return self._failure(job, error_code)
+
+            content_type = response.headers.get("content-type", "").split(";", 1)[0].lower()
+            if content_type not in _WAVE_CONTENT_TYPES:
+                return self._failure(job, "tts_invalid_content_type")
+            declared_size = _content_length(response)
+            if declared_size is not None and declared_size > self._max_audio_bytes:
+                return self._failure(job, "tts_response_too_large")
+
+            final_path.parent.mkdir(parents=True, exist_ok=True)
+            await self._write_response(response, part_path, token)
+            sample_rate, duration_ms = await asyncio.to_thread(_inspect_wave, part_path)
+            token.raise_if_cancelled()
+            await asyncio.to_thread(os.replace, part_path, final_path)
+            self._paths.add(final_path)
+            if token.cancelled:
+                await self._discard_path(final_path)
+                token.raise_if_cancelled()
+            return AudioResult(
+                job_id=job.job_id,
+                turn_id=job.turn_id,
+                segment_id=job.segment_id,
+                success=True,
+                audio_path=final_path,
+                sample_rate=sample_rate,
+                duration_ms=duration_ms,
+            )
+        except _AudioTooLargeError:
+            return self._failure(job, "tts_response_too_large")
+        except _AudioValidationError:
+            return self._failure(job, "tts_invalid_audio")
+        except httpx.TimeoutException:
+            return self._failure(job, "tts_timeout")
+        except httpx.RequestError:
+            return self._failure(job, "tts_unavailable")
+        finally:
+            if response is not None:
+                await response.aclose()
+            await asyncio.to_thread(part_path.unlink, missing_ok=True)
+            await asyncio.to_thread(_remove_empty_parent, part_path.parent)
+
+    async def _write_response(
+        self,
+        response: httpx.Response,
+        path: Path,
+        token: CancellationToken,
+    ) -> None:
+        byte_count = 0
+        stream = response.aiter_bytes()
+        with path.open("xb") as output:
+            while True:
+                try:
+                    chunk = await _await_with_token(anext(stream), token)
+                except StopAsyncIteration:
+                    break
+                byte_count += len(chunk)
+                if byte_count > self._max_audio_bytes:
+                    raise _AudioTooLargeError
+                output.write(chunk)
+        if byte_count == 0:
+            raise _AudioValidationError
+
+    def _result_path(self, job: TTSJob, segment_index: int) -> Path:
+        turn_key = hashlib.sha256(job.turn_id.encode()).hexdigest()[:16]
+        job_key = hashlib.sha256(job.job_id.encode()).hexdigest()[:20]
+        return self._output_directory / turn_key / f"{segment_index:04d}-{job_key}.wav"
+
+    @staticmethod
+    def _response_error(response: httpx.Response) -> str | None:
+        status = response.status_code
+        if 200 <= status < 300:
+            return None
+        if status in {401, 403}:
+            return "tts_auth_failed"
+        if status == 404:
+            return "tts_protocol_error"
+        if status == 408:
+            return "tts_timeout"
+        if status == 429:
+            return "tts_rate_limited"
+        if status >= 500:
+            return "tts_unavailable"
+        return "tts_request_rejected"
+
+    @staticmethod
+    def _failure(job: TTSJob, error_code: str) -> AudioResult:
+        return AudioResult(
+            job_id=job.job_id,
+            turn_id=job.turn_id,
+            segment_id=job.segment_id,
+            success=False,
+            error_code=error_code,
+        )
+
+    async def discard(self, result: AudioResult) -> None:
+        if result.audio_path is None or result.audio_path not in self._paths:
+            return
+        await self._discard_path(result.audio_path)
+
+    async def _discard_path(self, path: Path) -> None:
+        self._paths.discard(path)
+        await asyncio.to_thread(path.unlink, missing_ok=True)
+        await asyncio.to_thread(_remove_empty_parent, path.parent)
+
+    async def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        paths = tuple(self._paths)
+        self._paths.clear()
+        await asyncio.gather(*(asyncio.to_thread(path.unlink, missing_ok=True) for path in paths))
+        parents = {path.parent for path in paths}
+        await asyncio.gather(*(asyncio.to_thread(_remove_empty_parent, path) for path in parents))
+        if self._owns_client:
+            await self._client.aclose()
+
+
+async def _await_with_token(awaitable: Awaitable[_T], token: CancellationToken) -> _T:
+    token.raise_if_cancelled()
+    operation = asyncio.ensure_future(awaitable)
+    cancellation = asyncio.create_task(token.wait())
+    try:
+        done, _pending = await asyncio.wait(
+            {operation, cancellation}, return_when=asyncio.FIRST_COMPLETED
+        )
+        if cancellation in done:
+            operation.cancel()
+            await asyncio.gather(operation, return_exceptions=True)
+            token.raise_if_cancelled()
+        return operation.result()
+    finally:
+        cancellation.cancel()
+        await asyncio.gather(cancellation, return_exceptions=True)
+
+
+def _content_length(response: httpx.Response) -> int | None:
+    value = response.headers.get("content-length")
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        return None
+
+
+def _inspect_wave(path: Path) -> tuple[int, int]:
+    try:
+        with wave.open(str(path), "rb") as audio:
+            channels = audio.getnchannels()
+            sample_width = audio.getsampwidth()
+            sample_rate = audio.getframerate()
+            frame_count = audio.getnframes()
+            compression = audio.getcomptype()
+    except (EOFError, OSError, wave.Error) as exc:
+        raise _AudioValidationError from exc
+    if channels not in {1, 2} or sample_width not in {1, 2, 3, 4}:
+        raise _AudioValidationError
+    if sample_rate <= 0 or frame_count <= 0 or compression != "NONE":
+        raise _AudioValidationError
+    return sample_rate, max(1, round(frame_count / sample_rate * 1000))
+
+
+def _remove_empty_parent(parent: Path) -> None:
+    with suppress(FileNotFoundError, OSError):
+        parent.rmdir()
