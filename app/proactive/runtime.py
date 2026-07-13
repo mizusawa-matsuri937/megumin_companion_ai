@@ -7,6 +7,7 @@ from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+from threading import Lock
 from zoneinfo import ZoneInfo
 
 from app.core import FeatureFlagSource
@@ -66,6 +67,10 @@ class ProactiveRuntime:
         self._pending_revocations: set[FeatureName] = set()
         self._close_task: asyncio.Task[None] | None = None
         self._latest_perception: PerceptionContext | None = None
+        self._perception_epoch_lock = Lock()
+        self._highest_perception_generation = -1
+        self._retired_perception_generation = -1
+        self._vision_accepting_perception = self._feature_enabled(FeatureName.vision)
         self._closing = False
         self._unsubscribe: Callable[[], None] | None = self._features.subscribe(
             self._on_feature_changed
@@ -117,10 +122,15 @@ class ProactiveRuntime:
         sensitive: bool = False,
         perception: PerceptionContext | None = None,
     ) -> ProactiveDecision:
+        """Evaluate a trigger using only perception published through the trusted updater.
+
+        ``perception`` remains in the signature for compatibility, but is intentionally
+        ignored. Callers cannot inject or advance the trusted visual generation.
+        """
+
         self._bind_loop()
         async with self._state_lock:
             now = self._clock.now()
-            effective_perception = self._effective_perception(perception)
             self._roll_daily_counter(now.astimezone(self._timezone).date())
             lifecycle = self._lifecycle.snapshot()
             decision = self._engine.evaluate(
@@ -140,7 +150,7 @@ class ProactiveRuntime:
                     last_user_activity=self._last_user_activity,
                     last_proactive_at=self._last_proactive_at,
                     proactive_today=self._proactive_today,
-                    perception=effective_perception,
+                    perception=self._current_perception(),
                 ),
             )
             if decision.intent is None:
@@ -177,13 +187,14 @@ class ProactiveRuntime:
 
         self._bind_loop()
         async with self._state_lock:
-            if perception is None or self._effective_perception(perception) is perception:
-                self._latest_perception = perception
             active = self._lifecycle.snapshot()
-            must_cancel = (perception is not None and perception.sensitive) or (
-                perception is None
-                and active.active_trigger_type == ProactiveTriggerType.visual_change.value
-            )
+            if perception is None:
+                self._latest_perception = None
+                must_cancel = active.active_trigger_type == ProactiveTriggerType.visual_change.value
+            else:
+                must_cancel = perception.sensitive
+                if self._feature_enabled(FeatureName.vision):
+                    self._accept_perception(perception)
             if must_cancel:
                 await self._lifecycle.cancel_active()
 
@@ -191,6 +202,8 @@ class ProactiveRuntime:
         """Waitable privacy barrier used by the feature PATCH runtime."""
 
         self._bind_loop()
+        if state.name is FeatureName.vision:
+            self._set_vision_epoch_state(state.enabled)
         if state.enabled or state.name not in {FeatureName.proactive, FeatureName.vision}:
             return
         self._schedule_revocation(state.name)
@@ -214,6 +227,8 @@ class ProactiveRuntime:
             return False
 
     def _on_feature_changed(self, state: FeatureState) -> None:
+        if state.name is FeatureName.vision:
+            self._set_vision_epoch_state(state.enabled)
         if (
             state.name not in {FeatureName.proactive, FeatureName.vision}
             or state.enabled
@@ -248,7 +263,7 @@ class ProactiveRuntime:
             self._pending_revocations.clear()
             async with self._state_lock:
                 if FeatureName.vision in revoked:
-                    self._latest_perception = None
+                    self._clear_retired_perception()
                 active = self._lifecycle.snapshot()
                 if FeatureName.proactive in revoked or (
                     FeatureName.vision in revoked
@@ -331,10 +346,51 @@ class ProactiveRuntime:
             self._daily_date = current
             self._proactive_today = 0
 
-    def _effective_perception(self, provided: PerceptionContext | None) -> PerceptionContext | None:
+    def _accept_perception(self, perception: PerceptionContext) -> None:
         current = self._latest_perception
-        if provided is None or current is None:
-            return provided if provided is not None else current
-        provided_order = (provided.generation, provided.observed_at)
-        current_order = (current.generation, current.observed_at)
-        return provided if provided_order >= current_order else current
+        if current is not None:
+            provided_order = (perception.generation, perception.observed_at)
+            current_order = (current.generation, current.observed_at)
+            if provided_order < current_order:
+                return
+        with self._perception_epoch_lock:
+            if (
+                not self._vision_accepting_perception
+                or perception.generation <= self._retired_perception_generation
+            ):
+                return
+            self._highest_perception_generation = max(
+                self._highest_perception_generation,
+                perception.generation,
+            )
+            self._latest_perception = perception
+
+    def _current_perception(self) -> PerceptionContext | None:
+        current = self._latest_perception
+        if current is None:
+            return None
+        with self._perception_epoch_lock:
+            if (
+                not self._vision_accepting_perception
+                or current.generation <= self._retired_perception_generation
+            ):
+                return None
+        return current
+
+    def _set_vision_epoch_state(self, enabled: bool) -> None:
+        with self._perception_epoch_lock:
+            self._vision_accepting_perception = enabled
+            if not enabled:
+                self._retired_perception_generation = max(
+                    0,
+                    self._retired_perception_generation,
+                    self._highest_perception_generation,
+                )
+
+    def _clear_retired_perception(self) -> None:
+        current = self._latest_perception
+        if current is None:
+            return
+        with self._perception_epoch_lock:
+            if current.generation <= self._retired_perception_generation:
+                self._latest_perception = None
