@@ -132,6 +132,23 @@ class FeatureState(ContractModel):
     disclosure: str | None = None
 
 
+class FeaturePatchRequest(ContractModel):
+    enabled: bool
+
+
+class MemoryUpdateRequest(ContractModel):
+    content: str = Field(min_length=1, max_length=5_000)
+
+
+class MemoryConfirmRequest(ContractModel):
+    approved: bool
+
+
+class HistoryClearRequest(ContractModel):
+    user_id: str = Field(default="local_user", min_length=1, max_length=128)
+    session_id: str | None = Field(default=None, min_length=1, max_length=128)
+
+
 class TurnOutcome(ContractModel):
     full_text: str
     segments: list[DialogueSegment] = Field(default_factory=list)

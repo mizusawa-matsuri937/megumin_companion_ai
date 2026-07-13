@@ -23,31 +23,37 @@ from app.pipelines.audio_player import AudioPlayer, SilentAudioPlayer, SystemAud
 from app.prompts import EmotionPromptContextBuilder, PromptBuilder, PromptContextSource
 
 
+def build_llm_provider(settings: Settings) -> LLMProvider | None:
+    """Build the configured provider without a silent fallback to a mock."""
+
+    provider_name = settings.llm.provider.strip().lower()
+    if provider_name == "none":
+        return None
+    if provider_name == "mock":
+        return MockLLMProvider(token_delay_seconds=settings.pipeline.mock_token_delay_ms / 1000)
+    if not settings.llm.model.strip():
+        raise RuntimeError("真实 LLM provider 已启用，但 llm.model 为空。")
+    api_key = settings.require_llm_api_key().get_secret_value()
+    return OpenAICompatibleLLMProvider(
+        base_url=settings.llm.base_url,
+        endpoint=settings.llm.endpoint,
+        model=settings.llm.model,
+        api_key=api_key,
+        timeout_seconds=settings.llm.timeout_seconds,
+        default_temperature=settings.llm.temperature,
+        default_max_tokens=settings.llm.max_tokens,
+    )
+
+
 def build_dialogue_pipeline(
     settings: Settings,
     *,
     prompt_context_source: PromptContextSource | None = None,
+    llm_provider: LLMProvider | None = None,
 ) -> DialoguePipeline | None:
-    provider_name = settings.llm.provider.strip().lower()
-    if provider_name == "none":
+    llm = llm_provider or build_llm_provider(settings)
+    if llm is None:
         return None
-
-    llm: LLMProvider
-    if provider_name == "mock":
-        llm = MockLLMProvider(token_delay_seconds=settings.pipeline.mock_token_delay_ms / 1000)
-    else:
-        if not settings.llm.model.strip():
-            raise RuntimeError("真实 LLM provider 已启用，但 llm.model 为空。")
-        api_key = settings.require_llm_api_key().get_secret_value()
-        llm = OpenAICompatibleLLMProvider(
-            base_url=settings.llm.base_url,
-            endpoint=settings.llm.endpoint,
-            model=settings.llm.model,
-            api_key=api_key,
-            timeout_seconds=settings.llm.timeout_seconds,
-            default_temperature=settings.llm.temperature,
-            default_max_tokens=settings.llm.max_tokens,
-        )
 
     tts = _build_tts(settings)
     player: AudioPlayer
