@@ -36,6 +36,22 @@ def _response(request: dict[str, Any], data: dict[str, Any]) -> str:
     )
 
 
+def test_client_rejects_invalid_timeout_and_disconnected_requests() -> None:
+    with pytest.raises(ValueError, match="timeout"):
+        VTSClient(request_timeout_seconds=0)
+
+    async def scenario() -> None:
+        client = VTSClient(request_timeout_seconds=0.1)
+        assert not client.connected
+        with pytest.raises(VTSConnectionError):
+            await client.request("APIStateRequest")
+        with pytest.raises(ValueError, match="hotkey"):
+            await client.trigger_hotkey(" ")
+        await client.close()
+
+    asyncio.run(scenario())
+
+
 def test_client_correlates_out_of_order_responses_from_fake_websocket() -> None:
     async def scenario() -> None:
         requests: list[dict[str, Any]] = []

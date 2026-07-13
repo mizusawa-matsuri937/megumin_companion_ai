@@ -6,6 +6,7 @@ import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass
 
+import pytest
 from app.clients.vts.bridge import VTSBridge, VTSBridgeSnapshot, VTSBridgeState
 from app.clients.vts.client import VTSAPIError, VTSConnectionError
 from app.clients.vts.expression_mapper import ExpressionMapper
@@ -88,6 +89,45 @@ async def _wait_until(predicate: Callable[[], bool], timeout: float = 1.0) -> No
             await asyncio.sleep(0)
 
     await asyncio.wait_for(poll(), timeout=timeout)
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"plugin_name": ""},
+        {"queue_capacity": 0},
+        {"reconnect_initial_seconds": -1},
+        {"reconnect_initial_seconds": 2, "reconnect_max_seconds": 1},
+    ],
+)
+def test_bridge_rejects_invalid_runtime_bounds(options: dict[str, object]) -> None:
+    values: dict[str, object] = {
+        "client_factory": _FakeClient,
+        "token_store": _MemoryTokenStore(),
+        "plugin_name": "Companion",
+        "plugin_developer": "Local User",
+    }
+    values.update(options)
+    with pytest.raises(ValueError):
+        VTSBridge(**values)  # type: ignore[arg-type]
+
+
+def test_closed_bridge_is_idempotent_and_rejects_new_actions() -> None:
+    async def scenario() -> None:
+        bridge = VTSBridge(
+            _FakeClient,
+            _MemoryTokenStore(),
+            plugin_name="Companion",
+            plugin_developer="Local User",
+        )
+        assert not bridge.enqueue_expression("")
+        await bridge.close()
+        await bridge.close()
+        assert not bridge.enqueue_expression("happy")
+        with pytest.raises(RuntimeError, match="已关闭"):
+            bridge.start()
+
+    asyncio.run(scenario())
 
 
 def test_bridge_replaces_rejected_token_and_keeps_latest_bounded_actions() -> None:

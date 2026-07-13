@@ -18,7 +18,7 @@ from fastapi.responses import JSONResponse  # noqa: E402
 
 from app import __version__  # noqa: E402
 from app.api.routes import router  # noqa: E402
-from app.bootstrap import build_dialogue_pipeline  # noqa: E402
+from app.bootstrap import build_dialogue_pipeline, build_vts_event_sink  # noqa: E402
 from app.config import Settings, load_settings  # noqa: E402
 from app.config.logging import configure_logging, log_event  # noqa: E402
 from app.core import TurnService  # noqa: E402
@@ -32,7 +32,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         logger = configure_logging(resolved_settings)
         app.state.settings = resolved_settings
         app.state.logger = logger
-        app.state.turn_service = TurnService(logger, build_dialogue_pipeline(resolved_settings))
+        app.state.vts_event_sink = build_vts_event_sink(resolved_settings)
+        event_sinks = (app.state.vts_event_sink,) if app.state.vts_event_sink is not None else ()
+        app.state.turn_service = TurnService(
+            logger,
+            build_dialogue_pipeline(resolved_settings),
+            event_sinks=event_sinks,
+        )
         log_event(
             logger,
             logging.INFO,
