@@ -63,7 +63,7 @@ class Capture:
 
 class OCR:
     async def extract(self, _frame: ImageFrame) -> OCRResult:
-        return OCRResult([OCRSpan("def synthetic(): pass", 0.9)])
+        return OCRResult([OCRSpan("def synthetic(): pass", 0.9, Rect(1, 1, 10, 5))])
 
     async def close(self) -> None:
         return None
@@ -86,9 +86,11 @@ class BlockingOCR(OCR):
 class Sanitizer:
     def __init__(self) -> None:
         self.calls = 0
+        self.regions: list[tuple[Rect, ...]] = []
 
-    async def sanitize(self, _frame: ImageFrame, _regions: tuple[Rect, ...]) -> ImageFrame:
+    async def sanitize(self, _frame: ImageFrame, regions: tuple[Rect, ...]) -> ImageFrame:
         self.calls += 1
+        self.regions.append(regions)
         return ImageFrame(bytearray(b"sanitized"), 100, 50)
 
     async def close(self) -> None:
@@ -130,6 +132,7 @@ def test_factory_uses_independent_vision_and_cloud_feature_gates() -> None:
         flags.set(FeatureName.cloud_vision, True)
         assert (await pipeline.observe()).status is ObservationStatus.analyzed_cloud
         assert sanitizer.calls == 1 and cloud.calls == 1
+        assert sanitizer.regions == [(Rect(1, 1, 10, 5),)]
         await pipeline.close()
 
     asyncio.run(scenario())

@@ -157,6 +157,7 @@ class PerceptionPipeline:
         frame: ImageFrame | None = None
         sanitized: ImageFrame | None = None
         ocr_result: OCRResult | None = None
+        ocr_redaction_regions: tuple[Rect, ...] | None = ()
         assessment: FrameChangeAssessment | None = None
         try:
             try:
@@ -224,6 +225,7 @@ class PerceptionPipeline:
                 )
             if not self._is_enabled():
                 return self._disabled_result()
+            ocr_redaction_regions = self._ocr_redaction_regions(ocr_result, frame)
             try:
                 local = self._classifier.classify(window, ocr_result)
                 local_context = self._context_from_analysis(local)
@@ -245,6 +247,13 @@ class PerceptionPipeline:
                     status=ObservationStatus.analyzed_local,
                     context=local_context,
                 )
+            if ocr_redaction_regions is None:
+                return self._safe_result(
+                    assessment,
+                    status=ObservationStatus.analyzed_local,
+                    context=local_context,
+                    reason_code="cloud_ocr_redaction_unavailable",
+                )
             if self._cloud_limiter is not None and not self._cloud_limiter.allow():
                 return self._safe_result(
                     assessment,
@@ -259,11 +268,23 @@ class PerceptionPipeline:
                     status=ObservationStatus.analyzed_local,
                     context=local_context,
                 )
+            regions = (
+                *self._config.always_redact_regions,
+                *content_decision.redaction_regions,
+                *ocr_redaction_regions,
+            )
             try:
-                regions = (*self._config.always_redact_regions, *content_decision.redaction_regions)
                 sanitized = await self._with_timeout(self._sanitizer.sanitize(frame, regions))
                 if sanitized is frame:
                     raise ValueError("sanitizer must return a new frame")
+            except Exception:
+                return self._safe_result(
+                    assessment,
+                    status=ObservationStatus.analyzed_local,
+                    context=local_context,
+                    reason_code="cloud_redaction_failed",
+                )
+            try:
                 frame.wipe()
                 frame = None
                 if not self._is_enabled():
@@ -341,6 +362,30 @@ class PerceptionPipeline:
         normalized = value.strip().casefold() if isinstance(value, str) else ""
         return normalized if normalized in _SAFE_CATEGORIES else fallback
 
+    @staticmethod
+    def _ocr_redaction_regions(
+        ocr: OCRResult,
+        frame: ImageFrame,
+    ) -> tuple[Rect, ...] | None:
+        regions: list[Rect] = []
+        seen: set[Rect] = set()
+        for span in ocr.spans:
+            if not span.text:
+                continue
+            box = span.box
+            if (
+                box is None
+                or box.x < 0
+                or box.y < 0
+                or box.x + box.width > frame.width
+                or box.y + box.height > frame.height
+            ):
+                return None
+            if box not in seen:
+                seen.add(box)
+                regions.append(box)
+        return tuple(regions)
+
     def _context_from_analysis(self, analysis: SceneAnalysis) -> PerceptionContext:
         return PerceptionContext(
             category=analysis.category,
@@ -355,6 +400,7 @@ class PerceptionPipeline:
         *,
         status: ObservationStatus,
         context: PerceptionContext,
+        reason_code: str | None = None,
     ) -> ObservationResult:
         """Commit only a completed, locally privacy-checked observation."""
 
@@ -367,7 +413,7 @@ class PerceptionPipeline:
                 status=ObservationStatus.processing_error,
                 reason_code="change_commit_failed",
             )
-        return ObservationResult(status=status, context=context)
+        return ObservationResult(status=status, context=context, reason_code=reason_code)
 
     @staticmethod
     def _sensitive_context() -> PerceptionContext:

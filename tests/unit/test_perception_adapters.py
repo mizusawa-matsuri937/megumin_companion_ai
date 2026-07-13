@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import socket
 import threading
 from pathlib import Path
 from typing import Any
@@ -33,6 +34,45 @@ class FakeEngine:
         if isinstance(self.output, Exception):
             raise self.output
         return self.output
+
+
+class FakeModelMetadata:
+    def __init__(self, *, character: bool = True) -> None:
+        self.custom_metadata_map = {"character": "a\nb"} if character else {}
+
+
+class FakeONNXSession:
+    def __init__(self, *, character: bool = True) -> None:
+        self._metadata = FakeModelMetadata(character=character)
+
+    def get_modelmeta(self) -> FakeModelMetadata:
+        return self._metadata
+
+
+class FakeONNXRuntime:
+    def __init__(self, *, character: bool = True) -> None:
+        self.character = character
+        self.calls: list[tuple[str, list[str]]] = []
+
+    def InferenceSession(  # noqa: N802
+        self,
+        path: str,
+        *,
+        providers: list[str],
+    ) -> FakeONNXSession:
+        self.calls.append((path, providers))
+        return FakeONNXSession(character=self.character)
+
+
+class FakeRapidOCRModule:
+    def __init__(self, module_file: Path) -> None:
+        self.__file__ = str(module_file)
+        self.params: dict[str, str] | None = None
+        self.engine = FakeEngine(None)
+
+    def RapidOCR(self, *, params: dict[str, str]) -> FakeEngine:  # noqa: N802
+        self.params = params
+        return self.engine
 
 
 def _frame(data: bytes = b"synthetic-image") -> ImageFrame:
@@ -113,6 +153,92 @@ def test_rapidocr_is_lazy_and_reports_missing_optional_dependency() -> None:
         with pytest.raises(PerceptionError, match="本地 OCR") as failure:
             await failing.extract(_frame())
         assert "private" not in str(failure.value)
+
+    asyncio.run(scenario())
+
+
+def test_default_rapidocr_prechecks_bundled_models_and_never_downloads(tmp_path: Path) -> None:
+    model_root = tmp_path / "rapidocr" / "models"
+    model_root.mkdir(parents=True)
+    filenames = (
+        "PP-OCRv6_det_small.onnx",
+        "ch_ppocr_mobile_v2.0_cls_mobile.onnx",
+        "PP-OCRv6_rec_small.onnx",
+    )
+    for filename in filenames:
+        (model_root / filename).write_bytes(b"local-model")
+    rapidocr = FakeRapidOCRModule(model_root.parent / "__init__.py")
+    runtime = FakeONNXRuntime()
+
+    def load_module(name: str) -> Any:
+        return rapidocr if name == "rapidocr" else runtime
+
+    async def scenario() -> None:
+        provider = RapidOCRProvider()
+        with (
+            patch("app.perception.ocr.importlib.import_module", side_effect=load_module),
+            patch.object(
+                socket.socket,
+                "connect",
+                side_effect=AssertionError("network forbidden"),
+            ) as network,
+        ):
+            assert (await provider.extract(_frame())).spans == []
+        assert not network.called
+        assert rapidocr.params == {
+            "Det.model_path": str(model_root / filenames[0]),
+            "Cls.model_path": str(model_root / filenames[1]),
+            "Rec.model_path": str(model_root / filenames[2]),
+        }
+        assert runtime.calls == [(str(model_root / filenames[2]), ["CPUExecutionProvider"])]
+        await provider.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    ("missing_model", "character", "message"),
+    [
+        ("PP-OCRv6_det_small.onnx", True, "本地模型不完整"),
+        (None, False, "缺少本地字符表"),
+    ],
+)
+def test_default_rapidocr_fails_offline_before_any_download_or_engine_start(
+    tmp_path: Path,
+    missing_model: str | None,
+    character: bool,
+    message: str,
+) -> None:
+    model_root = tmp_path / "rapidocr" / "models"
+    model_root.mkdir(parents=True)
+    filenames = (
+        "PP-OCRv6_det_small.onnx",
+        "ch_ppocr_mobile_v2.0_cls_mobile.onnx",
+        "PP-OCRv6_rec_small.onnx",
+    )
+    for filename in filenames:
+        if filename != missing_model:
+            (model_root / filename).write_bytes(b"local-model")
+    rapidocr = FakeRapidOCRModule(model_root.parent / "__init__.py")
+    runtime = FakeONNXRuntime(character=character)
+
+    def load_module(name: str) -> Any:
+        return rapidocr if name == "rapidocr" else runtime
+
+    async def scenario() -> None:
+        provider = RapidOCRProvider()
+        with (
+            patch("app.perception.ocr.importlib.import_module", side_effect=load_module),
+            patch.object(
+                socket.socket,
+                "connect",
+                side_effect=AssertionError("network forbidden"),
+            ) as network,
+            pytest.raises(PerceptionError, match=message),
+        ):
+            await provider.extract(_frame())
+        assert not network.called
+        assert rapidocr.params is None
 
     asyncio.run(scenario())
 
@@ -269,9 +395,11 @@ class BlockingPillowSanitizer(PillowImageSanitizer):
     def _sanitize_sync(
         self,
         image_buffer: bytearray,
+        expected_width: int,
+        expected_height: int,
         regions: tuple[Rect, ...],
     ) -> ImageFrame:
-        del regions
+        del expected_width, expected_height, regions
         self.owned_input = image_buffer
         self.started.set()
         assert self.release.wait(timeout=2)
@@ -327,6 +455,34 @@ def test_pillow_sanitizer_fails_closed_for_limits_dependency_and_decode_error() 
             pytest.raises(PerceptionError, match="像素"),
         ):
             await sanitizer.sanitize(_frame(), ())
+
+        wrong_size = FakeOpenedImage(width=99, height=50)
+
+        def load_wrong_size(name: str) -> Any:
+            return FakeImageModule(wrong_size) if name == "PIL.Image" else FakeDrawModule
+
+        with (
+            patch(
+                "app.perception.image_processing.importlib.import_module",
+                side_effect=load_wrong_size,
+            ),
+            pytest.raises(PerceptionError, match="元数据"),
+        ):
+            await sanitizer.sanitize(_frame(), ())
+
+        opened = FakeOpenedImage()
+
+        def load_opened(name: str) -> Any:
+            return FakeImageModule(opened) if name == "PIL.Image" else FakeDrawModule
+
+        with (
+            patch(
+                "app.perception.image_processing.importlib.import_module",
+                side_effect=load_opened,
+            ),
+            pytest.raises(PerceptionError, match="超出边界"),
+        ):
+            await sanitizer.sanitize(_frame(), (Rect(95, 10, 10, 5),))
 
     asyncio.run(scenario())
     with pytest.raises(ValueError):

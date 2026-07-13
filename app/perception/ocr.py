@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import importlib
 from collections.abc import Callable, Sequence
+from pathlib import Path
 from typing import Any
 
 from app.perception.models import ImageFrame, OCRResult, OCRSpan, PerceptionError, Rect
@@ -13,6 +14,12 @@ from app.perception.thread_jobs import (
     drain_owned_jobs,
     wipe_buffer,
 )
+
+_BUNDLED_MODEL_FILES = {
+    "Det.model_path": "PP-OCRv6_det_small.onnx",
+    "Cls.model_path": "ch_ppocr_mobile_v2.0_cls_mobile.onnx",
+    "Rec.model_path": "PP-OCRv6_rec_small.onnx",
+}
 
 
 class RapidOCRProvider:
@@ -78,12 +85,43 @@ class RapidOCRProvider:
             else:
                 try:
                     module: Any = importlib.import_module("rapidocr")
-                    self._engine = module.RapidOCR()
                 except (ImportError, AttributeError) as exc:
                     raise PerceptionError(
                         "RapidOCR 未安装；请安装可选依赖 rapidocr 与 onnxruntime"
                     ) from exc
+                self._engine = self._build_offline_engine(module)
         return self._engine
+
+    @staticmethod
+    def _build_offline_engine(module: Any) -> Any:
+        module_file = getattr(module, "__file__", None)
+        if not isinstance(module_file, str):
+            raise PerceptionError("无法定位 RapidOCR 本地模型；离线模式已拒绝启动")
+        model_root = Path(module_file).resolve().parent / "models"
+        model_paths = {
+            parameter: model_root / filename for parameter, filename in _BUNDLED_MODEL_FILES.items()
+        }
+        if any(not path.is_file() for path in model_paths.values()):
+            raise PerceptionError("RapidOCR 本地模型不完整；离线模式禁止自动下载")
+
+        try:
+            runtime: Any = importlib.import_module("onnxruntime")
+            rec_session = runtime.InferenceSession(
+                str(model_paths["Rec.model_path"]),
+                providers=["CPUExecutionProvider"],
+            )
+            metadata = rec_session.get_modelmeta().custom_metadata_map
+        except Exception as exc:
+            raise PerceptionError("RapidOCR 本地模型预检失败；离线模式已拒绝启动") from exc
+        if "character" not in metadata:
+            raise PerceptionError("RapidOCR 识别模型缺少本地字符表；离线模式已拒绝启动")
+
+        try:
+            return module.RapidOCR(
+                params={parameter: str(path) for parameter, path in model_paths.items()}
+            )
+        except Exception as exc:
+            raise PerceptionError("RapidOCR 本地模型初始化失败") from exc
 
     def _parse_output(self, output: Any) -> list[OCRSpan]:
         if output is None:

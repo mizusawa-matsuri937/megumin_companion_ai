@@ -39,7 +39,13 @@ class PillowImageSanitizer:
             raise PerceptionError("图片 sanitizer 已关闭")
         owned_image = bytearray(frame.data)
         worker = asyncio.create_task(
-            asyncio.to_thread(self._sanitize_sync, owned_image, regions),
+            asyncio.to_thread(
+                self._sanitize_sync,
+                owned_image,
+                frame.width,
+                frame.height,
+                regions,
+            ),
             name="pillow-image-sanitize",
         )
         cleanup_finished = asyncio.Event()
@@ -57,7 +63,13 @@ class PillowImageSanitizer:
             self._jobs.pop(worker, None)
             cleanup_finished.set()
 
-    def _sanitize_sync(self, image_buffer: bytearray, regions: tuple[Rect, ...]) -> ImageFrame:
+    def _sanitize_sync(
+        self,
+        image_buffer: bytearray,
+        expected_width: int,
+        expected_height: int,
+        regions: tuple[Rect, ...],
+    ) -> ImageFrame:
         if len(image_buffer) > self._config.max_input_bytes:
             raise PerceptionError("待处理图片超过大小限制")
         try:
@@ -74,6 +86,8 @@ class PillowImageSanitizer:
                 or original_width * original_height > self._config.max_pixels
             ):
                 raise PerceptionError("待处理图片像素数超过限制")
+            if (original_width, original_height) != (expected_width, expected_height):
+                raise PerceptionError("图片尺寸元数据与实际内容不一致")
             opened.load()
             image = opened.convert("RGB")
             image.thumbnail((self._config.max_dimension, self._config.max_dimension))
@@ -81,6 +95,13 @@ class PillowImageSanitizer:
             scale_y = image.height / original_height
             drawer = draw_module.Draw(image)
             for region in regions:
+                if (
+                    region.x < 0
+                    or region.y < 0
+                    or region.x + region.width > original_width
+                    or region.y + region.height > original_height
+                ):
+                    raise PerceptionError("图片遮挡区域超出边界")
                 drawer.rectangle(
                     (
                         round(region.x * scale_x),

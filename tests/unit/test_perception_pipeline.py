@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import io
 from collections.abc import Callable
+from typing import Any
 
 import pytest
 from app.perception.change_detection import FrameChangeDetector
 from app.perception.classification import LocalSceneClassifier
 from app.perception.guards import OCRContentGuard, PreCaptureGuard, TextRedactor
+from app.perception.image_processing import PillowImageSanitizer
 from app.perception.models import (
     CloudAnalysis,
     ContentGuardDecision,
@@ -24,6 +27,9 @@ from app.perception.models import (
     WindowInfo,
 )
 from app.perception.pipeline import PerceptionPipeline, PerceptionPipelineConfig
+from app.perception.protocols import CloudVisionAnalyzer, ImageSanitizer
+
+_DEFAULT_OCR_BOX = Rect(1, 1, 10, 5)
 
 
 class EnabledFlag:
@@ -126,11 +132,13 @@ class FakeOCR:
         order: list[str],
         *,
         text: str = "def synthetic(): pass",
+        box: Rect | None = _DEFAULT_OCR_BOX,
         error: Exception | None = None,
         block: bool = False,
     ) -> None:
         self.order = order
         self.text = text
+        self.box = box
         self.error = error
         self.block = block
         self.results: list[OCRResult] = []
@@ -146,7 +154,7 @@ class FakeOCR:
                 await asyncio.Event().wait()
             if self.error is not None:
                 raise self.error
-            result = OCRResult(spans=[OCRSpan(self.text, 0.9, Rect(1, 1, 10, 5))])
+            result = OCRResult(spans=[OCRSpan(self.text, 0.9, self.box)])
             self.results.append(result)
             return result
         finally:
@@ -312,8 +320,8 @@ def _pipeline(
     ocr: FakeOCR | None = None,
     content: FakeContentGuard | RecordingContentGuard | None = None,
     classifier: FakeClassifier | None = None,
-    sanitizer: FakeSanitizer | None = None,
-    cloud: FakeCloud | None = None,
+    sanitizer: ImageSanitizer | None = None,
+    cloud: CloudVisionAnalyzer | None = None,
     limiter: FixedLimiter | None = None,
     max_frame_bytes: int = 1024,
 ) -> tuple[PerceptionPipeline, list[str], FakeCapture, FakeOCR]:
@@ -524,11 +532,80 @@ def test_cloud_path_uses_sanitized_frame_redacts_summary_and_cleans_both_frames(
         assert "fake.person" not in result.context.summary
         assert "[EMAIL]" in result.context.summary
         assert order[-3:] == ["classify", "sanitize", "cloud"]
-        assert sanitizer.regions == [(Rect(0, 0, 5, 5),)]
+        assert sanitizer.regions == [(Rect(0, 0, 5, 5), Rect(1, 1, 10, 5))]
         assert cloud.frames[0] is sanitizer.frames[0]
         assert sanitizer.frames[0].data == bytearray()
         assert capture.frames[0].data == bytearray()
         assert ocr.results[0].spans == []
+
+    asyncio.run(scenario())
+
+
+def test_cloud_request_pixels_mask_every_ocr_box_with_real_sanitizer() -> None:
+    image_module: Any = pytest.importorskip("PIL.Image")
+    draw_module: Any = pytest.importorskip("PIL.ImageDraw")
+    image = image_module.new("RGB", (100, 50), "white")
+    draw_module.Draw(image).rectangle((10, 10, 30, 25), fill=(255, 0, 0))
+    encoded = io.BytesIO()
+    image.save(encoded, format="PNG")
+
+    class PixelInspectingCloud:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.inside: tuple[int, int, int] | None = None
+            self.outside: tuple[int, int, int] | None = None
+
+        async def analyze(self, frame: ImageFrame, _local: SceneAnalysis) -> CloudAnalysis:
+            self.calls += 1
+            with image_module.open(io.BytesIO(frame.data)) as sanitized:
+                rgb = sanitized.convert("RGB")
+                self.inside = rgb.getpixel((15, 15))
+                self.outside = rgb.getpixel((40, 15))
+            return CloudAnalysis("ordinary", 0.8, "coding")
+
+    async def scenario() -> None:
+        order: list[str] = []
+        cloud = PixelInspectingCloud()
+        pipeline, _calls, _capture, _ocr = _pipeline(
+            order=order,
+            capture=FakeCapture(order, data=encoded.getvalue()),
+            ocr=FakeOCR(order, text="VISIBLE OCR", box=Rect(10, 10, 20, 15)),
+            sanitizer=PillowImageSanitizer(),
+            cloud=cloud,
+        )
+
+        result = await pipeline.observe()
+        assert result.status is ObservationStatus.analyzed_cloud
+        assert cloud.calls == 1
+        assert cloud.inside == (0, 0, 0)
+        assert cloud.outside == (255, 255, 255)
+        await pipeline.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("box", [None, Rect(-1, 1, 5, 5), Rect(95, 1, 10, 5)])
+def test_unreliable_ocr_box_falls_back_local_with_zero_cloud_calls(box: Rect | None) -> None:
+    async def scenario() -> None:
+        order: list[str] = []
+        sanitizer = FakeSanitizer(order)
+        cloud = FakeCloud(order)
+        limiter = FixedLimiter(True)
+        pipeline, _calls, _capture, _ocr = _pipeline(
+            order=order,
+            ocr=FakeOCR(order, text="VISIBLE OCR", box=box),
+            sanitizer=sanitizer,
+            cloud=cloud,
+            limiter=limiter,
+        )
+
+        result = await pipeline.observe()
+        assert result.status is ObservationStatus.analyzed_local
+        assert result.context is not None
+        assert result.reason_code == "cloud_ocr_redaction_unavailable"
+        assert limiter.calls == 0
+        assert sanitizer.frames == []
+        assert cloud.frames == []
 
     asyncio.run(scenario())
 
@@ -624,7 +701,9 @@ def test_cloud_gate_defaults_closed_and_is_rechecked_after_sanitization() -> Non
             cloud=cloud,
         )
         result = await pipeline.observe()
-        assert result.status is ObservationStatus.cloud_error
+        assert result.status is ObservationStatus.analyzed_local
+        assert result.context is not None
+        assert result.reason_code == "cloud_redaction_failed"
         assert cloud.frames == []
         assert capture.frames[0].data == bytearray()
 
@@ -676,7 +755,7 @@ def test_cloud_category_is_allowlisted_and_nonfinite_confidence_fails_closed() -
         ("ocr", ObservationStatus.ocr_error),
         ("content", ObservationStatus.guard_error),
         ("classify", ObservationStatus.processing_error),
-        ("sanitize", ObservationStatus.cloud_error),
+        ("sanitize", ObservationStatus.analyzed_local),
         ("cloud", ObservationStatus.cloud_error),
     ],
 )
@@ -721,7 +800,12 @@ def test_every_stage_failure_is_fail_closed_and_cleans_raw_data(
         )
         result = await pipeline.observe()
         assert result.status is expected
-        assert result.context is None
+        if stage == "sanitize":
+            assert result.context is not None
+            assert result.reason_code == "cloud_redaction_failed"
+            assert cloud is not None and cloud.frames == []
+        else:
+            assert result.context is None
         assert "private" not in repr(result)
         assert all(frame.data == bytearray() for frame in capture.frames)
         assert all(result.spans == [] for result in ocr.results)
