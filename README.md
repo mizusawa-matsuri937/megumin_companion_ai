@@ -1,111 +1,129 @@
 # Megumin Desktop Companion AI
 
-面向 Windows 单用户、个人私用的桌面陪伴 AI 原型。当前仓库已完成 Day 5～7 并通过 Gate A：具备 Mock LLM streaming、多语言分句、Mock TTS、连续有序播放、turn cancellation、延迟指标以及 text/voice 共用的首条纵向链路。
+面向单用户、个人私用的桌面陪伴 AI 原型。当前仓库已完成 Gate A，以及 Day 8～27 中可在 macOS 自动验证的 AI 后端：OpenAI-compatible LLM、GPT-SoVITS、VTube Studio、情绪与 Prompt、SQLite 历史/记忆、视觉隐私、主动发话和本地 whisper.cpp STT。
 
-产品范围、隐私与资产边界以 [`docs/day1_scope_freeze.md`](docs/day1_scope_freeze.md) 为准，日计划见 [`docs/daily_development_plan.md`](docs/daily_development_plan.md)，Day 3/4 的证据见 [`docs/day3_day4_acceptance.md`](docs/day3_day4_acceptance.md)，Day 5～7 的实现与人工 Gate A 步骤见 [`docs/day5_day7_acceptance.md`](docs/day5_day7_acceptance.md)。
+完整实现、测试证据、九个堆叠 Draft PR 与延期项见 [`docs/ai_backend_mac_implementation_report.md`](docs/ai_backend_mac_implementation_report.md)。这次交付不包含 Windows UI、前台窗口捕获、全局热键、打包或真实设备体验，也不宣称 Gate B～G 已通过。
 
-## 环境要求
+## 架构
 
-- Python 3.11；项目明确不使用 3.12 及以上版本。
-- 推荐使用 `uv` 创建隔离环境和安装锁定依赖。
-- Git。
+```text
+HTTP / WebSocket / voice UserMessage
+              ↓
+          TurnService
+              ↓
+Prompt + 历史/记忆 → LLM stream → 分句 → 并发 TTS → 有序播放
+                                      └→ 有界 VTS 事件队列
 
-## 新环境安装
-
-```powershell
-uv python install 3.11
-uv sync --all-groups
+PerceptionPipeline（平台适配器注入）→ 脱敏 PerceptionContext
+ProactiveRuntime（默认关闭）       → 内部 ProactiveIntent
+PushToTalkRecorder（默认关闭）     → voice UserMessage
 ```
 
-`uv` 会根据 `.python-version` 创建或复用 Python 3.11，并把依赖安装到仓库内的 `.venv`。不要把真实 API key、聊天、截图、记忆、声音或 Live2D 资产放入源码或测试夹具。
+应用是 Python 3.11 模块化单体；GPT-SoVITS、VTube Studio 和用户配置的云端 LLM 是外部服务。真实 provider 失败时不会静默伪装成 Mock 成功。
 
-## 质量检查
+## 默认行为与数据边界
 
-```powershell
+仓库默认配置不会联网，也不会发声：
+
+- LLM 与 TTS 使用确定性 Mock，播放模式为 `silent`。
+- VTS、长期记忆、记忆候选 LLM、视觉、云端视觉、主动发话和 STT 均关闭。
+- `storage.enabled` 和最近历史默认开启；显式发送的用户消息、成功的助手回复会保存在本机 SQLite，保留期为 7 天。
+- SQLite 启用 `secure_delete`、WAL checkpoint 和清理流程，但数据库没有加密，也没有 Keychain/文件级加密；不能把软件清理描述为可证明的物理擦除。
+- GPT-SoVITS 持久缓存默认关闭；开启后仍会跳过检测到的敏感文本。
+- 截图、OCR、原始 PCM/WAV 只允许在处理生命周期内存在，不得写入普通日志、历史或长期记忆。
+
+不要把真实 API key、聊天、截图、记忆、声音、模型或 Live2D 资产提交到仓库。运行数据默认位于已被 Git 忽略的 `data/`。
+
+## 安装与完整门禁
+
+需要 Python 3.11、[`uv`](https://docs.astral.sh/uv/) 和 Git：
+
+```bash
+uv python install 3.11
+uv sync --frozen --all-groups --all-extras
 uv run pytest
 uv run ruff check .
 uv run ruff format --check .
 uv run mypy
 ```
 
-自动修复格式：
+pytest 对 `app` 与 `desktop_client` 统计分支覆盖，并设置 90% 综合门槛。CI 在 GitHub `macos-latest` 执行同一组命令。
 
-```powershell
-uv run ruff format .
-uv run ruff check --fix .
-```
+## 启动后端
 
-## 启动本地后端
-
-默认配置启用完全本地、确定性的 Mock LLM/TTS，不连接真实 LLM，因此不需要 API key 即可启动：
-
-```powershell
+```bash
 uv run python app/main.py
 ```
 
-启动后可访问 `http://127.0.0.1:8765/health`。按 `Ctrl+C` 会取消活动 turn、清理临时 Mock WAV、释放播放器并刷新日志。HTTP 对话入口为 `POST /api/chat`，打断入口为 `POST /api/interrupt`，WebSocket 入口为 `/ws/client`，独立 echo 冒烟入口为 `/ws/echo`。默认 `playback_mode: silent`，因此后端会产生完整播放事件但不会意外打开音频设备。
+默认监听 `127.0.0.1:8765`。主要入口：
 
-## Day 5～7 Gate A 人工验收
+- `GET /health`
+- `POST /api/chat`
+- `POST /api/interrupt`
+- `WS /ws/client`
+- `GET /api/features` 与 `PATCH /api/features/{feature}`
+- 记忆 list/search/update/delete/confirm/export/clear
+- `POST /api/history/clear`
 
-先只阅读分句结果：
+按 `Ctrl+C` 会取消活动轮次并等待对话、主动任务、VTS、记忆和 provider 资源完成清理。
 
-```powershell
-uv run python tools/gate_a_review.py --mode segments
-```
+## 可选真实适配器
 
-确认系统音量较低后，再实际听取有序播放和打断：
+所有真实能力都必须显式开启；测试不会安装外部服务、下载 Whisper 模型或使用付费密钥。
 
-```powershell
-uv run python tools/gate_a_review.py --mode audio
-uv run python tools/gate_a_review.py --mode interrupt
-```
+### OpenAI-compatible LLM
 
-完整预期、低音量参数和残留文件检查见 [`docs/day5_day7_acceptance.md`](docs/day5_day7_acceptance.md)。
-
-非敏感设置写在 `config.yaml`。需要接入真实 Provider 时，复制 `.env.example` 为 `.env` 并只放专用、额度受限的密钥；`.env` 已被 Git 忽略。Provider 一旦从 `none` 改为真实名称而密钥缺失，启动会给出明确错误。
-
-## Day 3 人工脱敏验收
-
-此步骤只能使用以 `fake-day3-` 开头的无效假值，检查命令会拒绝其他值：
-
-```powershell
-Copy-Item .env.example .env
-# 把 .env 中的值改为 COMPANION_LLM_API_KEY=fake-day3-review-20260711
-uv run python -m app.config.redaction_check
-```
-
-确认控制台及 `data/logs/app.jsonl` 中没有上述假密钥、假邮箱、假手机号或假验证码的明文，只出现 `[REDACTED]`。检查后删除 `.env` 即可。
-
-## 当前目录
+在 `config.yaml` 配置 provider、base URL、model，并把专用且额度受限的密钥放入未跟踪的 `.env`：
 
 ```text
-app/config/             配置加载、密钥检查、结构化日志和人工脱敏检查
-app/schemas/            Day 4 实际使用的五个最小消息 Schema
-app/core/               文字与语音共用的 turn、取消和事件入口
-app/clients/llm/        可控的 Mock LLM token stream
-app/clients/tts/        生成合法纯提示音 WAV 的 Mock TTS
-app/pipelines/          增量分句、并发 TTS、有序播放和清理
-app/api/                HTTP/WebSocket 协议转换、打断和 Debug 状态
-app/main.py             FastAPI 工厂、生命周期和本地启动入口
-tests/unit/             配置、脱敏、Schema 单元测试
-tests/integration/      HTTP、WebSocket、统一链路、顺序、取消和生命周期测试
-docs/                   架构、范围冻结记录和每日开发计划
-config.yaml             当前阶段的非敏感默认配置
-.env.example            密钥环境变量示例，不包含有效密钥
-pyproject.toml          依赖、构建、pytest、Ruff、mypy 配置
-.python-version         固定 Python 3.11
-uv.lock                 可复现依赖锁文件，由 uv 生成
+COMPANION_LLM_API_KEY=...
 ```
 
-## 当前依赖边界
+支持 `/v1/chat/completions` 的 streaming 与 complete。缺少 model/key、HTTP 错误、超时或协议错误都会明确失败，不回退到 Mock。
 
-- 运行时包含 FastAPI、Pydantic、Uvicorn、PyYAML、python-dotenv，以及 Day 6 持久低延迟音频输出流需要的 sounddevice。
-- 开发依赖只加入 pytest、Ruff、mypy、PyYAML 类型桩和 FastAPI 测试客户端所需的 httpx2。
-- STT、GPT-SoVITS 客户端、VTS、OCR、截图、数据库和桌面 UI 依赖将在对应开发日经过必要性审查后再加入。
-- 当前只实现 Phase 1 Mock 主链路；真实 OpenAI-compatible LLM、GPT-SoVITS 和 VTube Studio 仍按 Day 8～14 计划接入，生产失败不会伪装为 Mock 回复。
+### GPT-SoVITS 与 VTube Studio
 
-## 资产与数据边界
+- GPT-SoVITS 需要用户自行启动兼容 `api_v2.py` 的 `/tts` 服务，并在 `tts.presets` 中配置参考音频等 preset。
+- VTube Studio 默认连接 `ws://127.0.0.1:8001`；首次认证仍需用户在 VTS 内人工允许，并为真实模型配置 hotkey 映射。
 
-- 源码仓库不提交 API key、真实聊天、真实截图、真实记忆、声音、图片、Live2D 模型或其他受保护资产。
-- 用户私有角色资产只能放在被 Git 忽略的 `assets/user_imported/` 或仓库外路径。
-- 运行时数据库、日志、缓存和 VTS token 位于被 Git 忽略的 `data/`。
+仓库不包含参考音频、声音模型、Live2D 模型或角色资产。
+
+### 视觉隐私
+
+`app.perception` 提供平台无关的窗口/捕获协议和严格的 Guard → 捕获 → 变化检测 → RapidOCR → 内容 Guard → 全 OCR 框遮挡 → 可选云端分析 → 清理流水线。RapidOCR 只使用安装包内的本地 ONNX 模型；模型缺失时安全失败，不自动下载。
+
+当前没有 macOS 或 Windows 前台窗口捕获实现，也没有把感知流水线接入主应用生命周期。真实屏幕权限、真实内容与云端视觉仍需后续人工验收。
+
+### 主动发话
+
+主动功能默认关闭；关闭时不创建 idle scheduler。通过 feature API 开启后才启动，关闭请求返回前会停止 scheduler 并等待活动主动轮次清理。生产组合目前只接入 idle trigger；Focus/DND、任务完成、视觉发布者及其他 trigger producer 尚未接线。
+
+### 本地 whisper.cpp STT
+
+STT 默认关闭。配置本机 `whisper-cli` 与模型路径后，可先运行只读检查：
+
+```bash
+uv run python tools/stt_smoke.py --mode check
+uv run python tools/stt_smoke.py --mode file --audio /path/to/16khz-mono-pcm.wav
+```
+
+`--mode microphone` 会请求真实麦克风并需要人工操作；本次没有执行。工厂不会打开麦克风，直到调用显式 push-to-talk `start()`，也不会自动下载模型。当前尚无桌面按钮或全局热键接线。
+
+## 目录
+
+```text
+app/clients/llm/          OpenAI-compatible 与 Mock LLM
+app/clients/tts/          GPT-SoVITS 与 Mock TTS
+app/clients/vts/          VTube Studio client、bridge、token store
+app/emotion/              情绪状态、限幅、衰减与表现映射
+app/prompts/              Prompt 与不可信外部上下文构建
+app/memory/ + app/storage SQLite 历史、记忆、FTS5 与管理 API
+app/perception/           视觉 Guard、OCR、脱敏与云端边界
+app/proactive/            主动评分、抑制、调度与抢占
+desktop_client/inputs/    whisper.cpp 与 push-to-talk 状态机
+tests/                    单元、集成、属性与跨模块 E2E
+tools/                    Gate A 与 STT 人工冒烟工具
+docs/                     范围、架构、验收记录与实现报告
+```
+
+产品范围、隐私和资产边界以 [`docs/day1_scope_freeze.md`](docs/day1_scope_freeze.md) 为准。任何真实设备、Windows 或人工体验验收都应按最终报告中的清单单独执行。
