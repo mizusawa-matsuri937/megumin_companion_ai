@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
 from pathlib import Path
 
 from app.clients.llm import MockLLMProvider, OpenAICompatibleLLMProvider
@@ -16,11 +17,17 @@ from app.clients.vts import (
 )
 from app.config import Settings
 from app.config.settings import PROJECT_ROOT
+from app.emotion import EmotionEngine, EmotionSegmentDecorator, ExpressionCooldown, SystemClock
 from app.pipelines import DialoguePipeline
 from app.pipelines.audio_player import AudioPlayer, SilentAudioPlayer, SystemAudioPlayer
+from app.prompts import EmotionPromptContextBuilder, PromptBuilder, PromptContextSource
 
 
-def build_dialogue_pipeline(settings: Settings) -> DialoguePipeline | None:
+def build_dialogue_pipeline(
+    settings: Settings,
+    *,
+    prompt_context_source: PromptContextSource | None = None,
+) -> DialoguePipeline | None:
     provider_name = settings.llm.provider.strip().lower()
     if provider_name == "none":
         return None
@@ -48,10 +55,36 @@ def build_dialogue_pipeline(settings: Settings) -> DialoguePipeline | None:
         player = SystemAudioPlayer()
     else:
         player = SilentAudioPlayer()
+    clock = SystemClock()
+    emotion_engine = EmotionEngine(
+        clock=clock,
+        max_delta_per_event=settings.emotion.max_delta_per_event,
+        max_delta_per_minute=settings.emotion.max_delta_per_minute,
+        label_min_duration=timedelta(seconds=settings.emotion.label_min_duration_seconds),
+        explosion_cooldown=timedelta(seconds=settings.emotion.explosion_cooldown_seconds),
+    )
+    context_builder = EmotionPromptContextBuilder(
+        PromptBuilder(),
+        emotion_engine,
+        clock,
+        source=prompt_context_source,
+        update_emotion=settings.emotion.enabled,
+    )
+    segment_decorator = None
+    if settings.emotion.enabled:
+        segment_decorator = EmotionSegmentDecorator(
+            emotion_engine,
+            ExpressionCooldown(
+                clock=clock,
+                cooldown=timedelta(seconds=settings.emotion.expression_cooldown_seconds),
+            ),
+        )
     return DialoguePipeline(
         llm,
         tts,
         player,
+        context_builder=context_builder,
+        segment_decorator=segment_decorator,
         tts_worker_count=settings.pipeline.tts_worker_count,
         segment_min_chars=settings.pipeline.segment_min_chars,
         segment_max_chars=settings.pipeline.segment_max_chars,

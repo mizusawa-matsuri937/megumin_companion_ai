@@ -25,6 +25,7 @@ from app.schemas import (
 )
 
 EventEmitter = Callable[[str, dict[str, Any]], Awaitable[None]]
+SegmentDecorator = Callable[[DialogueSegment], DialogueSegment]
 
 
 @dataclass(slots=True)
@@ -50,6 +51,7 @@ class DialoguePipeline:
         audio_player: AudioPlayer,
         *,
         context_builder: ContextBuilder | None = None,
+        segment_decorator: SegmentDecorator | None = None,
         tts_worker_count: int = 2,
         segment_min_chars: int = 6,
         segment_max_chars: int = 42,
@@ -61,6 +63,7 @@ class DialoguePipeline:
         self._tts = tts
         self._audio_player = audio_player
         self._context_builder = context_builder or DirectContextBuilder()
+        self._segment_decorator = segment_decorator
         self._tts_worker_count = tts_worker_count
         self._segment_min_chars = segment_min_chars
         self._segment_max_chars = segment_max_chars
@@ -264,6 +267,8 @@ class DialoguePipeline:
         queue: asyncio.Queue[_IndexedJob | None],
     ) -> None:
         token.raise_if_cancelled()
+        if self._segment_decorator is not None:
+            segment = self._segment_decorator(segment)
         if metrics.llm_first_segment_ms is None:
             metrics.llm_first_segment_ms = _elapsed_ms(started)
         metrics.segment_count += 1
@@ -278,6 +283,7 @@ class DialoguePipeline:
             text=segment.text,
             style=segment.tts_style,
             emotion=segment.emotion,
+            speed_factor=segment.tts_speed_factor,
             interruptible=segment.interruptible,
             cancellation_token_id=token.token_id,
         )

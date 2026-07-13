@@ -35,6 +35,8 @@ class VTSTurnEventSink:
             return False
         if event.type != "assistant.segment":
             return True
+        if event.payload.get("expression_update") is False:
+            return True
         expression = event.payload.get("live2d_expression")
         if not isinstance(expression, str) or not expression.strip():
             return False

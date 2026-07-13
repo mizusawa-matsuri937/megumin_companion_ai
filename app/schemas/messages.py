@@ -64,7 +64,9 @@ class DialogueSegment(ContractModel):
     text: str = Field(min_length=1)
     emotion: str = "neutral"
     tts_style: str = "default"
+    tts_speed_factor: float = Field(default=1.0, gt=0.0, le=3.0)
     live2d_expression: str = "neutral"
+    expression_update: bool = True
     interruptible: bool = True
     created_at: datetime = Field(default_factory=utc_now)
 

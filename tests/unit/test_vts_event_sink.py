@@ -50,6 +50,12 @@ def test_sink_forwards_only_expression_metadata() -> None:
         sink.start()
 
         assert sink.publish(event("assistant.delta", {"delta": "private dialogue"}))
+        assert sink.publish(
+            event(
+                "assistant.segment",
+                {"live2d_expression": "ignored", "expression_update": False},
+            )
+        )
         assert not sink.publish(event("assistant.segment", {"text": "private dialogue"}))
         assert sink.publish(
             event(
