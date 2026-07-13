@@ -1,0 +1,13 @@
+"""Privacy-first, platform-independent screen perception."""
+
+from app.perception.factory import build_perception_pipeline
+from app.perception.models import ObservationResult, ObservationStatus
+from app.perception.pipeline import PerceptionPipeline, PerceptionPipelineConfig
+
+__all__ = [
+    "ObservationResult",
+    "ObservationStatus",
+    "PerceptionPipeline",
+    "PerceptionPipelineConfig",
+    "build_perception_pipeline",
+]

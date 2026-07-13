@@ -19,6 +19,13 @@ dependencies = [
     "websockets>=15,<17",
 ]
 
+[project.optional-dependencies]
+perception = [
+    "onnxruntime>=1.20,<2",
+    "pillow>=11,<13",
+    "rapidocr>=3.4,<4",
+]
+
 [dependency-groups]
 dev = [
     "hypothesis>=6.130,<7",

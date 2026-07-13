@@ -72,6 +72,18 @@ memory:
   # 真实 LLM 的结构化候选分析需另行显式开启；长期记忆 feature 本身仍默认关闭。
   candidate_analysis_enabled: false
 
+perception:
+  operation_timeout_seconds: 10
+  max_frame_bytes: 20971520
+  minimum_hash_distance: 0.08
+  max_tracked_windows: 128
+  ocr_max_spans: 2000
+  ocr_max_span_chars: 2000
+  max_ocr_text_chars: 100000
+  max_summary_chars: 2000
+  cloud_max_calls: 6
+  cloud_period_seconds: 60
+
 pipeline:
   tts_worker_count: 2
   segment_min_chars: 6
