@@ -1,5 +1,23 @@
 """Application configuration loading."""
 
-from app.config.settings import ConfigurationError, Settings, load_settings
+from app.config.settings import (
+    CURRENT_SETTINGS_SCHEMA_VERSION,
+    ConfigurationError,
+    Settings,
+    load_settings,
+)
+from app.config.user_settings import (
+    UserSettingsWriteResult,
+    upgrade_user_settings,
+    write_user_settings,
+)
 
-__all__ = ["ConfigurationError", "Settings", "load_settings"]
+__all__ = [
+    "CURRENT_SETTINGS_SCHEMA_VERSION",
+    "ConfigurationError",
+    "Settings",
+    "UserSettingsWriteResult",
+    "load_settings",
+    "upgrade_user_settings",
+    "write_user_settings",
+]

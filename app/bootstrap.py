@@ -101,7 +101,7 @@ def build_dialogue_pipeline(
 def _build_tts(settings: Settings) -> TTSProvider:
     provider_name = settings.tts.provider.strip().lower()
     if provider_name == "mock":
-        cache_path = settings.resolve_runtime_path(settings.pipeline.audio_cache_path)
+        cache_path = settings.mock_audio_directory()
         return MockTTSProvider(
             cache_path,
             duration_ms=settings.pipeline.mock_audio_duration_ms,
@@ -117,13 +117,13 @@ def _build_tts(settings: Settings) -> TTSProvider:
     }
     return GPTSoVITSProvider(
         settings.tts.base_url,
-        settings.resolve_runtime_path(settings.tts.output_directory),
+        settings.tts_output_directory(),
         presets,
         default_preset=settings.tts.default_preset,
         timeout_seconds=settings.tts.timeout_seconds,
         max_audio_bytes=settings.tts.max_audio_bytes,
         cache_enabled=settings.tts.cache_enabled,
-        cache_dir=settings.resolve_runtime_path(settings.tts.cache_directory),
+        cache_dir=settings.tts_cache_directory(),
         cache_max_bytes=settings.tts.cache_max_bytes,
         cache_ttl_seconds=settings.tts.cache_ttl_seconds,
     )
@@ -142,7 +142,7 @@ def build_vts_event_sink(settings: Settings) -> VTSTurnEventSink | None:
             settings.vts.uri,
             request_timeout_seconds=settings.vts.request_timeout_seconds,
         ),
-        FileTokenStore(settings.resolve_runtime_path(settings.vts.token_path)),
+        FileTokenStore(settings.vts_token_path()),
         plugin_name=settings.vts.plugin_name,
         plugin_developer=settings.vts.plugin_developer,
         expression_mapper=mapper,

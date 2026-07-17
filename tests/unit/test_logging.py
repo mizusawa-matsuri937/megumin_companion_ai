@@ -5,6 +5,7 @@ from pathlib import Path
 
 from app.config import load_settings
 from app.config.logging import REDACTED, configure_logging, log_event
+from app.paths import AppPaths
 
 
 def test_structured_file_log_redacts_private_values(tmp_path: Path) -> None:
@@ -25,8 +26,8 @@ llm:
     fake_secret = "fake-day3-review-key-123"
     settings = load_settings(
         config_path,
-        tmp_path / ".env",
         environ={"TEST_LLM_KEY": fake_secret},
+        app_paths=AppPaths.from_local_app_data(tmp_path / "Local"),
     )
     logger = configure_logging(settings, file_path=log_path)
 
