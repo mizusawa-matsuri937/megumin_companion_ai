@@ -9,6 +9,7 @@ from app.config import Settings
 from app.config.settings import LLMConfig, LoggingConfig, PipelineConfig
 from app.core import TurnService
 from app.main import _settle_resource_close, create_app
+from app.paths import AppPaths
 from app.schemas import TurnState, UserMessage
 from fastapi.testclient import TestClient
 
@@ -24,13 +25,16 @@ class RecordingTurnService(TurnService):
 
 
 def quiet_settings(*, log_path: Path | None = None) -> Settings:
-    return Settings(
+    settings = Settings(
         logging=LoggingConfig(
             console_enabled=False,
             file_enabled=log_path is not None,
-            file_path=log_path or Path("unused.jsonl"),
+            file_path=Path(log_path.name) if log_path is not None else Path("unused.jsonl"),
         )
     )
+    if log_path is not None:
+        settings._paths = AppPaths(root=log_path.parent.parent)
+    return settings
 
 
 def mock_pipeline_settings(*, token_delay_ms: int = 0) -> Settings:
@@ -113,7 +117,7 @@ def test_invalid_payload_does_not_echo_private_input() -> None:
 
 
 def test_lifecycle_writes_start_and_stop_events(tmp_path: Path) -> None:
-    log_path = tmp_path / "lifecycle.jsonl"
+    log_path = tmp_path / "logs" / "lifecycle.jsonl"
     app = create_app(quiet_settings(log_path=log_path))
 
     with TestClient(app) as client:

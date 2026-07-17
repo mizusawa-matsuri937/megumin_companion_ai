@@ -23,10 +23,10 @@ def build_stt_provider(settings: Settings) -> STTProvider | None:
         raise RuntimeError(f"不支持的 STT provider：{settings.stt.provider}")
     return WhisperCppProvider(
         WhisperCppConfig(
-            executable=settings.resolve_runtime_path(settings.stt.executable),
-            model_path=settings.resolve_runtime_path(settings.stt.model_path),
+            executable=settings.stt_executable_path(),
+            model_path=settings.stt_model_path(),
             threads=settings.stt.threads,
-            temporary_directory=settings.resolve_runtime_path(settings.stt.temporary_directory),
+            temporary_directory=settings.stt_temporary_directory(),
             terminate_grace_seconds=settings.stt.terminate_grace_seconds,
             max_audio_bytes=settings.stt.max_audio_bytes,
             max_output_bytes=settings.stt.max_output_bytes,
@@ -47,6 +47,6 @@ def build_voice_input(settings: Settings) -> PushToTalkRecorder | None:
             max_recording_seconds=settings.stt.max_recording_seconds,
             transcription_timeout_seconds=settings.stt.transcription_timeout_seconds,
             language=settings.stt.language,
-            temporary_directory=settings.resolve_runtime_path(settings.stt.temporary_directory),
+            temporary_directory=settings.stt_temporary_directory(),
         ),
     )

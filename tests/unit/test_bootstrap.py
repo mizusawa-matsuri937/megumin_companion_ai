@@ -19,6 +19,7 @@ from app.config.settings import (
     TTSConfig,
     VTSConfig,
 )
+from app.paths import AppPaths
 from app.pipelines.audio_player import SystemAudioPlayer
 from app.prompts import EmotionPromptContextBuilder, HistoryMessage, PromptContextSnapshot
 from app.schemas import ChatRole, ExternalContextBlock, UserMessage
@@ -41,7 +42,7 @@ def test_real_provider_requires_model() -> None:
         build_dialogue_pipeline(Settings(llm=LLMConfig(provider="openai", model="   ")))
 
 
-def test_real_provider_absolute_cache_and_system_player(tmp_path: Path) -> None:
+def test_real_provider_managed_cache_and_system_player(tmp_path: Path) -> None:
     settings = Settings(
         llm=LLMConfig(
             provider="compatible",
@@ -50,9 +51,10 @@ def test_real_provider_absolute_cache_and_system_player(tmp_path: Path) -> None:
             temperature=0.65,
             max_tokens=777,
         ),
-        pipeline=PipelineConfig(audio_cache_path=tmp_path, playback_mode="system"),
+        pipeline=PipelineConfig(audio_cache_path=Path("mock"), playback_mode="system"),
     )
     settings._environment = {"TEST_KEY": "fake-test-key"}
+    settings._paths = AppPaths(root=tmp_path / "AppData")
 
     pipeline = build_dialogue_pipeline(settings)
 
@@ -69,11 +71,12 @@ def test_gpt_sovits_wiring_is_explicit_and_cache_defaults_off(tmp_path: Path) ->
         llm=LLMConfig(provider="mock"),
         tts=TTSConfig(
             provider="gpt-sovits",
-            output_directory=tmp_path / "ephemeral",
-            cache_directory=tmp_path / "persistent",
+            output_directory=Path("ephemeral"),
+            cache_directory=Path("persistent"),
             presets={"default": GPTSoVITSPresetConfig(ref_audio_path="/local/reference.wav")},
         ),
     )
+    settings._paths = AppPaths(root=tmp_path / "AppData")
 
     pipeline = build_dialogue_pipeline(settings)
 
@@ -174,11 +177,12 @@ def test_vts_wiring_starts_bounded_sink(
     settings = Settings(
         vts=VTSConfig(
             enabled=True,
-            token_path=tmp_path / "token.json",
+            token_path=Path("token.json"),
             expression_hotkeys=hotkeys,
             queue_capacity=3,
         )
     )
+    settings._paths = AppPaths(root=tmp_path / "AppData")
 
     sink = build_vts_event_sink(settings)
 

@@ -8,6 +8,8 @@ import pytest
 from app import __version__, cli
 from app.config import Settings
 from app.config.settings import LoggingConfig, StorageConfig
+from app.config.user_settings import UserSettingsWriteResult
+from app.legacy_migration import LegacyMigrationError, LegacyMigrationResult
 from desktop_client import entrypoint as desktop_entrypoint
 
 
@@ -56,6 +58,8 @@ def test_check_config_does_not_construct_runtime(
 
     output = capsys.readouterr().out
     assert '"status": "ok"' in output
+    assert '"schema_version": 1' in output
+    assert '"schema_upgrade_required": false' in output
     assert '"storage_enabled": false' in output
 
 
@@ -145,3 +149,95 @@ def test_desktop_check_config_delegates_without_starting_shell(
 
     assert desktop_entrypoint.main(["--check-config"]) == 0
     assert calls == [(None, None)]
+
+
+def test_migration_action_is_explicit_and_does_not_load_configuration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "old data"
+    calls: list[Path] = []
+
+    def record_migration(path: Path) -> int:
+        calls.append(path)
+        return 0
+
+    monkeypatch.setattr(cli, "_load_settings", _must_not_run)
+    monkeypatch.setattr(cli, "_migrate_old_data", record_migration)
+
+    assert cli.main(["--migrate-from", str(source)]) == 0
+
+    assert calls == [source]
+
+
+def test_settings_upgrade_rejects_development_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(cli, "_upgrade_local_settings", _must_not_run)
+
+    with pytest.raises(SystemExit) as error:
+        cli.main(["--upgrade-settings", "--config", "dev.yaml"])
+
+    assert error.value.code == 2
+
+
+def test_settings_upgrade_reports_backup_without_path(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(
+        cli,
+        "upgrade_user_settings",
+        lambda: UserSettingsWriteResult(changed=True, backup_created=True),
+    )
+
+    assert cli.main(["--upgrade-settings"]) == 0
+
+    output = capsys.readouterr().out
+    assert '"backup_created": true' in output
+    assert "settings.yaml" not in output
+
+
+def test_migration_wrapper_reports_safe_result_and_manual_next_action(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    paths = object()
+    monkeypatch.setattr("app.cli.AppPaths.discover", lambda: paths)
+    monkeypatch.setattr(
+        cli,
+        "migrate_legacy_data",
+        lambda source, *, app_paths: LegacyMigrationResult(
+            database_migrated=source.name == "data" and app_paths is paths,
+            model_file_count=1,
+            backup_created=True,
+            source_preserved=True,
+            target_activated=True,
+            secrets_require_reentry=True,
+        ),
+    )
+
+    assert cli.main(["--migrate-from", str(tmp_path / "data")]) == 0
+
+    output = capsys.readouterr().out
+    assert '"source_preserved": true' in output
+    assert "再手动删除旧 data" in output
+    assert str(tmp_path) not in output
+
+
+def test_migration_wrapper_returns_safe_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr("app.cli.AppPaths.discover", lambda: object())
+
+    def fail_migration(*_args: object, **_kwargs: object) -> None:
+        raise LegacyMigrationError("目标已存在；不会覆盖")
+
+    monkeypatch.setattr(cli, "migrate_legacy_data", fail_migration)
+
+    assert cli.main(["--migrate-from", str(tmp_path / "private" / "data")]) == 2
+
+    output = capsys.readouterr().err
+    assert "不会覆盖" in output
+    assert str(tmp_path) not in output

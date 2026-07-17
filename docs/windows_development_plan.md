@@ -522,6 +522,7 @@ flowchart LR
 
 #### PR W02：统一路径服务、配置分层与显式旧数据迁移
 
+- **状态：2026-07-17 自动验收与项目所有者人工审计均已通过；等待 W02 提交/合并，合并前不得进入 W03。** 实现、迁移/回滚、自动证据和审计签字见 [`implementation/w02_paths_config_migration.md`](./implementation/w02_paths_config_migration.md)。
 - **责任：AI-R。依赖：W01。风险：P0-03、P2-12。**
 - 实现 `AppPaths`，集中提供 resource/config/state/secrets/log/cache/temp/model 路径；禁止业务模块拼接 `PROJECT_ROOT` 或 CWD。
 - 配置优先级固定为 package defaults → LocalAppData user settings → dev-only env/CLI；生产不自动读取仓库 `.env`。

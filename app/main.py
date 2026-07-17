@@ -80,8 +80,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         standalone_analyzer_provider,
                         owns_provider=True,
                     )
-                database_path = resolved_settings.storage.database_path
-                database_path = resolved_settings.resolve_runtime_path(database_path)
+                database_path = resolved_settings.database_path()
                 memory_runtime = await create_memory_runtime(
                     str(database_path),
                     busy_timeout_ms=resolved_settings.storage.busy_timeout_ms,

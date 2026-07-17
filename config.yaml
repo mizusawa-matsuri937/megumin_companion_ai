@@ -1,3 +1,5 @@
+schema_version: 1
+
 app:
   name: Megumin Desktop Companion AI
   environment: dev
@@ -12,7 +14,7 @@ server:
 logging:
   console_enabled: true
   file_enabled: true
-  file_path: data/logs/app.jsonl
+  file_path: app.jsonl
 
 # 默认使用不联网的确定性 Mock；切换到真实 provider 时才要求专用密钥和 model。
 llm:
@@ -29,14 +31,14 @@ llm:
 tts:
   provider: mock
   base_url: http://127.0.0.1:9880
-  output_directory: data/cache/audio/gpt-sovits/ephemeral
+  output_directory: tts/gpt-sovits/ephemeral
   timeout_seconds: 30
   max_audio_bytes: 33554432
   default_preset: default
   presets: {}
   # 持久缓存涉及对话文本派生音频，默认关闭；启用后仍会跳过敏感文本。
   cache_enabled: false
-  cache_directory: data/cache/audio/gpt-sovits/persistent
+  cache_directory: tts/gpt-sovits/persistent
   cache_max_bytes: 536870912
   cache_ttl_seconds: 604800
 
@@ -46,7 +48,7 @@ vts:
   uri: ws://127.0.0.1:8001
   plugin_name: Megumin Companion
   plugin_developer: Local User
-  token_path: data/private/vts-token.json
+  token_path: vts-token.json
   request_timeout_seconds: 5
   queue_capacity: 16
   reconnect_initial_seconds: 1
@@ -63,7 +65,7 @@ emotion:
 
 storage:
   enabled: true
-  database_path: data/private/companion.sqlite3
+  database_path: companion.sqlite3
   busy_timeout_ms: 5000
 
 memory:
@@ -97,11 +99,11 @@ proactive:
 stt:
   enabled: false
   provider: whisper_cpp
-  executable: vendor/whisper.cpp/build/bin/whisper-cli
-  model_path: data/models/whisper/ggml-base.bin
+  executable: whisper/whisper-cli.exe
+  model_path: whisper/ggml-base.bin
   language: auto
   threads: null
-  temporary_directory: data/private/stt
+  temporary_directory: stt
   terminate_grace_seconds: 0.5
   max_audio_bytes: 67108864
   max_output_bytes: 2097152
@@ -118,6 +120,6 @@ pipeline:
   mock_token_delay_ms: 20
   mock_audio_duration_ms: 180
   mock_audio_volume: 0.12
-  audio_cache_path: data/cache/audio/mock
+  audio_cache_path: mock
   # 默认静默模拟播放，避免后端启动后意外发声；Gate A 人工工具显式使用系统播放器。
   playback_mode: silent

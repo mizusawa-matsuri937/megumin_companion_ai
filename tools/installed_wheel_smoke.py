@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
+import stat
 from importlib import metadata, resources
 from pathlib import Path
 
@@ -26,7 +28,9 @@ async def _health_payload() -> tuple[int, dict[str, object]]:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--forbid-root", type=Path, required=True)
+    parser.add_argument("--local-app-data", type=Path, required=True)
     args = parser.parse_args()
+    os.environ["LOCALAPPDATA"] = str(args.local_app_data.resolve())
 
     package_path = Path(app.__file__).resolve()
     forbidden = args.forbid_root.resolve()
@@ -35,10 +39,11 @@ def main() -> int:
     if "app" in vars(main_module):
         raise RuntimeError("app.main constructed a global ASGI application during import")
 
-    default_config = (
-        resources.files("app.resources").joinpath("default_config.yaml").read_text(encoding="utf-8")
-    )
-    if "playback_mode: silent" not in default_config:
+    default_resource = resources.files("app.resources").joinpath("default_config.yaml")
+    if isinstance(default_resource, Path):
+        default_resource.chmod(stat.S_IREAD)
+    default_config = default_resource.read_text(encoding="utf-8")
+    if "schema_version: 1" not in default_config or "playback_mode: silent" not in default_config:
         raise RuntimeError("packaged default configuration is missing or unexpected")
 
     console_scripts = {item.name for item in metadata.entry_points(group="console_scripts")}
@@ -48,7 +53,7 @@ def main() -> int:
     if "megumin-companion-desktop" not in gui_scripts:
         raise RuntimeError("desktop entry point is missing")
 
-    if check_configuration(None, Path.cwd() / "missing.env") != 0:
+    if check_configuration(None, None) != 0:
         raise RuntimeError("packaged configuration check failed")
 
     health_status, health_payload = asyncio.run(_health_payload())

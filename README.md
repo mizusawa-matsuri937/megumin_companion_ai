@@ -68,11 +68,31 @@ uv run megumin-companion-api --serve
 
 也可以使用 `uv run python -m app --serve`。`--help`、`--version` 和
 `--check-config` 只读取/校验配置，不启动数据库、设备或网络。默认配置作为
-`app.resources` 随 editable/wheel 安装；仓库根的 `config.yaml` 是显式开发配置，使用方式为：
+`app.resources` 随 editable/wheel 安装；用户覆盖位于
+`%LOCALAPPDATA%\MeguminCompanion\config\settings.yaml`。仓库根的 `config.yaml`
+只是显式开发覆盖，使用方式为：
 
 ```bash
 uv run megumin-companion-api --config config.yaml --serve
 ```
+
+配置优先级固定为 package defaults → LocalAppData 用户设置 → 显式开发配置/
+环境覆盖。程序不会从 CWD 或配置目录自动发现 `.env`；开发时必须显式传入：
+
+```bash
+uv run megumin-companion-api --config config.yaml --env-file .env --serve
+```
+
+旧仓库 `data/` 只通过显式迁移入口导入。迁移只复制数据库与模型，跳过日志、
+缓存、临时录音和 secret，在 staging 校验后原子启用，并始终保留旧源：
+
+```bash
+uv run megumin-companion-api --migrate-from /path/to/old/data
+```
+
+迁移前若 LocalAppData 目标已存在会拒绝覆盖/合并。旧版无 `schema_version` 的
+用户设置可先通过 `--check-config` 只读预检，再显式执行 `--upgrade-settings`；写入
+使用原子替换并保留 `settings.yaml.bak`。
 
 当前显式开发 API 默认监听 `127.0.0.1:8765`；W04 将进一步关闭生产网络面并加固
 `--dev-api` 语义。主要入口：
@@ -93,8 +113,9 @@ uv run megumin-companion-api --config config.yaml --serve
 
 ### OpenAI-compatible LLM
 
-在 `config.yaml` 配置 provider、base URL、model，使用 `--config config.yaml` 显式加载，
-并把专用且额度受限的密钥放入同目录下未跟踪的 `.env`：
+在 `config.yaml` 配置 provider、base URL、model，使用 `--config config.yaml` 显式加载。
+开发模式可把专用且额度受限的密钥放入未跟踪的 `.env`，但必须同时显式传
+`--env-file .env`：
 
 ```text
 COMPANION_LLM_API_KEY=...

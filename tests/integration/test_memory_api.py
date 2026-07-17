@@ -24,6 +24,7 @@ from app.memory import (
     SourceInputMode,
 )
 from app.memory.runtime import MemoryRuntime
+from app.paths import AppPaths
 from app.proactive import ProactiveRuntime
 from app.schemas import ChatCompletion, ChatRequest
 from fastapi.testclient import TestClient
@@ -57,13 +58,15 @@ class CandidateLLM:
 
 
 def stateful_settings(database_path: Path) -> Settings:
-    return Settings(
+    settings = Settings(
         logging=LoggingConfig(console_enabled=False, file_enabled=False),
         llm=LLMConfig(provider="mock"),
-        storage=StorageConfig(enabled=True, database_path=database_path),
+        storage=StorageConfig(enabled=True, database_path=Path(database_path.name)),
         memory=MemoryConfig(history_retention_days=7, confirmation_ttl_minutes=15),
         pipeline=PipelineConfig(mock_token_delay_ms=10, mock_audio_duration_ms=0),
     )
+    settings._paths = AppPaths(root=database_path.parent)
+    return settings
 
 
 def claim(
