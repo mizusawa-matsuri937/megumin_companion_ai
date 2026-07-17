@@ -2,7 +2,7 @@
 
 > 实现日期：2026-07-17
 >
-> 状态：实现与本地自动验收通过；GitHub 双平台 checks 和人工供应链/仓库设置审计待完成，保持 Draft，不得进入 W06
+> 状态：实现、本地自动验收和 GitHub 双平台自动验收通过；人工供应链/仓库设置审计与 Gate W1 结论待完成，保持 Draft，不得进入 W06
 >
 > 风险：P0-02、P2-07、P2-08
 >
@@ -49,8 +49,10 @@ installed-wheel job 不同步项目源码环境，按以下顺序执行：
 - 拒绝 `.env`、用户配置、data/log/model/audio/image/database、密钥和常见受保护资产格式；
 - 要求 app/desktop 关键模块、METADATA/WHEEL/RECORD、两个 entry point 及精确目标存在；
 - 要求项目名和 Python `>=3.11,<3.12` 约束不变，并限制 wheel 压缩前后大小；
-- 记录 wheel SHA-256、逐成员内容 manifest SHA-256、`uv.lock` SHA-256、Python/uv
-  版本和无本地路径的依赖版本清单。
+- 将构建后端固定为 `hatchling==1.31.0`，并要求 WHEEL metadata 的 generator、purelib 和 tag
+  精确匹配；
+- 记录 wheel SHA-256、逐成员内容 manifest SHA-256、ZIP creator-system、`uv.lock` SHA-256、
+  Python/uv 版本和无本地路径的依赖版本清单。
 
 `tools/installed_wheel_smoke.py` 在设置隔离 LocalAppData 后才导入 product package；同时检查
 `app` 和 `desktop_client` 都不来自源码树、`app.main` 没有 import-time 全局 ASGI app、默认资源和
@@ -68,8 +70,8 @@ repository/environment secrets，不使用 `pull_request_target`、`workflow_run
 | `astral-sh/setup-uv` | `v8.3.2` | `11f9893b081a58869d3b5fccaea48c9e9e46f990` | [release](https://github.com/astral-sh/setup-uv/releases/tag/v8.3.2) / [commit](https://github.com/astral-sh/setup-uv/commit/11f9893b081a58869d3b5fccaea48c9e9e46f990) |
 | `actions/upload-artifact` | `v7.0.1` | `043fb46d1a93c77aae656e7c1c64a875d1fc6a0a` | [release](https://github.com/actions/upload-artifact/releases/tag/v7.0.1) / [commit](https://github.com/actions/upload-artifact/commit/043fb46d1a93c77aae656e7c1c64a875d1fc6a0a) |
 
-uv 本身固定为 [`0.11.28`](https://github.com/astral-sh/uv/releases/tag/0.11.28)；Python 固定 minor
-`3.11`，实际 patch 写入 provenance。GitHub 官方
+uv 本身固定为 [`0.11.28`](https://github.com/astral-sh/uv/releases/tag/0.11.28)，构建后端固定为
+`hatchling==1.31.0`；Python 固定 minor `3.11`，实际 patch 写入 provenance。GitHub 官方
 [secure use reference](https://docs.github.com/en/actions/reference/security/secure-use) 将完整 commit SHA
 列为 action 不可变引用方式，本实现同时在同一行保留 release 注释，使 Dependabot 可更新 SHA 和版本注释。
 
@@ -87,11 +89,12 @@ SHA 的 action advisory 也不能只依赖告警，仍需人工检查 GitHub Adv
 
 ### 本地 Windows 证据
 
-- 全仓 pytest：`652 passed, 1 skipped`；唯一 skip 是既有“无确定性测试字体”。
-- 最终 aggregate branch coverage：`90.85%`，高于 90% 门槛；Hypothesis 路径会令成功运行的
+- 全仓 pytest：`657 passed, 1 skipped`；唯一 skip 是既有“无确定性测试字体”。
+- 最终 aggregate branch coverage：`90.81%`，高于 90% 门槛；Hypothesis 路径会令成功运行的
   小数位轻微波动。
-- W05 聚焦矩阵：`35 passed`，覆盖敏感成员、ZIP 路径/碰撞/symlink/大小上限、metadata/entry point、
-  dependency inventory、环境清理、CWD 快照、workflow 和 Dependabot policy。
+- W05 聚焦矩阵：`40 passed`，覆盖敏感成员、ZIP 路径/碰撞/symlink/大小上限、metadata/entry point、
+  build generator、PR merge/head 身份、dependency inventory、环境清理、CWD 快照、workflow 和
+  Dependabot policy。
 - Ruff：`check .` 通过；`format --check .` 为 `163 files already formatted`。
 - strict mypy：`158 source files` 通过，包含两个安装产物工具。
 - 构建 wheel：`megumin_companion_ai-0.1.0-py3-none-any.whl`，102 个成员，184,778 bytes，
@@ -109,21 +112,46 @@ SHA 的 action advisory 也不能只依赖告警，仍需人工检查 GitHub Adv
 以上 wheel/hash 是本地未提交 revision 的开发证据，不冒充 GitHub runner 或发布产物。GitHub
 provenance 必须带 40 位 `source_revision`，本地 evidence 的 `local-unrecorded` 不得上传为远端证明。
 
-### GitHub 证据（发布后核对）
+### GitHub 双平台证据
 
-Draft PR 创建后必须等四个最终 check 全部成功；两个 installed-wheel job 各上传一份 7 天保留的
-`provenance.json`。人工 reviewer 下载并核对：
+实现 head `d77a3eb427cbed7daef12c957c2ed1fa85bb1b3a` 的
+[PR run 29581192865](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29581192865)
+和 [push run 29581189304](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29581189304)
+均为 success。PR run 四项结果为：
 
-- `artifact_kind == "w05-ci-provenance-only"`、`release_artifact == false`；
-- `source_revision` 等于 PR head 的 40 位 SHA；
-- `source_checkout.product_packages_hidden_during_smoke == true`；
-- 两平台 `uv.lock` SHA 一致，Python 为 CPython 3.11.x；
-- wheel/package policy 和 installed smoke 全部为通过状态；
-- JSON 不含 runner home、cache/checkout 绝对路径、用户名、token、聊天/记忆或环境变量值；
-- upload 中只有 provenance JSON，没有 wheel、`.venv`、uv cache 或用户数据。
+| Check | 结论 | Job |
+| --- | --- | --- |
+| `quality (windows-latest)` | success | [87887042651](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29581192865/job/87887042651) |
+| `quality (macos-latest)` | success | [87887042660](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29581192865/job/87887042660) |
+| `installed-wheel (windows-latest)` | success | [87887042677](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29581192865/job/87887042677) |
+| `installed-wheel (macos-latest)` | success | [87887042732](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29581192865/job/87887042732) |
 
-纯 Python wheel 在 `.gitattributes` LF 约束下预期两平台 wheel/manifest hash 一致；若不一致必须先解释
-具体成员差异。未解释的不一致不得把任一 wheel 当作发布候选；W05 本来也不上传或发布 wheel。
+GitHub 对 `pull_request` 默认 checkout `refs/pull/<n>/merge`；因此 provenance 将实际受测的临时合并
+提交记录为 `source_revision=854ad70bbe77bb52a1de40b4458f53c082913e37`，并另将分支 head 记录为
+`change_revision=d77a3eb427cbed7daef12c957c2ed1fa85bb1b3a`，类型为
+`pull-request-merge`。这符合 GitHub 官方对
+[`GITHUB_SHA` 的 PR 语义](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#pull_request)，
+避免把“测试合并结果”和“贡献分支 head”混写成同一提交。
+
+两个 installed job 各上传一份 7 天保留、只含一个 `provenance.json` 的 artifact：
+
+| 平台 | Artifact ID / 到期 | JSON SHA-256 | wheel raw SHA-256 | ZIP creator-system |
+| --- | --- | --- | --- | --- |
+| Windows | `8407096048` / 2026-07-24 | `089d29f27e13a864019d93eec20d365bdc6037764ec22830f1b775400dd11bbb` | `0607b53ce602dc2479f6bb62f22d06ab06249c32b1d862ef54c37f4b9b160f26` | `0` |
+| macOS | `8407069268` / 2026-07-24 | `1b3edfe615d83e3f731c2c42c66ba32793e25bf9d97a23b4faa9b9677b2c95f4` | `cbf900d733a6a3284f2f29d20445a0d0a3321800644b68e3fda9ea202fdb6d8c` | `3` |
+
+自动下载后的逐字段断言通过：两边都是 CPython 3.11.9、`hatchling 1.31.0`、同一
+`uv.lock` SHA `cc69c6a7574d663781856f4a69a1d8bd0f5112cbb217ac0579628daf0770ae2c`、
+同一 102 成员内容 manifest SHA
+`650c750316ac8edf5f914725a98d1bd57d87be46eea5b683968d4871834da941`；源码包在 smoke
+期间已隐藏、源码树导入为 false、任意 CWD 未变化、锁闭 health 为 503、显式认证 health 为
+`200 ready`。macOS 为 23 个依赖，Windows 因平台 marker 多 `colorama`/`tzdata`，为 25 个。
+
+两个 raw wheel hash 不同，但这不是成员内容差异：manifest 对排序后的每个成员名、长度和内容 SHA-256
+计算，双方完全一致；provenance 同时证明 ZIP creator-system 为 Windows `0`、Unix `3`，该容器元数据
+已经足以令原始 ZIP 字节不同。W05 因此以 manifest 判断跨 OS payload 一致，以 raw hash 标识单平台
+构建实例；两个 wheel 均未上传或发布，发布级可复现产物仍由 W24～W27 负责。两个 JSON 均未发现
+runner home、cache/checkout 绝对路径、用户名、secret、聊天/记忆、环境变量值或用户数据。
 
 ## 迁移、兼容性和回滚
 
@@ -158,8 +186,9 @@ Draft PR 创建后必须等四个最终 check 全部成功；两个 installed-wh
 
 ### 1. 证据身份和 reviewer
 
-记录最终 PR URL、head SHA、base `agent/windows-development-baseline`、四个 check URL、执行时间、
-GitHub runner image 和 reviewer。项目所有者兼任 reviewer 时写“非独立审计”；不得写成独立安全审查。
+记录最终 PR URL、head SHA、受测 merge SHA、base `agent/windows-development-baseline`、四个 check URL、
+执行时间、GitHub runner image 和 reviewer。项目所有者兼任 reviewer 时写“非独立审计”；不得写成
+独立安全审查。
 截图/附件不得包含用户名路径、token、环境变量、runner debug dump 或 private artifact 下载 URL。
 
 ### 2. workflow diff 与触发面
@@ -182,7 +211,8 @@ GitHub runner image 和 reviewer。项目所有者兼任 reviewer 时写“非�
 3. 确认 workflow 的 `uses:` 全部是完整小写 40 位 SHA，同一行版本注释与 release 匹配；
 4. 确认只有 GitHub 官方 `checkout`/`upload-artifact` 和 Astral 官方 `setup-uv`，没有隐含 reusable
    workflow、Docker action 或本地 action；
-5. 对任何未来更新重复本节，不允许仅更新注释、不更新 SHA，或只更新 SHA、不确认 release 来源。
+5. 确认 build-system 精确固定 `hatchling==1.31.0`，WHEEL generator 与之相同；未来更新单独 review；
+6. 对任何未来更新重复本节，不允许仅更新注释、不更新 SHA，或只更新 SHA、不确认 release 来源。
 
 ### 4. token、secret 和允许来源策略
 
@@ -205,7 +235,9 @@ GitHub runner image 和 reviewer。项目所有者兼任 reviewer 时写“非�
 2. installed job 的 setup-uv `enable-cache` 必须为 false；夹具另建空 `UV_CACHE_DIR`，证明新 venv
    安装，不得指向 quality cache 或 checkout 内 `.venv`。
 3. Actions 页面下载两个 provenance artifact；各自只含一个 JSON，retention 为 7 天。
-4. 按“GitHub 证据”逐字段核对，并在本地计算下载文件 SHA；不得上传 wheel/cache 来替代 hash 记录。
+4. 按“GitHub 双平台证据”逐字段核对 `change_revision`、`source_revision`/kind、generator、
+   creator-system、manifest、lock 和 smoke，并在本地计算下载文件 SHA；不得上传 wheel/cache 来替代
+   hash 记录。
 5. Actions repository retention 可长于 7 天，但该 step 的 7 天显式值不得删除或改成 0/default；
    private artifact 下载权限仍需人工确认。
 

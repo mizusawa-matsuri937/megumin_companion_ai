@@ -561,7 +561,7 @@ flowchart LR
 
 #### PR W05：安装产物与源码双轨 CI smoke
 
-- **状态：2026-07-17 已实现且本地自动验收通过；GitHub 双 OS checks、Action/仓库设置人工审计与 Gate W1 结论待完成，保持 Draft，不得进入 W06。** 实现证据、当前 GitHub 设置差距和详细人工步骤见 [`implementation/w05_installed_artifact_ci.md`](./implementation/w05_installed_artifact_ci.md)。
+- **状态：2026-07-17 已实现，本地与 GitHub 双 OS 自动验收通过；Action/仓库设置人工审计与 Gate W1 结论待完成，保持 Draft，不得进入 W06。** 实现证据、当前 GitHub 设置差距和详细人工步骤见 [`implementation/w05_installed_artifact_ci.md`](./implementation/w05_installed_artifact_ci.md)。
 - **责任：AI-F（workflow/fixture）+ AI-R（供应链配置）。依赖：W01～W04。风险：P2-07、P2-08。**
 - Windows/macOS 源码质量门保留；新增 wheel 隔离安装、仓库外 CLI/ASGI、任意 CWD smoke。
 - push 覆盖 `main` 和实际开发分支；required checks 与 branch protection 由仓库管理员配置。
@@ -1020,7 +1020,7 @@ flowchart LR
 
 1. W00 已在 [`gates/gate_w0.md`](./gates/gate_w0.md) 有条件批准；保持非独立自审、云视觉、安装器和设备残余风险可见。
 2. W01～W04 已按顺序完成；PR #14 已合并，自动证据、人工边界与关闭记录以对应 implementation 文档为准。
-3. 当前只完成 W05 安装产物与源码双轨 CI 的实现、自动验证、Draft PR 和人工供应链/仓库设置审计；不得同时实现 W06 或后续阶段。
+3. 当前只处理 W05 安装产物与源码双轨 CI；实现、自动验证和 Draft PR 已完成，人工供应链/仓库设置审计待结论；不得同时实现 W06 或后续阶段。
 4. 只有 W05 人工审计明确通过并关闭 Gate W1 后才允许开始 W06；private Free 仓库无 branch protection 的例外若被接受，必须写入 W05 关闭记录和 ADR，不能伪装成已配置保护。
 5. W12 通过后才开始 W13 PySide6 spike；窗口捕获和安装器仍分别等待其依赖 PR。任何跳过顺序都要在 ADR 中说明理由和新增风险。
 
