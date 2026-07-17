@@ -5,6 +5,11 @@
 - **风险：** P0-02、P0-03、P0-04、P2-05～P2-10
 - **后续 PR：** W01、W05、W24～W27
 
+> W05 Gate W1 于 2026-07-17 经项目所有者非独立人工审计后走显式例外路径关闭：所有者明确接受
+> RR-W05-01/02。仓库仍为 private Free，branch protection/rulesets 未配置，Actions 仍允许全部来源且
+> 仓库级 SHA enforcement 仍关闭；不得把例外描述为平台保护已启用。完整记录见
+> [`../implementation/w05_installed_artifact_ci.md`](../implementation/w05_installed_artifact_ci.md)。
+
 ## 背景
 
 wheel 当前能构建但不能在仓库外独立导入；没有 GUI entry、冻结包、安装器、单实例、升级/回滚或崩溃恢复。源码质量绿灯不是可安装产品证据。
@@ -41,6 +46,17 @@ wheel 当前能构建但不能在仓库外独立导入；没有 GUI entry、冻�
 - Program Files/只读安装、LocalAppData、中文/空格/长路径、非系统盘和无控制台窗口。
 - artifact allowlist、bundle manifest、SBOM、dependency/license 清单与隐私残留扫描。
 - 私人未签名包不得被描述为公开发布候选。
+
+## W05 Gate W1 例外与补偿控制
+
+- **RR-W05-01：** private Free 仓库不能启用本项目要求的 branch protection/rulesets；owner 仍可直接
+  push 或绕过失败检查。项目所有者已明确接受该风险，补偿控制是所有 W 任务继续只经 Draft PR、最终
+  head 四项双 OS checks、人工 diff/review 和锁定 head 的受控合并。
+- **RR-W05-02：** 仓库当前 `allowed_actions=all` 且 `sha_pinning_required=false`。项目所有者已明确接受
+  未来 workflow 误配缺少仓库级强制防护的风险；当前 workflow 仍通过测试要求三个 Action 使用审核过的
+  40 位 SHA，并保持只读 token、无 PR secrets、无 checkout 凭据持久化。
+- 例外只关闭 Gate W1 的流程阻塞，不消除风险，也不批准把 private 仓库改 public。若以后具备 GitHub Pro
+  或等价平台能力，应配置并做阻塞验证，然后以新证据关闭两项例外。
 
 ## 回滚
 

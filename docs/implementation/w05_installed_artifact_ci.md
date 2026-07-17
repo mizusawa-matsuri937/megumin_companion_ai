@@ -2,7 +2,7 @@
 
 > 实现日期：2026-07-17
 >
-> 状态：实现、本地自动验收和 GitHub 双平台自动验收通过；人工供应链/仓库设置审计与 Gate W1 结论待完成，保持 Draft，不得进入 W06
+> 状态：实现、本地与 GitHub 双平台自动验收、项目所有者非独立人工审计均已通过；RR-W05-01/02 已由所有者显式接受，Gate W1 按例外路径关闭，PR #15 获准受控合并
 >
 > 风险：P0-02、P2-07、P2-08
 >
@@ -170,13 +170,13 @@ runner home、cache/checkout 绝对路径、用户名、secret、聊天/记忆�
 | 项目 | 当前值 | 判定 |
 | --- | --- | --- |
 | 可见性 / 默认分支 | private / `main` | 符合隐私边界；Dependabot 配置尚未在默认分支，暂不激活 |
-| Actions | enabled；`allowed_actions=all` | 可运行，但来源策略过宽，待人工审计/收紧 |
-| repo-level SHA policy | `sha_pinning_required=false` | workflow 自身已固定；仓库未强制，待人工审计/收紧 |
+| Actions | enabled；`allowed_actions=all` | workflow 自身通过；仓库级差距保留为已接受 RR-W05-02 |
+| repo-level SHA policy | `sha_pinning_required=false` | workflow 自身已固定；仓库未强制，保留为已接受 RR-W05-02 |
 | 默认 workflow token | `read` | 通过 |
 | Actions 可批准 PR | `false` | 通过 |
-| `main` branch protection | API 403：private repo 需 GitHub Pro 或 public | **人工 Gate blocker** |
-| 开发分支 protection | 同上 | **人工 Gate blocker** |
-| repository rulesets | 同上 | **人工 Gate blocker** |
+| `main` branch protection | API 403：private repo 需 GitHub Pro 或 public | 未配置；已接受 RR-W05-01，禁止改 public 规避 |
+| 开发分支 protection | 同上 | 未配置；已接受 RR-W05-01 |
+| repository rulesets | 同上 | 未配置；已接受 RR-W05-01 |
 
 不得为取得免费 branch protection 把私人仓库改为 public。推荐方案是升级 GitHub Pro 后配置 ruleset；
 若所有者不升级，只能把“无平台强制保护、依赖人工纪律”作为明确 Gate 例外写入本记录和 ADR，不能描述
@@ -285,7 +285,8 @@ Gate W1 只在以下两种情形之一成立：
 2. **显式例外路径：** 其余项目全通过，所有者明确接受 RR-W05-01 和 RR-W05-02，并授权把例外写入
    ADR；不得声称 branch protection 已配置。
 
-在 Gate W1 有书面结论前，PR 保持 Draft，W06 不得开始。
+项目所有者已按第 2 条显式例外路径给出书面结论。Gate W1 因而关闭，但两项风险没有消失；PR #15 只可在
+最终关闭提交的四项双 OS checks 全绿、head/base/diff/review 再核对且用 expected-head guard 后合并。
 
 ## 审计通过、拒绝与回复格式
 
@@ -312,7 +313,22 @@ CWD 写入、任一 required check 未绿，或把 private repo 改 public 以�
 - 若未完成：列出失败项、预期/实际值和证据位置，回复“审计不合格”；修复后重新执行受影响部分及四项
   CI，不得直接进入 W06。
 
-## 未关闭的残余风险
+## 阶段关闭记录
+
+- 关闭日期：2026-07-17。
+- 人工签字：项目所有者在收到完整供应链、artifact、权限、仓库设置审计方案后明确回复
+  “审计合格，并接受 RR-W05-01/02 Gate 例外”。
+- reviewer 独立性：项目所有者兼任供应链/仓库设置 reviewer，属于**非独立审计**，不得表述为独立安全
+  或供应链复核。
+- Gate 结论：Gate W1 按显式例外路径关闭；branch protection/rulesets 仍未配置，`allowed_actions=all`
+  和 `sha_pinning_required=false` 仍是当前事实。
+- 风险接受：RR-W05-01/02 以及下节其余边界随签字一并接受，但 W24～W27 的发布、SBOM、许可证、签名、
+  安装器和可复现产物责任不因此关闭。
+- 合并授权：当前会话可在最终关闭提交的 PR/push CI 全绿、PR base/head/diff/review/mergeability 无异常且
+  head SHA 被命令锁定时合并 PR #15；任一条件变化立即停止，不得凭普通“审计合格”盲合并。
+- 会话边界：项目所有者要求 PR #15 合并后立即结束本会话；本会话不得开始或修改 W06。
+
+## 已接受但未消除的残余风险
 
 1. **RR-W05-01：** private Free 仓库当前不能启用 branch protection/rulesets；若走例外路径，owner
    仍可直接 push 或绕过失败 check，只有流程纪律而无平台强制。
