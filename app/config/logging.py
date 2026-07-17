@@ -93,7 +93,12 @@ def _handler(stream: Any, redactor: Redactor) -> logging.Handler:
     return handler
 
 
-def configure_logging(settings: Settings, *, file_path: Path | None = None) -> logging.Logger:
+def configure_logging(
+    settings: Settings,
+    *,
+    file_path: Path | None = None,
+    additional_secrets: Sequence[str] = (),
+) -> logging.Logger:
     """Configure the application logger without changing unrelated library loggers."""
 
     logger = logging.getLogger("megumin_companion")
@@ -102,7 +107,7 @@ def configure_logging(settings: Settings, *, file_path: Path | None = None) -> l
     logger.handlers.clear()
     logger.setLevel(settings.app.log_level)
     logger.propagate = False
-    redactor = Redactor(settings.known_secret_values())
+    redactor = Redactor((*settings.known_secret_values(), *additional_secrets))
 
     if settings.logging.console_enabled:
         logger.addHandler(_handler(sys.stdout, redactor))

@@ -535,7 +535,7 @@ flowchart LR
 #### PR W03：DACL、DPAPI 与临时资产 registry
 
 - **责任：AI-R；安全签字 H。依赖：W02。风险：P0-03、P1-14。**
-- **状态：2026-07-17 实现与自动验收已完成；等待 Windows VM 与安全人工审计，审计合格前不得进入 W04。** 实现、自动证据和待签字方案见 [`implementation/w03_windows_security_and_temp_assets.md`](./implementation/w03_windows_security_and_temp_assets.md)。
+- **状态：2026-07-17 已合并；项目所有者在后续任务中明确确认 W03 已完成并授权从 W04 开始。** 实现、自动证据、人工方案和阶段关闭记录见 [`implementation/w03_windows_security_and_temp_assets.md`](./implementation/w03_windows_security_and_temp_assets.md)。
 - app 私有目录创建时设置明确 DACL；至少验证另一标准用户无法读取，不能以 `chmod` 作为证据。
 - secret 使用 DPAPI current-user；密文格式带版本、用途和 key id；支持替换、撤销、损坏和用户重置。
 - VTS token 与 LLM key 从 plain file/env 迁入 secret store；日志中只出现稳定 secret id，不出现值。
@@ -547,6 +547,7 @@ flowchart LR
 
 #### PR W04：关闭生产网络面并加固 dev API
 
+- **状态：2026-07-17 实现与自动验收已完成；等待项目所有者人工安全审计，审计合格前不得进入 W05。** 实现、攻击证据和待签字方案见 [`implementation/w04_secure_dev_api.md`](./implementation/w04_secure_dev_api.md)。
 - **责任：AI-R；安全签字 H。依赖：W01、W03。风险：P0-01、P1-17。**
 - GUI 生产入口不包含 Uvicorn 生命周期；dev API 必须显式 flag 才启动。
 - 非 loopback host 直接配置错误；不提供“忽略风险继续”的开关。
@@ -1017,9 +1018,9 @@ flowchart LR
 下一步只做以下五件事：
 
 1. W00 已在 [`gates/gate_w0.md`](./gates/gate_w0.md) 有条件批准；保持非独立自审、云视觉、安装器和设备残余风险可见。
-2. W01 已完成本机自动验收；在 W05 前仍需把 installed-wheel smoke 接入双 OS CI。
-3. 现在只开始 W02：实现统一路径服务、配置分层/schema 和显式旧数据迁移。
-4. W02 合并后按顺序执行 W03/W04/W05，完成 Gate W1；随后继续 W06～W12。
+2. W01～W03 已按顺序完成；各自的自动证据、人工边界与关闭记录以对应 implementation 文档为准。
+3. W04 实现、攻击矩阵与产物验证已完成；当前唯一下一动作是按 [`implementation/w04_secure_dev_api.md`](./implementation/w04_secure_dev_api.md) 执行项目所有者人工安全审计。
+4. 项目所有者明确回复“审计合格”并完成 W04 阶段关闭/合并后，才可开始 W05；此前不得实现 W05 或后续阶段。
 5. W12 通过后才开始 W13 PySide6 spike；窗口捕获和安装器仍分别等待其依赖 PR。任何跳过顺序都要在 ADR 中说明理由和新增风险。
 
 ## 12. 官方平台依据

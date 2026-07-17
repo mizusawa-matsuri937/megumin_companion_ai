@@ -38,9 +38,11 @@ class TurnStatus(StrEnum):
 
 
 class UserMessage(ContractModel):
-    message_id: str = Field(default_factory=lambda: prefixed_id("msg"), min_length=1)
-    session_id: str = Field(default="local_session", min_length=1)
-    user_id: str = Field(default="local_user", min_length=1)
+    message_id: str = Field(
+        default_factory=lambda: prefixed_id("msg"), min_length=1, max_length=128
+    )
+    session_id: str = Field(default="local_session", min_length=1, max_length=128)
+    user_id: str = Field(default="local_user", min_length=1, max_length=128)
     text: str = Field(min_length=1, max_length=20_000)
     input_mode: InputMode = InputMode.text
     created_at: datetime = Field(default_factory=utc_now)
@@ -149,5 +151,5 @@ class PipelineEvent(ContractModel):
 
 
 class TurnInterruptRequest(ContractModel):
-    turn_id: str | None = Field(default=None, min_length=1)
-    session_id: str = Field(default="local_session", min_length=1)
+    turn_id: str | None = Field(default=None, min_length=1, max_length=128)
+    session_id: str = Field(default="local_session", min_length=1, max_length=128)

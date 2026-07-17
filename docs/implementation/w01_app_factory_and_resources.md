@@ -4,6 +4,8 @@
 > 状态：自动验收通过；允许进入 W02
 > 风险：P0-02
 > ADR：[`../adr/ADR-W03-paths-resources-migration.md`](../adr/ADR-W03-paths-resources-migration.md)、[`../adr/ADR-W08-packaging-upgrade.md`](../adr/ADR-W08-packaging-upgrade.md)
+>
+> 历史说明：本文件中的 `--serve`/直接 ASGI health 是 W01 当时的过渡接口；W04 已将其替换为默认 locked factory 与认证 `--dev-api`。当前契约见 [`w04_secure_dev_api.md`](./w04_secure_dev_api.md)。
 
 ## 完成范围
 

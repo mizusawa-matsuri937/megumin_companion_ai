@@ -5,13 +5,46 @@ import json
 from pathlib import Path
 
 import pytest
+from app.api.security import DevAPIConfig, DevAPIScope
 from app.config import Settings
 from app.config.settings import LLMConfig, LoggingConfig, PipelineConfig
 from app.core import TurnService
 from app.main import _settle_resource_close, create_app
 from app.paths import AppPaths
 from app.schemas import TurnState, UserMessage
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
+
+DEV_API = DevAPIConfig(
+    token="integration-api-token-000000000000000000000000",
+    session_id="session_integration_api",
+    allowed_origins=frozenset({"http://127.0.0.1:8765"}),
+    allowed_hosts=frozenset({"127.0.0.1:8765"}),
+    scopes=frozenset({DevAPIScope.chat, DevAPIScope.admin}),
+)
+WS_BASE_URL = "ws://127.0.0.1:8765"
+
+
+def secured_app(settings: Settings) -> FastAPI:
+    return create_app(settings, dev_api=DEV_API)
+
+
+def secured_client(application: FastAPI) -> TestClient:
+    return TestClient(
+        application,
+        base_url="http://127.0.0.1:8765",
+        headers=DEV_API.client_headers(),
+        client=("127.0.0.1", 51001),
+    )
+
+
+def command(command_type: str, payload: dict[str, object]) -> dict[str, object]:
+    return {
+        "protocol_version": 1,
+        "type": command_type,
+        "session_id": DEV_API.session_id,
+        "payload": payload,
+    }
 
 
 class RecordingTurnService(TurnService):
@@ -50,13 +83,13 @@ def mock_pipeline_settings(*, root: Path, token_delay_ms: int = 0) -> Settings:
 
 
 def test_health_and_websocket_echo(tmp_path: Path) -> None:
-    app = create_app(quiet_settings(root=tmp_path / "app"))
-    with TestClient(app) as client:
+    app = secured_app(quiet_settings(root=tmp_path / "app"))
+    with secured_client(app) as client:
         response = client.get("/health")
         assert response.status_code == 200
-        assert response.json()["status"] == "ok"
+        assert response.json()["status"] == "ready"
 
-        with client.websocket_connect("/ws/echo") as websocket:
+        with client.websocket_connect(f"{WS_BASE_URL}/ws/echo") as websocket:
             websocket.send_text("echo-check")
             assert websocket.receive_text() == "echo-check"
             websocket.send_bytes(b"binary-check")
@@ -68,20 +101,24 @@ def test_health_and_websocket_echo(tmp_path: Path) -> None:
 
 
 def test_text_and_voice_use_the_same_turn_service(tmp_path: Path) -> None:
-    app = create_app(quiet_settings(root=tmp_path / "app"))
-    with TestClient(app) as client:
+    app = secured_app(quiet_settings(root=tmp_path / "app"))
+    with secured_client(app) as client:
         original = app.state.turn_service
         assert isinstance(original, TurnService)
         recording_service = RecordingTurnService(original)
         app.state.turn_service = recording_service
 
-        with client.websocket_connect("/ws/client") as websocket:
+        with client.websocket_connect(f"{WS_BASE_URL}/ws/client") as websocket:
             for mode in ("text", "voice"):
                 websocket.send_json(
-                    {
-                        "type": "user.message",
-                        "payload": {"text": f"来自 {mode}", "input_mode": mode},
-                    }
+                    command(
+                        "user.message",
+                        {
+                            "text": f"来自 {mode}",
+                            "input_mode": mode,
+                            "session_id": DEV_API.session_id,
+                        },
+                    )
                 )
                 event = websocket.receive_json()
                 assert event["type"] == "turn.accepted"
@@ -95,9 +132,16 @@ def test_text_and_voice_use_the_same_turn_service(tmp_path: Path) -> None:
 
 
 def test_http_chat_uses_normalized_user_message(tmp_path: Path) -> None:
-    app = create_app(quiet_settings(root=tmp_path / "app"))
-    with TestClient(app) as client:
-        response = client.post("/api/chat", json={"text": "  显式发送  ", "input_mode": "text"})
+    app = secured_app(quiet_settings(root=tmp_path / "app"))
+    with secured_client(app) as client:
+        response = client.post(
+            "/api/chat",
+            json={
+                "text": "  显式发送  ",
+                "input_mode": "text",
+                "session_id": DEV_API.session_id,
+            },
+        )
 
     assert response.status_code == 200
     assert response.json()["input_mode"] == "text"
@@ -106,11 +150,15 @@ def test_http_chat_uses_normalized_user_message(tmp_path: Path) -> None:
 
 def test_invalid_payload_does_not_echo_private_input(tmp_path: Path) -> None:
     private_input = "private-draft@example.com"
-    app = create_app(quiet_settings(root=tmp_path / "app"))
-    with TestClient(app) as client:
+    app = secured_app(quiet_settings(root=tmp_path / "app"))
+    with secured_client(app) as client:
         response = client.post(
             "/api/chat",
-            json={"text": "valid", "input_mode": private_input},
+            json={
+                "text": "valid",
+                "input_mode": private_input,
+                "session_id": DEV_API.session_id,
+            },
         )
 
     assert response.status_code == 422
@@ -119,9 +167,9 @@ def test_invalid_payload_does_not_echo_private_input(tmp_path: Path) -> None:
 
 def test_lifecycle_writes_start_and_stop_events(tmp_path: Path) -> None:
     log_path = tmp_path / "logs" / "lifecycle.jsonl"
-    app = create_app(quiet_settings(root=tmp_path, log_path=log_path))
+    app = secured_app(quiet_settings(root=tmp_path, log_path=log_path))
 
-    with TestClient(app) as client:
+    with secured_client(app) as client:
         assert client.get("/health").status_code == 200
 
     events = [
@@ -131,14 +179,21 @@ def test_lifecycle_writes_start_and_stop_events(tmp_path: Path) -> None:
 
 
 def test_websocket_streams_complete_mock_pipeline_for_text_and_voice(tmp_path: Path) -> None:
-    app = create_app(mock_pipeline_settings(root=tmp_path / "app"))
-    with TestClient(app) as client, client.websocket_connect("/ws/client") as websocket:
+    app = secured_app(mock_pipeline_settings(root=tmp_path / "app"))
+    with (
+        secured_client(app) as client,
+        client.websocket_connect(f"{WS_BASE_URL}/ws/client") as websocket,
+    ):
         for mode in ("text", "voice"):
             websocket.send_json(
-                {
-                    "type": "user.message",
-                    "payload": {"text": f"运行 {mode} 完整链路", "input_mode": mode},
-                }
+                command(
+                    "user.message",
+                    {
+                        "text": f"运行 {mode} 完整链路",
+                        "input_mode": mode,
+                        "session_id": DEV_API.session_id,
+                    },
+                )
             )
             events = []
             while True:
@@ -173,9 +228,12 @@ def test_websocket_streams_complete_mock_pipeline_for_text_and_voice(tmp_path: P
 
 
 def test_http_interrupt_cancels_active_turn(tmp_path: Path) -> None:
-    app = create_app(mock_pipeline_settings(root=tmp_path / "app", token_delay_ms=100))
-    with TestClient(app) as client:
-        accepted = client.post("/api/chat", json={"text": "请开始一个较慢的回复"}).json()
+    app = secured_app(mock_pipeline_settings(root=tmp_path / "app", token_delay_ms=100))
+    with secured_client(app) as client:
+        accepted = client.post(
+            "/api/chat",
+            json={"text": "请开始一个较慢的回复", "session_id": DEV_API.session_id},
+        ).json()
         cancelled = client.post(
             "/api/interrupt",
             json={"turn_id": accepted["turn_id"], "session_id": accepted["session_id"]},
@@ -187,29 +245,41 @@ def test_http_interrupt_cancels_active_turn(tmp_path: Path) -> None:
 
 def test_websocket_rejects_malformed_commands_without_private_echo(tmp_path: Path) -> None:
     private = "private-command@example.com"
-    app = create_app(quiet_settings(root=tmp_path / "app"))
-    with TestClient(app) as client, client.websocket_connect("/ws/client") as websocket:
+    app = secured_app(quiet_settings(root=tmp_path / "app"))
+    with (
+        secured_client(app) as client,
+        client.websocket_connect(f"{WS_BASE_URL}/ws/client") as websocket,
+    ):
         websocket.send_json(["not", "an", "object"])
-        assert websocket.receive_json()["error"]["code"] == "unsupported_message_type"
+        assert websocket.receive_json()["error"]["code"] == "invalid_command_envelope"
 
-        websocket.send_json({"type": "unknown", "payload": {"text": private}})
+        websocket.send_json(command("unknown", {"text": private}))
         unsupported = websocket.receive_json()
         assert unsupported["error"]["code"] == "unsupported_message_type"
         assert private not in json.dumps(unsupported)
 
-        websocket.send_json({"type": "turn.cancel", "payload": {"session_id": ""}})
+        websocket.send_json(command("turn.cancel", {"session_id": ""}))
         invalid_cancel = websocket.receive_json()
         assert invalid_cancel["error"]["code"] == "invalid_turn_cancel"
         assert "input" not in json.dumps(invalid_cancel)
 
-        websocket.send_json({"type": "user.message", "payload": {"text": "   "}})
+        websocket.send_json(
+            command("user.message", {"text": "   ", "session_id": DEV_API.session_id})
+        )
         invalid_message = websocket.receive_json()
         assert invalid_message["error"]["code"] == "invalid_user_message"
         assert "input" not in json.dumps(invalid_message)
 
-        websocket.send_json({"type": "turn.cancel", "payload": {}})
+        websocket.send_json(command("turn.cancel", {"session_id": DEV_API.session_id}))
         websocket.send_json(
-            {"type": "user.message", "payload": {"text": "错误后仍可继续", "input_mode": "text"}}
+            command(
+                "user.message",
+                {
+                    "text": "错误后仍可继续",
+                    "input_mode": "text",
+                    "session_id": DEV_API.session_id,
+                },
+            )
         )
         assert websocket.receive_json()["type"] == "turn.accepted"
 
@@ -235,7 +305,7 @@ def test_partial_startup_closes_already_started_event_sink(
 
     with (
         pytest.raises(RuntimeError, match="startup failure"),
-        TestClient(create_app(quiet_settings(root=tmp_path / "app"))),
+        secured_client(secured_app(quiet_settings(root=tmp_path / "app"))),
     ):
         pass
     assert sink.closed == 1

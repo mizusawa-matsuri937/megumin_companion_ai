@@ -63,24 +63,24 @@ pytest 对 `app` 与 `desktop_client` 统计分支覆盖，并设置 90% 综合�
 
 ```bash
 uv run megumin-companion-api --check-config
-uv run megumin-companion-api --serve
+uv run megumin-companion-api --dev-api
 ```
 
-也可以使用 `uv run python -m app --serve`。`--help`、`--version` 和
+也可以使用 `uv run python -m app --dev-api`。`--help`、`--version` 和
 `--check-config` 只读取/校验配置，不启动数据库、设备或网络。默认配置作为
 `app.resources` 随 editable/wheel 安装；用户覆盖位于
 `%LOCALAPPDATA%\MeguminCompanion\config\settings.yaml`。仓库根的 `config.yaml`
 只是显式开发覆盖，使用方式为：
 
 ```bash
-uv run megumin-companion-api --config config.yaml --serve
+uv run megumin-companion-api --config config.yaml --dev-api
 ```
 
 配置优先级固定为 package defaults → LocalAppData 用户设置 → 显式开发配置/
 环境覆盖。程序不会从 CWD 或配置目录自动发现 `.env`；开发时必须显式传入：
 
 ```bash
-uv run megumin-companion-api --config config.yaml --env-file .env --serve
+uv run megumin-companion-api --config config.yaml --env-file .env --dev-api
 ```
 
 旧仓库 `data/` 只通过显式迁移入口导入。迁移只复制数据库与模型，跳过日志、
@@ -119,16 +119,51 @@ DPAPI 密文不是可移植的凭据备份；换账户、换机或丢失原用�
 删除也不保证 SSD、备份、shell 历史或旧环境中的物理擦除。完整威胁模型与审计步骤见
 [`docs/implementation/w03_windows_security_and_temp_assets.md`](docs/implementation/w03_windows_security_and_temp_assets.md)。
 
-当前显式开发 API 默认监听 `127.0.0.1:8765`；W04 将进一步关闭生产网络面并加固
-`--dev-api` 语义。主要入口：
+生产 desktop 入口不导入或启动 Uvicorn，默认 ASGI factory 也处于锁闭状态；只有
+`--dev-api` 会生成可用的进程内凭据并监听数字 loopback 地址。旧 `--serve` 已拒绝，
+非 loopback host、`localhost`、通配 Origin 和直接运行无凭据
+`uvicorn app.main:create_app --factory` 都不能得到可用 API；中间件还会拒绝真实来源不是
+数字 loopback 的 client peer。
+
+每次启动会在第一行输出新的随机 token、授权 session、精确 Origin allowlist 和一小时
+TTL；退出、过期或重启后旧 token 失效，已建立 WebSocket 也会在到期时关闭。默认 token
+只有 `chat` scope；确需调试状态、feature、memory、export 或 delete 时必须显式增加
+`--dev-admin`。不要把凭据行写入日志、
+issue 或 shell 历史；疑似暴露时直接重启轮换。
+
+HTTP 和 WebSocket 均要求以下五项，且 WebSocket 在 `accept` 前完成校验：
+
+- `Authorization: Bearer <本次启动 token>`
+- 精确匹配 allowlist 的 `Origin`
+- 精确匹配当前 loopback listener authority 的 `Host`
+- `X-Megumin-Protocol: 1`
+- `X-Megumin-Session-ID: <本次授权 session>`
+
+WebSocket 客户端只可订阅该 session，写入使用 protocol v1 envelope：
+
+```json
+{
+  "protocol_version": 1,
+  "type": "user.message",
+  "session_id": "<本次授权 session>",
+  "payload": {
+    "session_id": "<本次授权 session>",
+    "text": "你好"
+  }
+}
+```
+
+HTTP body 和 WebSocket frame 在 JSON 解析前限制为 64 KiB；metadata 深度/键数、ID、
+客户端时间、请求速率、并发与 WebSocket 连接数也有硬上限。错误只返回稳定 code，
+不回显正文、token 或路径。主要入口：
 
 - `GET /health`
 - `POST /api/chat`
 - `POST /api/interrupt`
 - `WS /ws/client`
-- `GET /api/features` 与 `PATCH /api/features/{feature}`
-- 记忆 list/search/update/delete/confirm/export/clear
-- `POST /api/history/clear`
+- `GET /api/features` 与 `PATCH /api/features/{feature}`（`admin`）
+- 记忆 list/search/update/delete/confirm/export/clear（`admin`）
+- `POST /api/history/clear`（`admin`）
 
 按 `Ctrl+C` 会取消活动轮次并等待对话、主动任务、VTS、记忆和 provider 资源完成清理。
 
