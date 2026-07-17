@@ -51,6 +51,10 @@ jobs:
         run: uv run mypy
 
   installed-wheel:
+    env:
+      # On pull_request, GITHUB_SHA identifies the tested merge result while
+      # this value identifies the contributor branch head.
+      W05_CHANGE_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
     strategy:
       fail-fast: false
       matrix:

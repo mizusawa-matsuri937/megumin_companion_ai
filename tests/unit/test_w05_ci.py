@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import stat
+import tomllib
 import zipfile
 from collections.abc import Mapping
 from pathlib import Path
@@ -12,6 +13,7 @@ from tools.installed_wheel_smoke import _snapshot_directory
 from tools.w05_ci_smoke import (
     ArtifactPolicyError,
     InstalledSmokeError,
+    _source_identity,
     _validate_member_name,
     find_single_wheel,
     hidden_source_packages,
@@ -37,7 +39,12 @@ def _valid_members() -> dict[str, bytes]:
             b"Version: 0.1.0\n"
             b"Requires-Python: >=3.11,<3.12\n\n"
         ),
-        f"{DIST_INFO}/WHEEL": b"Wheel-Version: 1.0\nTag: py3-none-any\n",
+        f"{DIST_INFO}/WHEEL": (
+            b"Wheel-Version: 1.0\n"
+            b"Generator: hatchling 1.31.0\n"
+            b"Root-Is-Purelib: true\n"
+            b"Tag: py3-none-any\n"
+        ),
         f"{DIST_INFO}/entry_points.txt": (
             b"[console_scripts]\nmegumin-companion-api = app.cli:main\n"
             b"[gui_scripts]\n"
@@ -92,6 +99,8 @@ def test_inspect_wheel_returns_path_free_hash_evidence(tmp_path: Path) -> None:
     assert inspection.version == "0.1.0"
     assert len(inspection.sha256) == 64
     assert len(inspection.manifest_sha256) == 64
+    assert inspection.generator == "hatchling 1.31.0"
+    assert inspection.zip_create_systems in {(0,), (3,)}
     assert inspection.member_count == len(_valid_members()) + 1
     assert inspection.uncompressed_bytes > 0
     assert str(tmp_path) not in str(inspection.as_dict())
@@ -219,6 +228,23 @@ def test_inspect_wheel_requires_exact_entry_point_targets(tmp_path: Path) -> Non
         inspect_wheel(wheel)
 
 
+def test_inspect_wheel_requires_exact_build_generator(tmp_path: Path) -> None:
+    wheel = _write_wheel(
+        tmp_path,
+        extra={
+            f"{DIST_INFO}/WHEEL": (
+                b"Wheel-Version: 1.0\n"
+                b"Generator: hatchling 9.9.9\n"
+                b"Root-Is-Purelib: true\n"
+                b"Tag: py3-none-any\n"
+            )
+        },
+    )
+
+    with pytest.raises(ArtifactPolicyError, match="generator"):
+        inspect_wheel(wheel)
+
+
 def test_find_single_wheel_is_fail_closed(tmp_path: Path) -> None:
     with pytest.raises(ArtifactPolicyError, match="found 0"):
         find_single_wheel(tmp_path)
@@ -267,6 +293,7 @@ def test_isolated_environment_scrubs_project_and_index_overrides(
     monkeypatch.setenv("UV_DEFAULT_INDEX", "https://token.invalid/simple")
     monkeypatch.setenv("UV_INDEX_URL", "https://token.invalid/simple")
     monkeypatch.setenv("PIP_INDEX_URL", "https://token.invalid/simple")
+    monkeypatch.setenv("W05_CHANGE_REVISION", "a" * 40)
 
     environment = isolated_environment(tmp_path / "local", tmp_path / "cache")
 
@@ -276,8 +303,60 @@ def test_isolated_environment_scrubs_project_and_index_overrides(
     assert "UV_DEFAULT_INDEX" not in environment
     assert "UV_INDEX_URL" not in environment
     assert "PIP_INDEX_URL" not in environment
+    assert "W05_CHANGE_REVISION" not in environment
     assert environment["LOCALAPPDATA"] == str(tmp_path / "local")
     assert environment["UV_CACHE_DIR"] == str(tmp_path / "cache")
+
+
+def test_source_identity_distinguishes_pr_merge_from_change_head(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request")
+    monkeypatch.setenv("GITHUB_SHA", "a" * 40)
+    monkeypatch.setenv("W05_CHANGE_REVISION", "b" * 40)
+
+    assert _source_identity() == {
+        "source_revision": "a" * 40,
+        "change_revision": "b" * 40,
+        "source_revision_kind": "pull-request-merge",
+    }
+
+
+def test_source_identity_reports_local_without_ci_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for name in ("GITHUB_EVENT_NAME", "GITHUB_SHA", "W05_CHANGE_REVISION"):
+        monkeypatch.delenv(name, raising=False)
+
+    assert _source_identity() == {
+        "source_revision": "local-unrecorded",
+        "change_revision": "local-unrecorded",
+        "source_revision_kind": "local",
+    }
+
+
+def test_source_identity_accepts_matching_push_revision(monkeypatch: pytest.MonkeyPatch) -> None:
+    revision = "c" * 40
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "push")
+    monkeypatch.setenv("GITHUB_SHA", revision)
+    monkeypatch.setenv("W05_CHANGE_REVISION", revision)
+
+    assert _source_identity() == {
+        "source_revision": revision,
+        "change_revision": revision,
+        "source_revision_kind": "branch-head",
+    }
+
+
+def test_source_identity_rejects_mismatched_push_revision(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "push")
+    monkeypatch.setenv("GITHUB_SHA", "a" * 40)
+    monkeypatch.setenv("W05_CHANGE_REVISION", "b" * 40)
+
+    with pytest.raises(InstalledSmokeError, match="do not match"):
+        _source_identity()
 
 
 def test_directory_snapshot_detects_cwd_mutation(tmp_path: Path) -> None:
@@ -330,6 +409,13 @@ def test_workflow_preserves_source_gate_and_adds_dual_os_installed_gate() -> Non
         matrix = _mapping(_mapping(job["strategy"])["matrix"])
         operating_systems = {str(item) for item in _sequence(matrix["os"])}
         assert operating_systems == {"macos-latest", "windows-latest"}
+    installed_environment = _mapping(_mapping(jobs["installed-wheel"])["env"])
+    assert installed_environment["W05_CHANGE_REVISION"] == (
+        "${{ github.event.pull_request.head.sha || github.sha }}"
+    )
+
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    assert _mapping(project["build-system"])["requires"] == ["hatchling==1.31.0"]
 
 
 def test_workflow_job_commands_cache_and_provenance_policy() -> None:

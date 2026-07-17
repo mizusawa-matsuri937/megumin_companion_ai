@@ -29,6 +29,7 @@ from pathlib import Path
 
 PROJECT_NAME = "megumin-companion-ai"
 EXPECTED_REQUIRES_PYTHON = frozenset({">=3.11", "<3.12"})
+EXPECTED_WHEEL_GENERATOR = "hatchling 1.31.0"
 MAX_WHEEL_BYTES = 8 * 1024 * 1024
 MAX_UNCOMPRESSED_BYTES = 32 * 1024 * 1024
 
@@ -132,6 +133,8 @@ class WheelInspection:
     member_count: int
     uncompressed_bytes: int
     manifest_sha256: str
+    generator: str
+    zip_create_systems: tuple[int, ...]
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -142,6 +145,8 @@ class WheelInspection:
             "member_count": self.member_count,
             "uncompressed_bytes": self.uncompressed_bytes,
             "manifest_sha256": self.manifest_sha256,
+            "generator": self.generator,
+            "zip_create_systems": list(self.zip_create_systems),
         }
 
 
@@ -293,6 +298,19 @@ def inspect_wheel(wheel_path: Path) -> WheelInspection:
             if entry_points.get(group, name, fallback=None) != target:
                 raise ArtifactPolicyError(f"wheel entry point is missing or changed: {name}")
 
+        wheel_metadata = BytesParser(policy=email_policy).parsebytes(
+            archive.read(f"{dist_info}/WHEEL")
+        )
+        generator = wheel_metadata.get("Generator")
+        if generator != EXPECTED_WHEEL_GENERATOR:
+            raise ArtifactPolicyError(f"wheel build generator changed unexpectedly: {generator!r}")
+        if (
+            wheel_metadata.get("Wheel-Version") != "1.0"
+            or wheel_metadata.get("Root-Is-Purelib") != "true"
+            or wheel_metadata.get_all("Tag", []) != ["py3-none-any"]
+        ):
+            raise ArtifactPolicyError("wheel format or compatibility tag changed unexpectedly")
+
         manifest = hashlib.sha256()
         for normalized, info in sorted(normalized_infos, key=lambda item: item[0].casefold()):
             member_bytes = archive.read(info)
@@ -312,6 +330,8 @@ def inspect_wheel(wheel_path: Path) -> WheelInspection:
         member_count=len(normalized_infos),
         uncompressed_bytes=total_uncompressed,
         manifest_sha256=manifest.hexdigest(),
+        generator=generator,
+        zip_create_systems=tuple(sorted({info.create_system for _, info in normalized_infos})),
     )
 
 
@@ -321,7 +341,7 @@ def isolated_environment(local_app_data: Path, uv_cache: Path) -> dict[str, str]
     environment = dict(os.environ)
     for name in tuple(environment):
         folded = name.upper()
-        if folded.startswith(("MEGUMIN_", "COMPANION_")) or folded in {
+        if folded.startswith(("MEGUMIN_", "COMPANION_", "W05_")) or folded in {
             "PYTHONHOME",
             "PYTHONPATH",
             "UV_DEFAULT_INDEX",
@@ -475,6 +495,37 @@ def _parse_last_json_line(output: str, *, label: str) -> dict[str, object]:
     return {str(key): item for key, item in value.items()}
 
 
+def _source_identity() -> dict[str, str]:
+    """Return path-free GitHub revision identities without conflating PR head and merge."""
+
+    source_revision = os.environ.get("GITHUB_SHA", "").strip().lower()
+    change_revision = os.environ.get("W05_CHANGE_REVISION", "").strip().lower()
+    event_name = os.environ.get("GITHUB_EVENT_NAME", "").strip()
+    if not source_revision and not change_revision and not event_name:
+        return {
+            "source_revision": "local-unrecorded",
+            "change_revision": "local-unrecorded",
+            "source_revision_kind": "local",
+        }
+    if not _COMMIT_SHA.fullmatch(source_revision):
+        raise InstalledSmokeError("GitHub source revision is missing or invalid")
+    if not _COMMIT_SHA.fullmatch(change_revision):
+        raise InstalledSmokeError("GitHub change revision is missing or invalid")
+    if event_name == "pull_request":
+        revision_kind = "pull-request-merge"
+    elif event_name == "push":
+        revision_kind = "branch-head"
+        if source_revision != change_revision:
+            raise InstalledSmokeError("push source and change revisions do not match")
+    else:
+        raise InstalledSmokeError(f"unexpected GitHub event for W05 provenance: {event_name!r}")
+    return {
+        "source_revision": source_revision,
+        "change_revision": change_revision,
+        "source_revision_kind": revision_kind,
+    }
+
+
 def _write_evidence(path: Path, evidence: Mapping[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.tmp")
@@ -619,14 +670,11 @@ def run_installed_smoke(
             label="uv provenance",
         )
 
-    revision = os.environ.get("GITHUB_SHA", "")
-    if not _COMMIT_SHA.fullmatch(revision):
-        revision = "local-unrecorded"
     return {
         "schema_version": 1,
         "artifact_kind": "w05-ci-provenance-only",
         "release_artifact": False,
-        "source_revision": revision,
+        **_source_identity(),
         "platform": {
             "system": platform.system(),
             "machine": platform.machine(),
