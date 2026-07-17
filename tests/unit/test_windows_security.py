@@ -17,6 +17,16 @@ from app.windows_security import (
 pytestmark = pytest.mark.skipif(os.name != "nt", reason="requires Windows security APIs")
 
 
+def _contains_current_user_principal(sddl: str, sid: str) -> bool:
+    aliases = {
+        "S-1-5-18": "SY",
+        "S-1-5-19": "LS",
+        "S-1-5-20": "NS",
+    }
+    alias = "LA" if sid.endswith("-500") else aliases.get(sid)
+    return sid in sddl or (alias is not None and f";;;{alias})" in sddl)
+
+
 def test_real_dpapi_round_trip_and_wrong_purpose(tmp_path: Path) -> None:
     protector = WindowsDataProtector()
     plaintext = b"windows-dpapi-test-sentinel"
@@ -73,10 +83,10 @@ def test_private_root_has_protected_current_user_and_system_dacl(tmp_path: Path)
     assert not is_reparse_point(root)
     sddl = security.audit_sddl(root)
     assert "D:P" in sddl
-    assert security.current_user_sid in sddl
+    assert _contains_current_user_principal(sddl, security.current_user_sid)
     assert "SY" in sddl or "S-1-5-18" in sddl
     for child in children:
         child_sddl = security.audit_sddl(child)
         assert "D:P" in child_sddl
-        assert security.current_user_sid in child_sddl
+        assert _contains_current_user_principal(child_sddl, security.current_user_sid)
         assert "WD" not in child_sddl

@@ -131,7 +131,7 @@ icacls $Root
 逐项检查 root、`state`、`secrets`、`logs`、`temp`：
 
 - SDDL 含 `D:P`；`AreAccessRulesProtected` 为 `True`；
-- allow ACE 只有 Owner SID 与 `SYSTEM`，权限为 FullControl，均非从可变父目录继承；
+- allow ACE 只有 Owner SID（Windows 可能正规化为等价 SDDL 账户别名，例如内置本地管理员为 `LA`）与 `SYSTEM`，权限为 FullControl，均非从可变父目录继承；
 - 不含 `WD`/Everyone、`BU`/Users、`AU`/Authenticated Users allow ACE；
 - `chmod`、POSIX mode 或仅看资源管理器“隐藏”均不得作为证据。
 

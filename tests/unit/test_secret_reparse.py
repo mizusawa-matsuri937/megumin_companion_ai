@@ -53,6 +53,13 @@ def _create_directory_reparse(link: Path, target: Path) -> None:
         pytest.skip("directory junction unavailable")
 
 
+def _remove_directory_reparse(link: Path) -> None:
+    if link.is_symlink():
+        link.unlink()
+    else:
+        link.rmdir()
+
+
 def test_secret_target_must_be_a_file_below_secrets(tmp_path: Path) -> None:
     paths = AppPaths(root=tmp_path / "private")
 
@@ -86,7 +93,7 @@ def test_secret_write_rejects_reparse_parent_without_touching_outside(
     assert captured.value.code is SecretStoreErrorCode.io_failed
     assert sentinel.read_text(encoding="utf-8") == "keep"
     assert not (outside / "test-secret.json").exists()
-    paths.secrets.rmdir()
+    _remove_directory_reparse(paths.secrets)
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows reparse attribute evidence")
@@ -102,4 +109,4 @@ def test_windows_directory_symlink_is_not_treated_as_a_normal_secret_dir(
     with pytest.raises(SecretStoreError) as captured:
         _ = _file(paths).exists
     assert captured.value.code is SecretStoreErrorCode.io_failed
-    paths.secrets.rmdir()
+    _remove_directory_reparse(paths.secrets)

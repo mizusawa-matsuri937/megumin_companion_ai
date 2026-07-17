@@ -46,6 +46,13 @@ def _create_directory_reparse(link: Path, target: Path) -> None:
         pytest.skip("directory junction unavailable")
 
 
+def _remove_directory_reparse(link: Path) -> None:
+    if link.is_symlink():
+        link.unlink()
+    else:
+        link.rmdir()
+
+
 def test_scavenger_finds_strict_stt_directory_under_configured_nested_root(
     tmp_path: Path,
 ) -> None:
@@ -70,7 +77,7 @@ def test_registered_path_replaced_by_reparse_point_never_deletes_outside(
     registry = _registry(paths)
     path = paths.temp / "audio" / "mock" / ("a" * 16) / f"0000-{'b' * 20}.wav"
     entry = registry.register(path, TempAssetKind.mock_wav)
-    path.parent.rmdir()
+    _remove_directory_reparse(path.parent)
     outside = tmp_path / "outside"
     outside.mkdir()
     outside_file = outside / path.name
@@ -107,7 +114,7 @@ def test_reparse_child_rejects_whole_directory_before_partial_deletion(
     assert result.status is TempDeleteStatus.rejected
     assert local_file.read_text(encoding="utf-8") == "private transcript"
     assert outside_file.read_text(encoding="utf-8") == "keep"
-    alias.rmdir()
+    _remove_directory_reparse(alias)
     assert (
         registry.delete(entry.asset_id, ignore_retry_deadline=True).status
         is TempDeleteStatus.deleted
