@@ -324,6 +324,7 @@ def _pipeline(
     cloud: CloudVisionAnalyzer | None = None,
     limiter: FixedLimiter | None = None,
     max_frame_bytes: int = 1024,
+    operation_timeout_seconds: float = 0.03,
 ) -> tuple[PerceptionPipeline, list[str], FakeCapture, FakeOCR]:
     calls = order if order is not None else []
     capture_impl = capture or FakeCapture(calls)
@@ -344,7 +345,7 @@ def _pipeline(
             cloud=cloud,
             cloud_limiter=limiter,
             config=PerceptionPipelineConfig(
-                operation_timeout_seconds=0.03,
+                operation_timeout_seconds=operation_timeout_seconds,
                 max_frame_bytes=max_frame_bytes,
                 always_redact_regions=(Rect(0, 0, 5, 5),),
             ),
@@ -572,6 +573,7 @@ def test_cloud_request_pixels_mask_every_ocr_box_with_real_sanitizer() -> None:
             ocr=FakeOCR(order, text="VISIBLE OCR", box=Rect(10, 10, 20, 15)),
             sanitizer=PillowImageSanitizer(),
             cloud=cloud,
+            operation_timeout_seconds=1.0,
         )
 
         result = await pipeline.observe()

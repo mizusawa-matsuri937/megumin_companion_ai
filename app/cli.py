@@ -12,10 +12,10 @@ from collections.abc import Sequence
 from dataclasses import asdict
 from pathlib import Path
 
-import uvicorn
 from fastapi import FastAPI
 
 from app import __version__
+from app.api.security import DevAPIConfig, DevAPIScope
 from app.clients.vts import DPAPITokenStore, read_legacy_plaintext_token
 from app.config import ConfigurationError, Settings, load_settings
 from app.config.user_settings import upgrade_user_settings
@@ -60,10 +60,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Validate configuration without starting the database, devices, or network.",
     )
     action.add_argument(
-        "--serve",
+        "--dev-api",
         action="store_true",
-        help="Explicitly start the current local development HTTP/WebSocket API.",
+        help=(
+            "Explicitly start the authenticated loopback-only development API. "
+            "A new one-hour token and authorized session are printed once."
+        ),
     )
+    action.add_argument("--serve", action="store_true", help=argparse.SUPPRESS)
     action.add_argument(
         "--upgrade-settings",
         action="store_true",
@@ -113,6 +117,24 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--host", help="Override the configured development API host.")
     parser.add_argument("--port", type=int, help="Override the configured development API port.")
+    parser.add_argument(
+        "--dev-origin",
+        action="append",
+        default=[],
+        metavar="ORIGIN",
+        help=(
+            "Allow one exact HTTP Origin for the development API; repeat for multiple origins. "
+            "The default is the exact loopback listener origin."
+        ),
+    )
+    parser.add_argument(
+        "--dev-admin",
+        action="store_true",
+        help=(
+            "Also grant the process-local development token admin scope for debug, feature, "
+            "memory, export, and deletion routes."
+        ),
+    )
     return parser
 
 
@@ -300,13 +322,63 @@ def _delete_secret(secret_id: str, *, reset: bool) -> int:
     return 0
 
 
-def _run_server(application: FastAPI, *, host: str, port: int) -> None:
-    uvicorn.run(application, host=host, port=port, log_config=None)
+def _run_server(
+    application: FastAPI,
+    *,
+    host: str,
+    port: int,
+    websocket_frame_bytes: int,
+) -> None:
+    import uvicorn
+
+    uvicorn.run(
+        application,
+        host=host,
+        port=port,
+        log_config=None,
+        access_log=False,
+        proxy_headers=False,
+        server_header=False,
+        ws_max_size=websocket_frame_bytes,
+        ws_max_queue=4,
+        ws_per_message_deflate=False,
+        limit_concurrency=32,
+        backlog=32,
+        timeout_keep_alive=5,
+        h11_max_incomplete_event_size=16 * 1024,
+    )
+
+
+def _print_dev_api_credential(config: DevAPIConfig) -> None:
+    print(
+        json.dumps(
+            {
+                "status": "dev_api_ready",
+                "protocol_version": config.protocol_version,
+                "authorization_scheme": "Bearer",
+                "token": config.token,
+                "session_id": config.session_id,
+                "allowed_origins": sorted(config.allowed_origins),
+                "scopes": sorted(scope.value for scope in config.scopes),
+                "token_ttl_seconds": config.token_ttl_seconds,
+                "next_action": "restart the dev API to rotate an expired or exposed token",
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        ),
+        flush=True,
+    )
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.serve:
+        parser.error("--serve was removed by W04; use the authenticated --dev-api entry point")
+    if not args.dev_api and (
+        args.host is not None or args.port is not None or args.dev_origin or args.dev_admin
+    ):
+        parser.error("--host, --port, --dev-origin, and --dev-admin require --dev-api")
     if args.check_config:
         return check_configuration(args.config, args.env_file)
     if args.upgrade_settings:
@@ -338,7 +410,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _delete_secret(args.reset_secret, reset=True)
     if args.delete_import_source:
         parser.error("--delete-import-source requires --import-vts-token")
-    if not args.serve:
+    if not args.dev_api:
         parser.print_help()
         return 0
 
@@ -351,5 +423,24 @@ def main(argv: Sequence[str] | None = None) -> int:
     port = args.port if args.port is not None else settings.server.port
     if not 1 <= port <= 65_535:
         parser.error("--port must be between 1 and 65535")
-    _run_server(create_app(settings), host=host, port=port)
+    try:
+        scopes = {DevAPIScope.chat}
+        if args.dev_admin:
+            scopes.add(DevAPIScope.admin)
+        dev_api = DevAPIConfig.generate(
+            host=host,
+            port=port,
+            origins=args.dev_origin,
+            scopes=scopes,
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
+    application = create_app(settings, dev_api=dev_api)
+    _print_dev_api_credential(dev_api)
+    _run_server(
+        application,
+        host=host,
+        port=port,
+        websocket_frame_bytes=dev_api.max_websocket_frame_bytes,
+    )
     return 0

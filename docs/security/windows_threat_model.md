@@ -31,7 +31,7 @@
 
 | ID | 威胁/失败 | 主要控制 | 验证 | 残余风险 |
 | --- | --- | --- | --- | --- |
-| TM-W00-01 | 恶意网页调用 loopback API | 生产零端口；dev token、Origin、session/scope、frame/rate limits | 攻击测试 + 生产端口扫描 | dev 模式仍扩大攻击面，必须显式启用 |
+| TM-W00-01 | 恶意网页调用 loopback API | 生产零端口；数字 loopback listener/真实 peer、dev token、Origin、Host、session/scope、frame/rate limits | W04 TestClient 攻击矩阵、真实 Uvicorn socket smoke、源码 desktop PID 端口扫描；最终 onedir/exe 在 W24/W25 重验 | dev 模式仍扩大攻击面，必须显式启用；同用户进程/内存不在 token 保密边界内 |
 | TM-W00-02 | 本机进程伪造 helper/bridge 消息 | 进程内 bridge；继承匿名 pipe；typed/versioned JSON；无 pickle | malformed/replay/flood tests | 当前用户已被控制时不能完全阻止 |
 | TM-W00-03 | 另一账户读取 DB/token/temp | current-user DACL + DPAPI current-user | 两账户 effective access 与解密测试 | 管理员/内核攻击不在保证内 |
 | TM-W00-04 | 消息重放导致重复计费/播放 | 三元幂等键、有限状态、seq/replay、generation | 并发重复与断线 property tests | 远端在本地取消后可能继续计费 |
@@ -52,7 +52,7 @@
 | 检查 | W0 结论 |
 | --- | --- |
 | GUI/backend/native 是否存在双重 owner | ADR-W01 指定唯一 owner 和关闭顺序；代码实现待 W12/W13 证明 |
-| IPC 是否允许网页、本机进程、错误 session 或重放 | ADR-W02/W05 给出 fail-closed 契约；攻击套件待 W04/W06 |
+| IPC 是否允许网页、本机进程、错误 session 或重放 | W04 已完成 dev API token/Origin/Host/session/scope 与 frame/rate 攻击套件；幂等/replay 和 helper/bridge 仍待 W06 |
 | 幂等、计费、已播放音频是否矛盾 | 重复请求零副作用；已播放内容不回滚/补播；远端计费残余风险显式化 |
 | 路径迁移是否覆盖 wheel/onedir/Program Files/LocalAppData | ADR-W03/W08 已覆盖；产物和 VM 证据待 W01/W02/W24/W25 |
 | DACL/DPAPI 是否覆盖轮换、换机、卸载 | ADR-W04 覆盖；两账户和卸载证据待 W03/W25 |

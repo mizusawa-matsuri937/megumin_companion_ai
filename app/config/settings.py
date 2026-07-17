@@ -6,6 +6,7 @@ import os
 from collections.abc import Mapping
 from copy import deepcopy
 from importlib import resources
+from ipaddress import ip_address
 from pathlib import Path
 from typing import Any, Literal
 
@@ -18,6 +19,7 @@ from pydantic import (
     PrivateAttr,
     SecretStr,
     ValidationError,
+    field_validator,
     model_validator,
 )
 
@@ -49,6 +51,22 @@ class AppConfig(StrictModel):
 class ServerConfig(StrictModel):
     host: str = "127.0.0.1"
     port: int = Field(default=8765, ge=1, le=65535)
+
+    @field_validator("host")
+    @classmethod
+    def require_numeric_loopback(cls, value: str) -> str:
+        candidate = value.strip()
+        if candidate.startswith("[") != candidate.endswith("]"):
+            raise ValueError("server.host 必须是数字 loopback 地址")
+        if candidate.startswith("["):
+            candidate = candidate[1:-1]
+        try:
+            address = ip_address(candidate)
+        except ValueError as exc:
+            raise ValueError("server.host 必须是数字 loopback 地址") from exc
+        if not address.is_loopback:
+            raise ValueError("server.host 必须是数字 loopback 地址")
+        return address.compressed
 
 
 class LoggingConfig(StrictModel):

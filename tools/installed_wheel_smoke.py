@@ -13,16 +13,35 @@ from pathlib import Path
 import app
 import app.main as main_module
 import httpx
+from app.api.security import DevAPIConfig
 from app.cli import check_configuration
 
 
-async def _health_payload() -> tuple[int, dict[str, object]]:
-    application = main_module.create_app()
+async def _health_payload() -> tuple[int, int, dict[str, object]]:
+    locked = main_module.create_app()
+    locked_transport = httpx.ASGITransport(app=locked)
+    async with httpx.AsyncClient(
+        transport=locked_transport,
+        base_url="http://127.0.0.1:8765",
+    ) as locked_client:
+        locked_response = await locked_client.get("/health")
+
+    dev_api = DevAPIConfig(
+        token="installed-wheel-smoke-token-0000000000000000",
+        session_id="session_installed_wheel_smoke",
+        allowed_origins=frozenset({"http://127.0.0.1:8765"}),
+        allowed_hosts=frozenset({"127.0.0.1:8765"}),
+    )
+    application = main_module.create_app(dev_api=dev_api)
     async with application.router.lifespan_context(application):
         transport = httpx.ASGITransport(app=application)
-        async with httpx.AsyncClient(transport=transport, base_url="http://installed") as client:
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://127.0.0.1:8765",
+            headers=dev_api.client_headers(),
+        ) as client:
             response = await client.get("/health")
-    return response.status_code, response.json()
+    return locked_response.status_code, response.status_code, response.json()
 
 
 def main() -> int:
@@ -56,8 +75,10 @@ def main() -> int:
     if check_configuration(None, None) != 0:
         raise RuntimeError("packaged configuration check failed")
 
-    health_status, health_payload = asyncio.run(_health_payload())
-    if health_status != 200 or health_payload.get("status") != "ok":
+    locked_status, health_status, health_payload = asyncio.run(_health_payload())
+    if locked_status != 503:
+        raise RuntimeError("installed ASGI factory was not locked without --dev-api credentials")
+    if health_status != 200 or health_payload.get("status") != "ready":
         raise RuntimeError("installed ASGI health smoke failed")
 
     print(

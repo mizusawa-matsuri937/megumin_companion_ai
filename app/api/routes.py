@@ -1,14 +1,32 @@
-"""Thin HTTP and WebSocket protocol adapters for the dialogue service."""
+"""Authenticated HTTP and WebSocket adapters for the explicit development API."""
 
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+import json
+from typing import Annotated, Any
 
-from fastapi import APIRouter, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, WebSocket
 from pydantic import ValidationError
+from starlette.websockets import WebSocketDisconnect
 
 from app import __version__
+from app.api.protocol import (
+    DevAPIProtocolError,
+    ensure_authorized_session,
+    error_envelope,
+    event_envelope,
+    parse_websocket_command,
+    validate_user_message,
+)
+from app.api.security import (
+    DevAPIPrincipal,
+    DevAPIScope,
+    DevAPISecurity,
+    DevAPISecurityError,
+    principal_from_scope,
+    security_from_scope,
+)
 from app.core import TurnService
 from app.memory import (
     ConfirmationNotFoundError,
@@ -45,25 +63,74 @@ def _memory_runtime(request: Request) -> MemoryRuntime:
     return runtime
 
 
-def _safe_validation_errors(exc: ValidationError) -> list[dict[str, Any]]:
-    return [
-        dict(error)
-        for error in exc.errors(include_url=False, include_input=False, include_context=False)
-    ]
+def _request_principal(request: Request, required: DevAPIScope) -> DevAPIPrincipal:
+    principal = principal_from_scope(request.scope)
+    security = security_from_scope(request.scope)
+    try:
+        security.require_scope(principal, required)
+    except DevAPISecurityError as exc:
+        security.log_rejection(exc, transport="http", principal=principal)
+        raise HTTPException(status_code=exc.http_status, detail=exc.code) from exc
+    return principal
+
+
+def _chat_principal(request: Request) -> DevAPIPrincipal:
+    return _request_principal(request, DevAPIScope.chat)
+
+
+def _admin_principal(request: Request) -> DevAPIPrincipal:
+    return _request_principal(request, DevAPIScope.admin)
+
+
+ChatPrincipal = Annotated[DevAPIPrincipal, Depends(_chat_principal)]
+AdminPrincipal = Annotated[DevAPIPrincipal, Depends(_admin_principal)]
+BoundedPathID = Annotated[str, Path(min_length=1, max_length=128)]
+
+
+def _validate_http_message(
+    message: UserMessage,
+    request: Request,
+    principal: DevAPIPrincipal,
+) -> None:
+    security = security_from_scope(request.scope)
+    try:
+        validate_user_message(message, principal, security.config)
+    except DevAPIProtocolError as exc:
+        status = 403 if exc.code == "session_forbidden" else 422
+        raise HTTPException(status_code=status, detail=exc.code) from exc
 
 
 @router.get("/health")
-async def health() -> dict[str, str]:
-    return {"status": "ok", "service": "megumin-companion-ai", "version": __version__}
+async def health(request: Request, _principal: ChatPrincipal) -> dict[str, str | bool]:
+    ready = isinstance(getattr(request.app.state, "turn_service", None), TurnService)
+    if not ready:
+        raise HTTPException(status_code=503, detail="service_not_ready")
+    return {
+        "status": "ready",
+        "service": "megumin-companion-ai",
+        "version": __version__,
+        "private_state": isinstance(
+            getattr(request.app.state, "memory_runtime", None), MemoryRuntime
+        ),
+    }
 
 
 @router.post("/api/chat", response_model=TurnState)
-async def chat(message: UserMessage, request: Request) -> TurnState:
+async def chat(message: UserMessage, request: Request, principal: ChatPrincipal) -> TurnState:
+    _validate_http_message(message, request, principal)
     return await _turn_service(request).accept(message)
 
 
 @router.post("/api/interrupt", response_model=TurnState | None)
-async def interrupt(payload: TurnInterruptRequest, request: Request) -> TurnState | None:
+async def interrupt(
+    payload: TurnInterruptRequest,
+    request: Request,
+    principal: ChatPrincipal,
+) -> TurnState | None:
+    try:
+        ensure_authorized_session(principal, payload.session_id)
+    except DevAPIProtocolError as exc:
+        raise HTTPException(status_code=403, detail=exc.code) from exc
     return await _turn_service(request).cancel(
         session_id=payload.session_id,
         turn_id=payload.turn_id,
@@ -71,12 +138,12 @@ async def interrupt(payload: TurnInterruptRequest, request: Request) -> TurnStat
 
 
 @router.get("/debug/state")
-async def debug_state(request: Request) -> dict[str, Any]:
+async def debug_state(request: Request, _principal: AdminPrincipal) -> dict[str, Any]:
     return _turn_service(request).snapshot()
 
 
 @router.get("/api/features")
-async def list_features(request: Request) -> list[dict[str, Any]]:
+async def list_features(request: Request, _principal: AdminPrincipal) -> list[dict[str, Any]]:
     states = await _memory_runtime(request).list_features()
     return [state.model_dump(mode="json") for state in states]
 
@@ -86,6 +153,7 @@ async def patch_feature(
     feature: FeatureName,
     payload: FeaturePatchRequest,
     request: Request,
+    _principal: AdminPrincipal,
 ) -> dict[str, Any]:
     state = await _memory_runtime(request).set_feature(feature, payload.enabled)
     return state.model_dump(mode="json")
@@ -94,6 +162,7 @@ async def patch_feature(
 @router.get("/api/memory")
 async def list_memories(
     request: Request,
+    _principal: AdminPrincipal,
     user_id: str = Query(default="local_user", min_length=1, max_length=128),
     include_superseded: bool = False,
 ) -> list[dict[str, Any]]:
@@ -107,6 +176,7 @@ async def list_memories(
 @router.get("/api/memory/search")
 async def search_memories(
     request: Request,
+    _principal: AdminPrincipal,
     query: str = Query(min_length=1, max_length=5_000),
     user_id: str = Query(default="local_user", min_length=1, max_length=128),
     limit: int = Query(default=10, ge=1, le=100),
@@ -120,16 +190,20 @@ async def search_memories(
 
 
 @router.get("/api/memory/confirmations")
-async def list_memory_confirmations(request: Request) -> list[dict[str, Any]]:
+async def list_memory_confirmations(
+    request: Request,
+    _principal: AdminPrincipal,
+) -> list[dict[str, Any]]:
     pending = await _memory_runtime(request).pending_confirmations()
     return [item.model_dump(mode="json") for item in pending]
 
 
 @router.post("/api/memory/confirm/{confirmation_id}")
 async def confirm_memory(
-    confirmation_id: str,
+    confirmation_id: BoundedPathID,
     payload: MemoryConfirmRequest,
     request: Request,
+    _principal: AdminPrincipal,
 ) -> dict[str, Any]:
     try:
         item = await _memory_runtime(request).confirm_memory(
@@ -146,6 +220,7 @@ async def confirm_memory(
 @router.get("/api/memory/export")
 async def export_memories(
     request: Request,
+    _principal: AdminPrincipal,
     user_id: str = Query(default="local_user", min_length=1, max_length=128),
 ) -> dict[str, Any]:
     return await _memory_runtime(request).export(user_id=user_id)
@@ -154,6 +229,7 @@ async def export_memories(
 @router.delete("/api/memory")
 async def clear_memories(
     request: Request,
+    _principal: AdminPrincipal,
     user_id: str = Query(default="local_user", min_length=1, max_length=128),
 ) -> dict[str, int]:
     deleted = await _memory_runtime(request).clear_memories(user_id=user_id)
@@ -162,9 +238,10 @@ async def clear_memories(
 
 @router.patch("/api/memory/{memory_id}")
 async def update_memory(
-    memory_id: str,
+    memory_id: BoundedPathID,
     payload: MemoryUpdateRequest,
     request: Request,
+    _principal: AdminPrincipal,
     user_id: str = Query(default="local_user", min_length=1, max_length=128),
 ) -> dict[str, Any]:
     try:
@@ -182,8 +259,9 @@ async def update_memory(
 
 @router.delete("/api/memory/{memory_id}")
 async def delete_memory(
-    memory_id: str,
+    memory_id: BoundedPathID,
     request: Request,
+    _principal: AdminPrincipal,
     user_id: str = Query(default="local_user", min_length=1, max_length=128),
 ) -> dict[str, bool]:
     deleted = await _memory_runtime(request).delete_memory(memory_id, user_id=user_id)
@@ -193,7 +271,16 @@ async def delete_memory(
 
 
 @router.post("/api/history/clear")
-async def clear_history(payload: HistoryClearRequest, request: Request) -> dict[str, int]:
+async def clear_history(
+    payload: HistoryClearRequest,
+    request: Request,
+    principal: AdminPrincipal,
+) -> dict[str, int]:
+    if payload.session_id is not None:
+        try:
+            ensure_authorized_session(principal, payload.session_id)
+        except DevAPIProtocolError as exc:
+            raise HTTPException(status_code=403, detail=exc.code) from exc
     deleted = await _memory_runtime(request).clear_history(
         user_id=payload.user_id,
         session_id=payload.session_id,
@@ -201,108 +288,200 @@ async def clear_history(payload: HistoryClearRequest, request: Request) -> dict[
     return {"deleted": deleted}
 
 
+async def _admit_websocket(
+    websocket: WebSocket,
+    required_scope: DevAPIScope,
+) -> tuple[DevAPIPrincipal, DevAPISecurity] | None:
+    principal = principal_from_scope(websocket.scope)
+    security = security_from_scope(websocket.scope)
+    try:
+        security.require_scope(principal, required_scope)
+        security.begin_websocket()
+    except DevAPISecurityError as exc:
+        security.log_rejection(exc, transport="websocket", principal=principal)
+        await websocket.close(code=exc.websocket_code, reason=exc.code)
+        return None
+    try:
+        await websocket.accept()
+    except BaseException:
+        security.end_websocket()
+        raise
+    return principal, security
+
+
+async def _receive_bounded_frame(
+    websocket: WebSocket,
+    principal: DevAPIPrincipal,
+    security: DevAPISecurity,
+) -> str | bytes | None:
+    message = await websocket.receive()
+    if message["type"] == "websocket.disconnect":
+        return None
+    try:
+        security.consume_websocket_message()
+    except DevAPISecurityError as exc:
+        security.log_rejection(exc, transport="websocket", principal=principal)
+        await websocket.close(code=exc.websocket_code, reason=exc.code)
+        return None
+    text = message.get("text")
+    data = message.get("bytes")
+    payload: str | bytes
+    if isinstance(text, str):
+        payload = text
+        size = len(text.encode("utf-8"))
+    elif isinstance(data, bytes):
+        payload = data
+        size = len(data)
+    else:
+        await websocket.close(code=1003, reason="unsupported_frame_type")
+        return None
+    if size > security.config.max_websocket_frame_bytes:
+        error = DevAPISecurityError(
+            "websocket_frame_too_large",
+            reason="websocket_frame_limit",
+            http_status=413,
+            websocket_code=1009,
+        )
+        security.log_rejection(error, transport="websocket", principal=principal)
+        await websocket.close(code=error.websocket_code, reason=error.code)
+        return None
+    return payload
+
+
+async def _close_websocket_when_token_expires(
+    websocket: WebSocket,
+    principal: DevAPIPrincipal,
+    security: DevAPISecurity,
+) -> None:
+    await asyncio.sleep(security.token_seconds_remaining())
+    try:
+        security.ensure_token_fresh()
+    except DevAPISecurityError as exc:
+        security.log_rejection(exc, transport="websocket", principal=principal)
+        await websocket.close(code=1008, reason=exc.code)
+
+
 @router.websocket("/ws/echo")
 async def websocket_echo(websocket: WebSocket) -> None:
-    await websocket.accept()
+    admitted = await _admit_websocket(websocket, DevAPIScope.admin)
+    if admitted is None:
+        return
+    principal, security = admitted
     try:
         while True:
-            message = await websocket.receive()
-            if message["type"] == "websocket.disconnect":
+            payload = await _receive_bounded_frame(websocket, principal, security)
+            if payload is None:
                 return
-            if text := message.get("text"):
-                await websocket.send_text(text)
-            elif data := message.get("bytes"):
-                await websocket.send_bytes(data)
+            if isinstance(payload, str):
+                await websocket.send_text(payload)
+            else:
+                await websocket.send_bytes(payload)
     except (WebSocketDisconnect, asyncio.CancelledError):
         return
+    finally:
+        security.end_websocket()
 
 
 @router.websocket("/ws/client")
 async def websocket_client(websocket: WebSocket) -> None:
-    await websocket.accept()
+    admitted = await _admit_websocket(websocket, DevAPIScope.chat)
+    if admitted is None:
+        return
+    principal, security = admitted
     service = _turn_service(websocket)
-    events = service.subscribe("*")
+    events = service.subscribe(principal.session_id)
     send_lock = asyncio.Lock()
 
     async def send(payload: dict[str, Any]) -> None:
         async with send_lock:
-            await websocket.send_json(payload)
+            serialized = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+            if len(serialized.encode("utf-8")) > security.config.max_websocket_frame_bytes:
+                error = DevAPISecurityError(
+                    "websocket_frame_too_large",
+                    reason="outgoing_websocket_frame_limit",
+                    http_status=500,
+                    websocket_code=1009,
+                )
+                security.log_rejection(error, transport="websocket", principal=principal)
+                await websocket.close(code=error.websocket_code, reason=error.code)
+                raise WebSocketDisconnect(code=error.websocket_code, reason=error.code)
+            await websocket.send_text(serialized)
+
+    async def send_error(code: str) -> None:
+        await send(error_envelope(session_id=principal.session_id, code=code))
 
     async def send_events() -> None:
         while True:
             event: PipelineEvent = await events.get()
             try:
-                await send(event.model_dump(mode="json"))
+                await send(event_envelope(event))
             finally:
                 events.task_done()
 
     async def receive_commands() -> None:
         while True:
-            envelope = await websocket.receive_json()
-            if not isinstance(envelope, dict):
-                await send(
-                    {
-                        "type": "error",
-                        "error": {
-                            "code": "unsupported_message_type",
-                            "message": "消息必须是包含 type 和 payload 的对象。",
-                        },
-                    }
-                )
-                continue
-            if envelope.get("type") == "turn.cancel":
-                payload = envelope.get("payload")
-                try:
-                    request = TurnInterruptRequest.model_validate(payload or {})
-                except ValidationError as exc:
-                    await send(
-                        {
-                            "type": "error",
-                            "error": {
-                                "code": "invalid_turn_cancel",
-                                "message": "turn.cancel payload 校验失败。",
-                                "details": _safe_validation_errors(exc),
-                            },
-                        }
-                    )
-                    continue
-                await service.cancel(session_id=request.session_id, turn_id=request.turn_id)
-                continue
-            if envelope.get("type") != "user.message":
-                await send(
-                    {
-                        "type": "error",
-                        "error": {
-                            "code": "unsupported_message_type",
-                            "message": "当前支持 user.message 和 turn.cancel。",
-                        },
-                    }
-                )
+            frame = await _receive_bounded_frame(websocket, principal, security)
+            if frame is None:
+                return
+            if isinstance(frame, bytes):
+                await websocket.close(code=1003, reason="binary_commands_forbidden")
+                return
+            try:
+                envelope = parse_websocket_command(frame)
+            except DevAPIProtocolError as exc:
+                await send_error(exc.code)
                 continue
             try:
-                message = UserMessage.model_validate(envelope.get("payload"))
-            except ValidationError as exc:
-                await send(
-                    {
-                        "type": "error",
-                        "error": {
-                            "code": "invalid_user_message",
-                            "message": "user.message payload 校验失败。",
-                            "details": _safe_validation_errors(exc),
-                        },
-                    }
-                )
+                ensure_authorized_session(principal, envelope.session_id)
+            except DevAPIProtocolError as exc:
+                await send_error(exc.code)
+                await websocket.close(code=1008, reason=exc.code)
+                return
+            if envelope.type == "turn.cancel":
+                try:
+                    request = TurnInterruptRequest.model_validate(envelope.payload)
+                    ensure_authorized_session(principal, request.session_id)
+                except ValidationError:
+                    await send_error("invalid_turn_cancel")
+                    continue
+                except DevAPIProtocolError as exc:
+                    await send_error(exc.code)
+                    await websocket.close(code=1008, reason=exc.code)
+                    return
+                await service.cancel(session_id=request.session_id, turn_id=request.turn_id)
+                continue
+            if envelope.type != "user.message":
+                await send_error("unsupported_message_type")
+                continue
+            try:
+                message = UserMessage.model_validate(envelope.payload)
+                validate_user_message(message, principal, security.config)
+            except ValidationError:
+                await send_error("invalid_user_message")
+                continue
+            except DevAPIProtocolError as exc:
+                await send_error(exc.code)
+                if exc.code == "session_forbidden":
+                    await websocket.close(code=1008, reason=exc.code)
+                    return
                 continue
             await service.accept(message)
 
     try:
         sender = asyncio.create_task(send_events())
         receiver = asyncio.create_task(receive_commands())
-        _done, pending = await asyncio.wait({sender, receiver}, return_when=asyncio.FIRST_COMPLETED)
+        expiry = asyncio.create_task(
+            _close_websocket_when_token_expires(websocket, principal, security)
+        )
+        _done, pending = await asyncio.wait(
+            {sender, receiver, expiry},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
         for task in pending:
             task.cancel()
-        await asyncio.gather(sender, receiver, return_exceptions=True)
+        await asyncio.gather(sender, receiver, expiry, return_exceptions=True)
     except (WebSocketDisconnect, asyncio.CancelledError):
         return
     finally:
-        service.unsubscribe("*", events)
+        service.unsubscribe(principal.session_id, events)
+        security.end_websocket()

@@ -78,6 +78,22 @@ def test_dotenv_is_never_discovered_implicitly(tmp_path: Path) -> None:
     assert settings.server.port == 8765
 
 
+@pytest.mark.parametrize("host", ["0.0.0.0", "192.168.1.5", "localhost"])
+def test_server_configuration_rejects_non_numeric_or_non_loopback_host(
+    tmp_path: Path,
+    host: str,
+) -> None:
+    config_path = tmp_path / "config.yaml"
+    write_config(config_path)
+
+    with pytest.raises(ConfigurationError, match="数字 loopback"):
+        load_settings(
+            config_path,
+            environ={"MEGUMIN_SERVER_HOST": host},
+            app_paths=local_paths(tmp_path),
+        )
+
+
 def test_missing_config_has_actionable_error(tmp_path: Path) -> None:
     with pytest.raises(ConfigurationError, match="开发配置 missing.yaml不存在") as error:
         load_settings(tmp_path / "missing.yaml", environ={}, app_paths=local_paths(tmp_path))

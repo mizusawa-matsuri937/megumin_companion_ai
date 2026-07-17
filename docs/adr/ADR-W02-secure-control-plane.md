@@ -5,6 +5,9 @@
 - **风险：** P0-01、P1-01、P1-02、P1-17、P2-01
 - **后续 PR：** W04、W06、W13
 
+> W04 实现、自动攻击证据与项目所有者非独立人工安全签字已于 2026-07-17 完成；见
+> [`../implementation/w04_secure_dev_api.md`](../implementation/w04_secure_dev_api.md)。
+
 ## 背景
 
 现有 loopback HTTP/WS 缺少认证、Origin 校验、session authorization 和传输上限。loopback 不是可信边界，恶意网页或本机进程可以尝试发送、重放、读取或淹没消息。

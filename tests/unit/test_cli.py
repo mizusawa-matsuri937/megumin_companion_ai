@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 from app import __version__, cli
+from app.api.security import DEV_API_MAX_FRAME_BYTES, DevAPIConfig, DevAPIScope
 from app.config import Settings
 from app.config.settings import LoggingConfig, StorageConfig
 from app.config.user_settings import UserSettingsWriteResult
@@ -40,7 +41,10 @@ def test_no_action_prints_help_without_loading_configuration(
 
     assert cli.main([]) == 0
 
-    assert "--check-config" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert "--check-config" in output
+    assert "--dev-api" in output
+    assert "--serve" not in output
 
 
 def test_check_config_does_not_construct_runtime(
@@ -76,32 +80,50 @@ def test_check_config_reports_safe_error(
     assert "private-user-name" not in output
 
 
-def test_explicit_serve_constructs_one_app_and_passes_network_overrides(
+def test_explicit_dev_api_constructs_one_secured_app_and_passes_loopback_overrides(
     monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     settings = Settings(
         logging=LoggingConfig(console_enabled=False, file_enabled=False),
         storage=StorageConfig(enabled=False),
     )
     application = object()
-    calls: list[tuple[object, str, int, object]] = []
+    received_configs: list[DevAPIConfig] = []
+    calls: list[tuple[object, str, int, int]] = []
     monkeypatch.setattr(cli, "_load_settings", lambda *_args: settings)
-    monkeypatch.setattr(
-        cli, "create_app", lambda received: application if received is settings else None
-    )
 
-    def record_run(app: object, *, host: str, port: int) -> None:
-        calls.append((app, host, port, None))
+    def create_secured_app(received: Settings, *, dev_api: DevAPIConfig) -> object:
+        assert received is settings
+        received_configs.append(dev_api)
+        return application
+
+    monkeypatch.setattr(cli, "create_app", create_secured_app)
+
+    def record_run(
+        app: object,
+        *,
+        host: str,
+        port: int,
+        websocket_frame_bytes: int,
+    ) -> None:
+        calls.append((app, host, port, websocket_frame_bytes))
 
     monkeypatch.setattr(cli, "_run_server", record_run)
 
-    assert cli.main(["--serve", "--host", "127.0.0.2", "--port", "9011"]) == 0
+    assert cli.main(["--dev-api", "--host", "127.0.0.2", "--port", "9011"]) == 0
 
-    assert calls == [(application, "127.0.0.2", 9011, None)]
+    assert calls == [(application, "127.0.0.2", 9011, DEV_API_MAX_FRAME_BYTES)]
+    assert received_configs[0].allowed_hosts == frozenset({"127.0.0.2:9011"})
+    assert received_configs[0].scopes == frozenset({DevAPIScope.chat})
+    output = capsys.readouterr().out
+    assert '"status": "dev_api_ready"' in output
+    assert received_configs[0].token in output
+    assert received_configs[0].session_id in output
 
 
 @pytest.mark.parametrize("port", [0, 65_536])
-def test_serve_rejects_invalid_port_before_runtime_construction(
+def test_dev_api_rejects_invalid_port_before_runtime_construction(
     port: int, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     settings = Settings(
@@ -112,9 +134,110 @@ def test_serve_rejects_invalid_port_before_runtime_construction(
     monkeypatch.setattr(cli, "create_app", _must_not_run)
 
     with pytest.raises(SystemExit) as error:
-        cli.main(["--serve", "--port", str(port)])
+        cli.main(["--dev-api", "--port", str(port)])
 
     assert error.value.code == 2
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["--dev-api", "--host", "0.0.0.0"],
+        ["--dev-api", "--host", "localhost"],
+        ["--dev-api", "--dev-origin", "*"],
+        ["--dev-api", "--dev-origin", "https://127.0.0.1:8765"],
+    ],
+)
+def test_dev_api_rejects_non_loopback_or_ambiguous_trust_boundary(
+    arguments: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = Settings(
+        logging=LoggingConfig(console_enabled=False, file_enabled=False),
+        storage=StorageConfig(enabled=False),
+    )
+    monkeypatch.setattr(cli, "_load_settings", lambda *_args: settings)
+    monkeypatch.setattr(cli, "create_app", _must_not_run)
+
+    with pytest.raises(SystemExit) as error:
+        cli.main(arguments)
+
+    assert error.value.code == 2
+
+
+def test_removed_serve_alias_fails_before_loading_configuration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(cli, "_load_settings", _must_not_run)
+
+    with pytest.raises(SystemExit) as error:
+        cli.main(["--serve"])
+
+    assert error.value.code == 2
+
+
+def test_network_overrides_require_explicit_dev_api() -> None:
+    with pytest.raises(SystemExit) as error:
+        cli.main(["--host", "127.0.0.2"])
+
+    assert error.value.code == 2
+
+
+def test_dev_admin_is_explicit_and_grants_both_scopes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = Settings(
+        logging=LoggingConfig(console_enabled=False, file_enabled=False),
+        storage=StorageConfig(enabled=False),
+    )
+    received: list[DevAPIConfig] = []
+    monkeypatch.setattr(cli, "_load_settings", lambda *_args: settings)
+
+    def create_secured_app(_settings: Settings, *, dev_api: DevAPIConfig) -> object:
+        received.append(dev_api)
+        return object()
+
+    monkeypatch.setattr(cli, "create_app", create_secured_app)
+    monkeypatch.setattr(cli, "_run_server", lambda *_args, **_kwargs: None)
+
+    assert cli.main(["--dev-api", "--dev-admin"]) == 0
+    assert received[0].scopes == frozenset({DevAPIScope.chat, DevAPIScope.admin})
+
+
+def test_uvicorn_server_disables_proxy_compression_and_large_frame_defaults(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, object]] = []
+
+    def record_run(_application: object, **kwargs: object) -> None:
+        calls.append(kwargs)
+
+    monkeypatch.setattr("uvicorn.run", record_run)
+
+    cli._run_server(
+        object(),  # type: ignore[arg-type]
+        host="127.0.0.1",
+        port=8765,
+        websocket_frame_bytes=DEV_API_MAX_FRAME_BYTES,
+    )
+
+    assert calls == [
+        {
+            "host": "127.0.0.1",
+            "port": 8765,
+            "log_config": None,
+            "access_log": False,
+            "proxy_headers": False,
+            "server_header": False,
+            "ws_max_size": DEV_API_MAX_FRAME_BYTES,
+            "ws_max_queue": 4,
+            "ws_per_message_deflate": False,
+            "limit_concurrency": 32,
+            "backlog": 32,
+            "timeout_keep_alive": 5,
+            "h11_max_incomplete_event_size": 16 * 1024,
+        }
+    ]
 
 
 def test_app_main_exports_factory_without_global_application() -> None:
@@ -134,6 +257,7 @@ def test_desktop_entrypoint_is_honest_preflight_only(
     output = capsys.readouterr().err
     assert "desktop_unavailable" in output
     assert "W13" in output
+    assert "uvicorn" not in vars(cli)
 
 
 def test_desktop_check_config_delegates_without_starting_shell(

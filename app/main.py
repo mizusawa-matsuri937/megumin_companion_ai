@@ -14,6 +14,7 @@ from fastapi.responses import JSONResponse
 
 from app import __version__
 from app.api.routes import router
+from app.api.security import DevAPIConfig, DevAPIGuardMiddleware, DevAPISecurity
 from app.bootstrap import (
     build_dialogue_pipeline,
     build_llm_provider,
@@ -57,13 +58,23 @@ async def _settle_resource_close(
     return cancelled, None
 
 
-def create_app(settings: Settings | None = None) -> FastAPI:
+def create_app(
+    settings: Settings | None = None,
+    *,
+    dev_api: DevAPIConfig | None = None,
+) -> FastAPI:
     resolved_settings = settings or load_settings()
+    dev_api_security = DevAPISecurity(dev_api) if dev_api is not None else None
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         runtime_storage = prepare_runtime_storage(resolved_settings.paths)
-        logger = configure_logging(resolved_settings)
+        logger = configure_logging(
+            resolved_settings,
+            additional_secrets=(dev_api.token, dev_api.session_id) if dev_api is not None else (),
+        )
+        if dev_api_security is not None:
+            dev_api_security.set_logger(logger)
         app.state.settings = resolved_settings
         app.state.logger = logger
         app.state.memory_runtime = None
@@ -143,8 +154,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 logging.INFO,
                 "application.started",
                 environment=resolved_settings.app.environment,
-                host=resolved_settings.server.host,
-                port=resolved_settings.server.port,
+                dev_api_enabled=dev_api_security is not None,
+                dev_api_authorities=(sorted(dev_api.allowed_hosts) if dev_api is not None else []),
                 temp_deleted=runtime_storage.scavenge_report.deleted,
                 temp_pending=runtime_storage.scavenge_report.pending,
                 temp_rejected=runtime_storage.scavenge_report.rejected,
@@ -192,8 +203,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         title=resolved_settings.app.name,
         version=__version__,
         lifespan=lifespan,
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
     )
     app.include_router(router)
+    app.add_middleware(DevAPIGuardMiddleware, security=dev_api_security)
 
     @app.exception_handler(RequestValidationError)
     async def safe_request_validation_error(

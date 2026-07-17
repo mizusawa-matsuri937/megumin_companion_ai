@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+from app.api.security import DevAPIConfig, DevAPIScope
 from app.config import Settings
 from app.config.settings import (
     LLMConfig,
@@ -27,7 +28,39 @@ from app.memory.runtime import MemoryRuntime
 from app.paths import AppPaths
 from app.proactive import ProactiveRuntime
 from app.schemas import ChatCompletion, ChatRequest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
+
+DEV_API = DevAPIConfig(
+    token="integration-memory-token-000000000000000000000",
+    session_id="local_session",
+    allowed_origins=frozenset({"http://127.0.0.1:8765"}),
+    allowed_hosts=frozenset({"127.0.0.1:8765"}),
+    scopes=frozenset({DevAPIScope.chat, DevAPIScope.admin}),
+)
+WS_BASE_URL = "ws://127.0.0.1:8765"
+
+
+def secured_app(settings: Settings) -> FastAPI:
+    return create_app(settings, dev_api=DEV_API)
+
+
+def secured_client(application: FastAPI) -> TestClient:
+    return TestClient(
+        application,
+        base_url="http://127.0.0.1:8765",
+        headers=DEV_API.client_headers(),
+        client=("127.0.0.1", 51002),
+    )
+
+
+def command(command_type: str, payload: dict[str, object]) -> dict[str, object]:
+    return {
+        "protocol_version": 1,
+        "type": command_type,
+        "session_id": DEV_API.session_id,
+        "payload": payload,
+    }
 
 
 class CandidateLLM:
@@ -88,8 +121,8 @@ def claim(
 
 
 def test_feature_memory_and_history_control_plane(tmp_path: Path) -> None:
-    app = create_app(stateful_settings(tmp_path / "private.sqlite3"))
-    with TestClient(app) as client:
+    app = secured_app(stateful_settings(tmp_path / "private.sqlite3"))
+    with secured_client(app) as client:
         runtime = app.state.memory_runtime
         assert isinstance(runtime, MemoryRuntime)
         assert isinstance(app.state.proactive_runtime, ProactiveRuntime)
@@ -115,8 +148,8 @@ def test_feature_memory_and_history_control_plane(tmp_path: Path) -> None:
             "disclosure": None,
         }
 
-        with client.websocket_connect("/ws/client") as websocket:
-            websocket.send_json({"type": "user.message", "payload": {"text": "请记住我喜欢红茶"}})
+        with client.websocket_connect(f"{WS_BASE_URL}/ws/client") as websocket:
+            websocket.send_json(command("user.message", {"text": "请记住我喜欢红茶"}))
             while websocket.receive_json()["type"] != "assistant.completed":
                 pass
 
@@ -208,8 +241,8 @@ def test_private_state_api_is_explicitly_unavailable_when_storage_is_off(
 ) -> None:
     settings = Settings(logging=LoggingConfig(console_enabled=False, file_enabled=False))
     settings._paths = AppPaths(root=tmp_path / "app")
-    app = create_app(settings)
-    with TestClient(app) as client:
+    app = secured_app(settings)
+    with secured_client(app) as client:
         response = client.get("/api/features")
     assert response.status_code == 503
     assert response.json()["detail"] == "private_state_runtime_disabled"
@@ -224,13 +257,13 @@ def test_opt_in_candidate_analysis_uses_owned_provider_and_successful_user_turn_
     settings = stateful_settings(tmp_path / "candidate.sqlite3")
     settings.memory = settings.memory.model_copy(update={"candidate_analysis_enabled": True})
 
-    with TestClient(create_app(settings)) as client:
+    with secured_client(secured_app(settings)) as client:
         assert (
             client.patch("/api/features/long_term_memory", json={"enabled": True}).status_code
             == 200
         )
-        with client.websocket_connect("/ws/client") as websocket:
-            websocket.send_json({"type": "user.message", "payload": {"text": "我喜欢手冲咖啡"}})
+        with client.websocket_connect(f"{WS_BASE_URL}/ws/client") as websocket:
+            websocket.send_json(command("user.message", {"text": "我喜欢手冲咖啡"}))
             while websocket.receive_json()["type"] != "assistant.completed":
                 pass
 
@@ -250,10 +283,10 @@ def test_application_shutdown_attempts_memory_after_turn_service_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    app = create_app(stateful_settings(tmp_path / "shutdown.sqlite3"))
+    app = secured_app(stateful_settings(tmp_path / "shutdown.sqlite3"))
     memory_closed = 0
 
-    with TestClient(app) as client:
+    with secured_client(app) as client:
         assert client.get("/health").status_code == 200
         runtime = app.state.memory_runtime
         service = app.state.turn_service
