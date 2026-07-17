@@ -12,6 +12,7 @@ from app.clients.tts import GPTSoVITSProvider
 from app.clients.vts import VTSBridgeSnapshot, VTSBridgeState
 from app.config import Settings
 from app.config.settings import (
+    AppConfig,
     EmotionConfig,
     GPTSoVITSPresetConfig,
     LLMConfig,
@@ -24,6 +25,26 @@ from app.pipelines.audio_player import SystemAudioPlayer
 from app.prompts import EmotionPromptContextBuilder, HistoryMessage, PromptContextSnapshot
 from app.schemas import ChatRole, ExternalContextBlock, UserMessage
 from app.schemas.ai import ContextOrigin, ContextTrust
+from app.secret_store import llm_api_key_file
+from app.windows_security import PortableDirectorySecurity
+
+
+class _ReversingProtector:
+    @property
+    def algorithm(self) -> str:
+        return "test-reverse"
+
+    @property
+    def scope(self) -> str:
+        return "current_user"
+
+    def protect(self, value: bytes, *, purpose: str, key_id: str) -> bytes:
+        del purpose, key_id
+        return value[::-1]
+
+    def unprotect(self, value: bytes, *, purpose: str, key_id: str) -> bytes:
+        del purpose, key_id
+        return value[::-1]
 
 
 def test_disabled_provider_builds_no_pipeline() -> None:
@@ -64,6 +85,30 @@ def test_real_provider_managed_cache_and_system_player(tmp_path: Path) -> None:
     assert pipeline._llm._default_temperature == 0.65
     assert pipeline._llm._default_max_tokens == 777
     asyncio.run(pipeline.close())
+
+
+def test_production_real_provider_ignores_environment_and_uses_encrypted_secret(
+    tmp_path: Path,
+) -> None:
+    paths = AppPaths(root=tmp_path / "AppData")
+    encrypted = llm_api_key_file(
+        paths,
+        protector=_ReversingProtector(),
+        directory_security=PortableDirectorySecurity(),
+    )
+    encrypted.write_text("encrypted-production-key")
+    settings = Settings(
+        app=AppConfig(environment="prod"),
+        llm=LLMConfig(provider="compatible", model="test-model", api_key_env="TEST_KEY"),
+    )
+    settings._environment = {"TEST_KEY": "ignored-development-key"}
+    settings._paths = paths
+
+    provider = build_llm_provider(settings, secret_file=encrypted)
+
+    assert isinstance(provider, OpenAICompatibleLLMProvider)
+    assert provider._client.headers["Authorization"] == "Bearer encrypted-production-key"
+    asyncio.run(provider.close())
 
 
 def test_gpt_sovits_wiring_is_explicit_and_cache_defaults_off(tmp_path: Path) -> None:
@@ -149,6 +194,7 @@ def test_vts_wiring_starts_bounded_sink(
         instances: list[FakeVTSBridge] = []
 
         def __init__(self, *_args: object, **options: object) -> None:
+            self.args = _args
             self.options = options
             self.started = False
             self.closed = False
@@ -189,6 +235,7 @@ def test_vts_wiring_starts_bounded_sink(
     assert sink is not None
     bridge = FakeVTSBridge.instances[0]
     assert bridge.started
+    assert bridge.args[1].__class__.__name__ == "DPAPITokenStore"
     assert bridge.options["queue_capacity"] == 3
     asyncio.run(sink.close())
     assert bridge.closed

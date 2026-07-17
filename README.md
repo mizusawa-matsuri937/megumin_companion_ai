@@ -34,7 +34,7 @@ PushToTalkRecorder（默认关闭）     → voice UserMessage
 - GPT-SoVITS 持久缓存默认关闭；开启后仍会跳过检测到的敏感文本。
 - 截图、OCR、原始 PCM/WAV 只允许在处理生命周期内存在，不得写入普通日志、历史或长期记忆。
 
-不要把真实 API key、聊天、截图、记忆、声音、模型或 Live2D 资产提交到仓库。运行数据默认位于已被 Git 忽略的 `data/`。
+不要把真实 API key、聊天、截图、记忆、声音、模型或 Live2D 资产提交到仓库。Windows 运行数据位于 `%LOCALAPPDATA%\MeguminCompanion`；运行时以 current-user DACL 创建，LLM/VTS secret 另用 DPAPI current-user 密文保存。
 
 ## 安装与完整门禁
 
@@ -93,6 +93,31 @@ uv run megumin-companion-api --migrate-from /path/to/old/data
 迁移前若 LocalAppData 目标已存在会拒绝覆盖/合并。旧版无 `schema_version` 的
 用户设置可先通过 `--check-config` 只读预检，再显式执行 `--upgrade-settings`；写入
 使用原子替换并保留 `settings.yaml.bak`。
+
+生产 secret 不从 `.env` 或进程环境直接读取。LLM key 只能从明确命名的环境变量
+显式导入，值不放在命令行；子进程不能清除父 PowerShell，因此导入后仍需删除父
+环境和旧 `.env`：
+
+```powershell
+$env:COMPANION_LLM_API_KEY = "<在本机交互输入>"
+uv run python -m app --import-llm-key-env COMPANION_LLM_API_KEY
+Remove-Item Env:COMPANION_LLM_API_KEY -ErrorAction SilentlyContinue
+```
+
+VTS 旧明文 token 只读取显式文件，默认保留到 VTS 认证人工确认；确认后才选择文件级
+删除。若源文件就是密文目标，不带删除授权会拒绝原位覆盖：
+
+```powershell
+uv run python -m app --import-vts-token C:\explicit\legacy-vts-token.json
+uv run python -m app --import-vts-token C:\explicit\legacy-vts-token.json --delete-import-source
+uv run python -m app --revoke-secret llm-api-key
+uv run python -m app --reset-secret vts-token
+```
+
+DPAPI 密文不是可移植的凭据备份；换账户、换机或丢失原用户上下文时可能无法解密，
+必须重新输入。管理员、同用户恶意代码和进程内存不在该边界内；revoke/reset/源文件
+删除也不保证 SSD、备份、shell 历史或旧环境中的物理擦除。完整威胁模型与审计步骤见
+[`docs/implementation/w03_windows_security_and_temp_assets.md`](docs/implementation/w03_windows_security_and_temp_assets.md)。
 
 当前显式开发 API 默认监听 `127.0.0.1:8765`；W04 将进一步关闭生产网络面并加固
 `--dev-api` 语义。主要入口：

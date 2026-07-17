@@ -21,6 +21,7 @@ import httpx
 
 from app.core.cancellation import CancellationToken
 from app.schemas import AudioResult, TTSJob
+from app.temp_assets import TempAssetKind, TempAssetRegistry, TempRegistryError
 
 _T = TypeVar("_T")
 _WAVE_CONTENT_TYPES = frozenset({"audio/wav", "audio/wave", "audio/x-wav"})
@@ -104,6 +105,7 @@ class GPTSoVITSProvider:
         cache_ttl_seconds: float = 7 * 24 * 60 * 60,
         sensitive_text_predicate: Callable[[str], bool] | None = None,
         client: httpx.AsyncClient | None = None,
+        temp_registry: TempAssetRegistry | None = None,
     ) -> None:
         if timeout_seconds <= 0.0:
             raise ValueError("timeout_seconds 必须大于 0")
@@ -124,12 +126,14 @@ class GPTSoVITSProvider:
         self._cache_max_bytes = cache_max_bytes
         self._cache_ttl_seconds = cache_ttl_seconds
         self._sensitive_text_predicate = sensitive_text_predicate
+        self._temp_registry = temp_registry
         self._tts_endpoint = httpx.URL(base_url.rstrip("/") + "/").join("tts")
         self._owns_client = client is None
         self._client = client or httpx.AsyncClient(
             timeout=httpx.Timeout(timeout_seconds),
         )
         self._paths: set[Path] = set()
+        self._asset_ids: dict[Path, str] = {}
         self._cache_results: dict[str, Path] = {}
         self._key_locks: dict[str, _KeyLock] = {}
         self._cache_maintenance_lock = asyncio.Lock()
@@ -240,6 +244,7 @@ class GPTSoVITSProvider:
         replace_started = False
         keep_final = False
         try:
+            await _run_to_thread(self._register_temp_path, part_path, TempAssetKind.tts_part)
             request = self._client.build_request("POST", self._tts_endpoint, json=request_payload)
             response = await _await_with_token(self._client.send(request, stream=True), token)
             error_code = self._response_error(response)
@@ -259,6 +264,12 @@ class GPTSoVITSProvider:
             token.raise_if_cancelled()
             replace_started = True
             await _run_to_thread(os.replace, part_path, final_path)
+            await _run_to_thread(
+                self._move_temp_path,
+                part_path,
+                final_path,
+                TempAssetKind.tts_wav,
+            )
             self._paths.add(final_path)
             if token.cancelled:
                 await self._discard_path(final_path)
@@ -282,6 +293,8 @@ class GPTSoVITSProvider:
             return self._failure(job, "tts_timeout")
         except httpx.RequestError:
             return self._failure(job, "tts_unavailable")
+        except TempRegistryError:
+            return self._failure(job, "tts_temp_registry_failed")
         finally:
             await _finish_cleanup(
                 self._cleanup_uncached(
@@ -299,10 +312,10 @@ class GPTSoVITSProvider:
     ) -> None:
         if response is not None:
             await response.aclose()
-        await _run_to_thread(part_path.unlink, missing_ok=True)
+        await self._delete_temp_path(part_path)
         if incomplete_final_path is not None:
             self._paths.discard(incomplete_final_path)
-            await _run_to_thread(incomplete_final_path.unlink, missing_ok=True)
+            await self._delete_temp_path(incomplete_final_path)
         await _run_to_thread(_remove_empty_parent, part_path.parent)
 
     async def _write_response(
@@ -549,7 +562,7 @@ class GPTSoVITSProvider:
 
     async def _discard_path(self, path: Path) -> None:
         self._paths.discard(path)
-        await _run_to_thread(path.unlink, missing_ok=True)
+        await self._delete_temp_path(path)
         await _run_to_thread(_remove_empty_parent, path.parent)
 
     async def close(self) -> None:
@@ -577,12 +590,37 @@ class GPTSoVITSProvider:
         self._cache_results.clear()
         paths = tuple(self._paths)
         self._paths.clear()
-        await asyncio.gather(*(_run_to_thread(path.unlink, missing_ok=True) for path in paths))
+        await asyncio.gather(*(self._delete_temp_path(path) for path in paths))
         parents = {path.parent for path in paths}
         await asyncio.gather(*(_run_to_thread(_remove_empty_parent, path) for path in parents))
         await self._cleanup_cache()
         if self._owns_client:
             await self._client.aclose()
+
+    def _register_temp_path(self, path: Path, kind: TempAssetKind) -> None:
+        if self._temp_registry is None:
+            return
+        entry = self._temp_registry.register(path, kind)
+        self._asset_ids[path] = entry.asset_id
+
+    def _move_temp_path(self, source: Path, target: Path, kind: TempAssetKind) -> None:
+        asset_id = self._asset_ids.get(source)
+        if self._temp_registry is None or asset_id is None:
+            return
+        self._temp_registry.mark_moved(asset_id, target, kind=kind)
+        self._asset_ids.pop(source, None)
+        self._asset_ids[target] = asset_id
+
+    async def _delete_temp_path(self, path: Path) -> None:
+        asset_id = self._asset_ids.pop(path, None)
+        if self._temp_registry is not None and asset_id is not None:
+            await _run_to_thread(
+                self._temp_registry.delete,
+                asset_id,
+                ignore_retry_deadline=True,
+            )
+            return
+        await _run_to_thread(path.unlink, missing_ok=True)
 
     def _cancel_synthesis(self, task: asyncio.Task[AudioResult]) -> None:
         if task.done() or task in self._synthesis_cancellations:

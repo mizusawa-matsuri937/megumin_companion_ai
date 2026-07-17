@@ -6,6 +6,8 @@ import pytest
 from app.config import Settings
 from app.config.settings import STTConfig
 from app.paths import AppPaths
+from app.temp_assets import TempAssetRegistry
+from app.windows_security import PortableDirectorySecurity
 from desktop_client.inputs import (
     PushToTalkRecorder,
     SoundDevicePCMInput,
@@ -41,7 +43,11 @@ def test_enabled_whisper_cpp_factory_resolves_paths_without_opening_microphone(
     )
     settings._paths = AppPaths(root=tmp_path / "AppData")
 
-    recorder = build_voice_input(settings)
+    registry = TempAssetRegistry(
+        settings.paths,
+        directory_security=PortableDirectorySecurity(),
+    )
+    recorder = build_voice_input(settings, temp_registry=registry)
 
     assert isinstance(recorder, PushToTalkRecorder)
     assert isinstance(recorder._stt, WhisperCppProvider)
@@ -54,6 +60,8 @@ def test_enabled_whisper_cpp_factory_resolves_paths_without_opening_microphone(
     assert isinstance(recorder._source, SoundDevicePCMInput)
     assert recorder._source._device == "test-device"
     assert recorder._source._blocksize == 320
+    assert recorder._temp_registry is registry
+    assert recorder._stt._temp_registry is registry
 
 
 def test_stt_factory_preserves_absolute_paths_and_rejects_unknown_provider(

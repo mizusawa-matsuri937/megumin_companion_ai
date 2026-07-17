@@ -10,7 +10,10 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
+from app.paths import AppPaths
 from app.schemas import InputMode, TurnState, UserMessage
+from app.temp_assets import TempAssetRegistry
+from app.windows_security import PortableDirectorySecurity
 from desktop_client.inputs.stt_contracts import TranscriptionRequest, TranscriptionResult
 from desktop_client.inputs.voice_input import (
     PCMCallback,
@@ -287,6 +290,39 @@ def test_audio_device_stays_closed_until_explicit_start_and_wav_is_temporary(
         await recorder.close()
         assert stt.closed
         _assert_state(recorder, RecordingState.closed)
+
+    asyncio.run(scenario())
+
+
+def test_recording_directory_is_registered_and_removed_after_transcription(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        paths = AppPaths(root=tmp_path / "private")
+        registry = TempAssetRegistry(
+            paths,
+            minimum_scavenge_age_seconds=0.0,
+            directory_security=PortableDirectorySecurity(),
+        )
+        source = FakePCMSource()
+        stt = InspectingSTT()
+        scratch = paths.temp / "custom-recordings"
+        recorder = PushToTalkRecorder(
+            source,
+            stt,
+            config=PushToTalkConfig(temporary_directory=scratch),
+            temp_registry=registry,
+        )
+
+        await recorder.start()
+        source.emit(b"\x01\x00" * 160)
+        await asyncio.sleep(0)
+        result = await recorder.stop()
+
+        assert result.input_mode is InputMode.voice
+        assert registry.entries() == ()
+        assert not tuple(scratch.glob("companion-recording-*"))
+        await recorder.close()
 
     asyncio.run(scenario())
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from app.config import Settings
+from app.temp_assets import TempAssetRegistry
 
 from desktop_client.inputs.stt_contracts import STTProvider
 from desktop_client.inputs.voice_input import (
@@ -13,7 +14,11 @@ from desktop_client.inputs.voice_input import (
 from desktop_client.inputs.whisper_cpp import WhisperCppConfig, WhisperCppProvider
 
 
-def build_stt_provider(settings: Settings) -> STTProvider | None:
+def build_stt_provider(
+    settings: Settings,
+    *,
+    temp_registry: TempAssetRegistry | None = None,
+) -> STTProvider | None:
     """Return the explicitly enabled local provider, never a mock fallback."""
 
     if not settings.stt.enabled:
@@ -30,14 +35,19 @@ def build_stt_provider(settings: Settings) -> STTProvider | None:
             terminate_grace_seconds=settings.stt.terminate_grace_seconds,
             max_audio_bytes=settings.stt.max_audio_bytes,
             max_output_bytes=settings.stt.max_output_bytes,
-        )
+        ),
+        temp_registry=temp_registry,
     )
 
 
-def build_voice_input(settings: Settings) -> PushToTalkRecorder | None:
+def build_voice_input(
+    settings: Settings,
+    *,
+    temp_registry: TempAssetRegistry | None = None,
+) -> PushToTalkRecorder | None:
     """Compose push-to-talk input; the microphone remains closed until ``start``."""
 
-    provider = build_stt_provider(settings)
+    provider = build_stt_provider(settings, temp_registry=temp_registry)
     if provider is None:
         return None
     return PushToTalkRecorder(
@@ -49,4 +59,5 @@ def build_voice_input(settings: Settings) -> PushToTalkRecorder | None:
             language=settings.stt.language,
             temporary_directory=settings.stt_temporary_directory(),
         ),
+        temp_registry=temp_registry,
     )

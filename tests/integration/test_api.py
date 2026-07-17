@@ -24,7 +24,7 @@ class RecordingTurnService(TurnService):
         return await super().accept(message)
 
 
-def quiet_settings(*, log_path: Path | None = None) -> Settings:
+def quiet_settings(*, root: Path, log_path: Path | None = None) -> Settings:
     settings = Settings(
         logging=LoggingConfig(
             console_enabled=False,
@@ -32,13 +32,12 @@ def quiet_settings(*, log_path: Path | None = None) -> Settings:
             file_path=Path(log_path.name) if log_path is not None else Path("unused.jsonl"),
         )
     )
-    if log_path is not None:
-        settings._paths = AppPaths(root=log_path.parent.parent)
+    settings._paths = AppPaths(root=root)
     return settings
 
 
-def mock_pipeline_settings(*, token_delay_ms: int = 0) -> Settings:
-    return Settings(
+def mock_pipeline_settings(*, root: Path, token_delay_ms: int = 0) -> Settings:
+    settings = Settings(
         logging=LoggingConfig(console_enabled=False, file_enabled=False),
         llm=LLMConfig(provider="mock"),
         pipeline=PipelineConfig(
@@ -46,10 +45,12 @@ def mock_pipeline_settings(*, token_delay_ms: int = 0) -> Settings:
             mock_audio_duration_ms=0,
         ),
     )
+    settings._paths = AppPaths(root=root)
+    return settings
 
 
-def test_health_and_websocket_echo() -> None:
-    app = create_app(quiet_settings())
+def test_health_and_websocket_echo(tmp_path: Path) -> None:
+    app = create_app(quiet_settings(root=tmp_path / "app"))
     with TestClient(app) as client:
         response = client.get("/health")
         assert response.status_code == 200
@@ -66,8 +67,8 @@ def test_health_and_websocket_echo() -> None:
         assert state.json()["active_turns"] == []
 
 
-def test_text_and_voice_use_the_same_turn_service() -> None:
-    app = create_app(quiet_settings())
+def test_text_and_voice_use_the_same_turn_service(tmp_path: Path) -> None:
+    app = create_app(quiet_settings(root=tmp_path / "app"))
     with TestClient(app) as client:
         original = app.state.turn_service
         assert isinstance(original, TurnService)
@@ -93,8 +94,8 @@ def test_text_and_voice_use_the_same_turn_service() -> None:
         ]
 
 
-def test_http_chat_uses_normalized_user_message() -> None:
-    app = create_app(quiet_settings())
+def test_http_chat_uses_normalized_user_message(tmp_path: Path) -> None:
+    app = create_app(quiet_settings(root=tmp_path / "app"))
     with TestClient(app) as client:
         response = client.post("/api/chat", json={"text": "  显式发送  ", "input_mode": "text"})
 
@@ -103,9 +104,9 @@ def test_http_chat_uses_normalized_user_message() -> None:
     assert response.json()["status"] == "accepted"
 
 
-def test_invalid_payload_does_not_echo_private_input() -> None:
+def test_invalid_payload_does_not_echo_private_input(tmp_path: Path) -> None:
     private_input = "private-draft@example.com"
-    app = create_app(quiet_settings())
+    app = create_app(quiet_settings(root=tmp_path / "app"))
     with TestClient(app) as client:
         response = client.post(
             "/api/chat",
@@ -118,7 +119,7 @@ def test_invalid_payload_does_not_echo_private_input() -> None:
 
 def test_lifecycle_writes_start_and_stop_events(tmp_path: Path) -> None:
     log_path = tmp_path / "logs" / "lifecycle.jsonl"
-    app = create_app(quiet_settings(log_path=log_path))
+    app = create_app(quiet_settings(root=tmp_path, log_path=log_path))
 
     with TestClient(app) as client:
         assert client.get("/health").status_code == 200
@@ -129,8 +130,8 @@ def test_lifecycle_writes_start_and_stop_events(tmp_path: Path) -> None:
     assert events == ["application.started", "application.stopped"]
 
 
-def test_websocket_streams_complete_mock_pipeline_for_text_and_voice() -> None:
-    app = create_app(mock_pipeline_settings())
+def test_websocket_streams_complete_mock_pipeline_for_text_and_voice(tmp_path: Path) -> None:
+    app = create_app(mock_pipeline_settings(root=tmp_path / "app"))
     with TestClient(app) as client, client.websocket_connect("/ws/client") as websocket:
         for mode in ("text", "voice"):
             websocket.send_json(
@@ -171,8 +172,8 @@ def test_websocket_streams_complete_mock_pipeline_for_text_and_voice() -> None:
             assert isinstance(segment["payload"]["expression_update"], bool)
 
 
-def test_http_interrupt_cancels_active_turn() -> None:
-    app = create_app(mock_pipeline_settings(token_delay_ms=100))
+def test_http_interrupt_cancels_active_turn(tmp_path: Path) -> None:
+    app = create_app(mock_pipeline_settings(root=tmp_path / "app", token_delay_ms=100))
     with TestClient(app) as client:
         accepted = client.post("/api/chat", json={"text": "请开始一个较慢的回复"}).json()
         cancelled = client.post(
@@ -184,9 +185,9 @@ def test_http_interrupt_cancels_active_turn() -> None:
     assert cancelled.json()["status"] == "cancelled"
 
 
-def test_websocket_rejects_malformed_commands_without_private_echo() -> None:
+def test_websocket_rejects_malformed_commands_without_private_echo(tmp_path: Path) -> None:
     private = "private-command@example.com"
-    app = create_app(quiet_settings())
+    app = create_app(quiet_settings(root=tmp_path / "app"))
     with TestClient(app) as client, client.websocket_connect("/ws/client") as websocket:
         websocket.send_json(["not", "an", "object"])
         assert websocket.receive_json()["error"]["code"] == "unsupported_message_type"
@@ -214,6 +215,7 @@ def test_websocket_rejects_malformed_commands_without_private_echo() -> None:
 
 
 def test_partial_startup_closes_already_started_event_sink(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class Sink:
@@ -233,7 +235,7 @@ def test_partial_startup_closes_already_started_event_sink(
 
     with (
         pytest.raises(RuntimeError, match="startup failure"),
-        TestClient(create_app(quiet_settings())),
+        TestClient(create_app(quiet_settings(root=tmp_path / "app"))),
     ):
         pass
     assert sink.closed == 1

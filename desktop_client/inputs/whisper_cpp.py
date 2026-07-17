@@ -9,12 +9,16 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shutil
 import tempfile
 import wave
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
+
+from app.temp_assets import TempAssetKind, TempAssetRegistry
 
 from desktop_client.inputs.stt_contracts import (
     STTError,
@@ -47,8 +51,14 @@ class WhisperCppConfig:
 class WhisperCppProvider:
     """Run one isolated whisper-cli process per completed recording."""
 
-    def __init__(self, config: WhisperCppConfig) -> None:
+    def __init__(
+        self,
+        config: WhisperCppConfig,
+        *,
+        temp_registry: TempAssetRegistry | None = None,
+    ) -> None:
         self._config = config
+        self._temp_registry = temp_registry
         self._processes: set[asyncio.subprocess.Process] = set()
         self._termination_tasks: dict[asyncio.subprocess.Process, asyncio.Task[None]] = {}
         self._close_task: asyncio.Task[None] | None = None
@@ -58,23 +68,50 @@ class WhisperCppProvider:
     async def transcribe(self, request: TranscriptionRequest) -> TranscriptionResult:
         self._validate_preconditions(request.audio_path)
         temporary_root = self._config.temporary_directory
-        if temporary_root is not None:
-            temporary_root.mkdir(parents=True, exist_ok=True)
+        if temporary_root is None:
+            with tempfile.TemporaryDirectory(prefix="companion-stt-") as directory_name:
+                return await self._transcribe_in_directory(request, Path(directory_name))
+        directory = temporary_root / f"companion-stt-{uuid4().hex}"
+        asset_id: str | None = None
+        registry = self._temp_registry
+        if registry is not None:
+            entry = await asyncio.to_thread(
+                registry.register,
+                directory,
+                TempAssetKind.stt_directory,
+            )
+            asset_id = entry.asset_id
+        directory.mkdir(parents=True)
+        try:
+            return await self._transcribe_in_directory(request, directory)
+        finally:
+            if registry is not None and asset_id is not None:
+                await asyncio.to_thread(
+                    registry.delete,
+                    asset_id,
+                    ignore_retry_deadline=True,
+                )
+            else:
+                await asyncio.to_thread(shutil.rmtree, directory, ignore_errors=True)
 
-        with tempfile.TemporaryDirectory(prefix="companion-stt-", dir=temporary_root) as directory:
-            output_base = Path(directory) / "transcript"
-            command = self._build_command(request, output_base)
-            process = await self._start_process(command)
-            try:
-                await self._wait_for_process(process, request.timeout_seconds)
-                if process.returncode != 0:
-                    raise STTError(
-                        STTErrorCode.process_failed,
-                        f"whisper-cli 退出码为 {process.returncode}",
-                    )
-                return self._read_result(output_base.with_suffix(".json"))
-            finally:
-                await self._terminate(process)
+    async def _transcribe_in_directory(
+        self,
+        request: TranscriptionRequest,
+        directory: Path,
+    ) -> TranscriptionResult:
+        output_base = directory / "transcript"
+        command = self._build_command(request, output_base)
+        process = await self._start_process(command)
+        try:
+            await self._wait_for_process(process, request.timeout_seconds)
+            if process.returncode != 0:
+                raise STTError(
+                    STTErrorCode.process_failed,
+                    f"whisper-cli 退出码为 {process.returncode}",
+                )
+            return self._read_result(output_base.with_suffix(".json"))
+        finally:
+            await self._terminate(process)
 
     def _validate_preconditions(self, audio_path: Path) -> None:
         if self._closed:

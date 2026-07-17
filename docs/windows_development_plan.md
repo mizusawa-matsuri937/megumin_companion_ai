@@ -535,6 +535,7 @@ flowchart LR
 #### PR W03：DACL、DPAPI 与临时资产 registry
 
 - **责任：AI-R；安全签字 H。依赖：W02。风险：P0-03、P1-14。**
+- **状态：2026-07-17 实现与自动验收已完成；等待 Windows VM 与安全人工审计，审计合格前不得进入 W04。** 实现、自动证据和待签字方案见 [`implementation/w03_windows_security_and_temp_assets.md`](./implementation/w03_windows_security_and_temp_assets.md)。
 - app 私有目录创建时设置明确 DACL；至少验证另一标准用户无法读取，不能以 `chmod` 作为证据。
 - secret 使用 DPAPI current-user；密文格式带版本、用途和 key id；支持替换、撤销、损坏和用户重置。
 - VTS token 与 LLM key 从 plain file/env 迁入 secret store；日志中只出现稳定 secret id，不出现值。

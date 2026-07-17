@@ -11,6 +11,9 @@ import wave
 from pathlib import Path
 
 import pytest
+from app.paths import AppPaths
+from app.temp_assets import TempAssetRegistry
+from app.windows_security import PortableDirectorySecurity
 from desktop_client.inputs.stt_contracts import (
     STTError,
     STTErrorCode,
@@ -414,6 +417,42 @@ def test_rejects_missing_or_non_pcm_inputs_without_starting_process(tmp_path: Pa
         with pytest.raises(STTError) as caught:
             await provider.transcribe(TranscriptionRequest(audio_path=stereo))
         assert caught.value.code is STTErrorCode.invalid_audio
+        await provider.close()
+
+    asyncio.run(scenario())
+
+
+def test_whisper_directory_is_registered_and_removed_after_success(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        script = tmp_path / "fake-whisper.py"
+        script.write_text(FAKE_CLI, encoding="utf-8")
+        model = tmp_path / "model.bin"
+        model.write_bytes(b"model")
+        audit = tmp_path / "audit.json"
+        audio = tmp_path / "input.wav"
+        _write_pcm_wav(audio)
+        paths = AppPaths(root=tmp_path / "private")
+        registry = TempAssetRegistry(
+            paths,
+            minimum_scavenge_age_seconds=0.0,
+            directory_security=PortableDirectorySecurity(),
+        )
+        scratch = paths.temp / "custom-stt"
+        provider = WhisperCppProvider(
+            WhisperCppConfig(
+                executable=Path(sys.executable),
+                executable_prefix_args=(str(script), "success", str(audit)),
+                model_path=model,
+                temporary_directory=scratch,
+            ),
+            temp_registry=registry,
+        )
+
+        result = await provider.transcribe(TranscriptionRequest(audio_path=audio))
+
+        assert result.segment_count == 2
+        assert registry.entries() == ()
+        assert not tuple(scratch.glob("companion-stt-*"))
         await provider.close()
 
     asyncio.run(scenario())
