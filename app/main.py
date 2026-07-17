@@ -1,38 +1,31 @@
-"""FastAPI application factory and local development entry point."""
+"""Side-effect-free FastAPI application factory."""
 
 from __future__ import annotations
 
 import asyncio
 import logging
-import sys
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from datetime import timedelta
-from pathlib import Path
 
-if __package__ in {None, ""}:
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 
-import uvicorn  # noqa: E402
-from fastapi import FastAPI, Request  # noqa: E402
-from fastapi.exceptions import RequestValidationError  # noqa: E402
-from fastapi.responses import JSONResponse  # noqa: E402
-
-from app import __version__  # noqa: E402
-from app.api.routes import router  # noqa: E402
-from app.bootstrap import (  # noqa: E402
+from app import __version__
+from app.api.routes import router
+from app.bootstrap import (
     build_dialogue_pipeline,
     build_llm_provider,
     build_vts_event_sink,
 )
-from app.clients.llm.base import LLMProvider  # noqa: E402
-from app.config import Settings, load_settings  # noqa: E402
-from app.config.logging import configure_logging, log_event  # noqa: E402
-from app.config.settings import PROJECT_ROOT  # noqa: E402
-from app.core import TurnService  # noqa: E402
-from app.memory.analyzer import LLMMemoryCandidateAnalyzer  # noqa: E402
-from app.memory.runtime import MemoryRuntime, create_memory_runtime  # noqa: E402
-from app.proactive import ProactivePolicy, ProactiveRuntime  # noqa: E402
+from app.clients.llm.base import LLMProvider
+from app.config import Settings, load_settings
+from app.config.logging import configure_logging, log_event
+from app.core import TurnService
+from app.memory.analyzer import LLMMemoryCandidateAnalyzer
+from app.memory.runtime import MemoryRuntime, create_memory_runtime
+from app.proactive import ProactivePolicy, ProactiveRuntime
 
 
 async def _settle_resource_close(
@@ -88,8 +81,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         owns_provider=True,
                     )
                 database_path = resolved_settings.storage.database_path
-                if not database_path.is_absolute():
-                    database_path = PROJECT_ROOT / database_path
+                database_path = resolved_settings.resolve_runtime_path(database_path)
                 memory_runtime = await create_memory_runtime(
                     str(database_path),
                     busy_timeout_ms=resolved_settings.storage.busy_timeout_ms,
@@ -208,20 +200,3 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return JSONResponse(status_code=422, content={"detail": details})
 
     return app
-
-
-app = create_app()
-
-
-def run() -> None:
-    settings = load_settings()
-    uvicorn.run(
-        "app.main:app",
-        host=settings.server.host,
-        port=settings.server.port,
-        log_config=None,
-    )
-
-
-if __name__ == "__main__":
-    run()

@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 from app.config import Settings
-from app.config.settings import PROJECT_ROOT, STTConfig
+from app.config.settings import STTConfig
 from desktop_client.inputs import (
     PushToTalkRecorder,
     SoundDevicePCMInput,
@@ -41,8 +41,8 @@ def test_enabled_whisper_cpp_factory_resolves_paths_without_opening_microphone()
 
     assert isinstance(recorder, PushToTalkRecorder)
     assert isinstance(recorder._stt, WhisperCppProvider)
-    assert recorder._stt._config.executable == PROJECT_ROOT / "runtime/whisper-cli"
-    assert recorder._stt._config.model_path == PROJECT_ROOT / "models/local.bin"
+    assert recorder._stt._config.executable == settings.runtime_base / "runtime/whisper-cli"
+    assert recorder._stt._config.model_path == settings.runtime_base / "models/local.bin"
     assert recorder._stt._config.threads == 4
     assert recorder._config.max_recording_seconds == 3
     assert recorder._config.transcription_timeout_seconds == 7

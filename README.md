@@ -4,7 +4,7 @@
 
 完整实现、测试证据、九个堆叠 Draft PR 与延期项见 [`docs/ai_backend_mac_implementation_report.md`](docs/ai_backend_mac_implementation_report.md)。这次交付不包含 Windows UI、前台窗口捕获、全局热键、打包或真实设备体验，也不宣称 Gate B～G 已通过。
 
-Windows 当前基线、剩余风险、16 个有效开发日安排与各阶段人工关卡见 [`docs/windows_development_plan.md`](docs/windows_development_plan.md)。
+Windows 当前基线、剩余风险、分阶段工程量与各阶段人工关卡见 [`docs/windows_development_plan.md`](docs/windows_development_plan.md)。Gate W0 的已批准决策和残余风险见 [`docs/gates/gate_w0.md`](docs/gates/gate_w0.md)。
 
 ## 架构
 
@@ -62,10 +62,20 @@ pytest 对 `app` 与 `desktop_client` 统计分支覆盖，并设置 90% 综合�
 ## 启动后端
 
 ```bash
-uv run python app/main.py
+uv run megumin-companion-api --check-config
+uv run megumin-companion-api --serve
 ```
 
-默认监听 `127.0.0.1:8765`。主要入口：
+也可以使用 `uv run python -m app --serve`。`--help`、`--version` 和
+`--check-config` 只读取/校验配置，不启动数据库、设备或网络。默认配置作为
+`app.resources` 随 editable/wheel 安装；仓库根的 `config.yaml` 是显式开发配置，使用方式为：
+
+```bash
+uv run megumin-companion-api --config config.yaml --serve
+```
+
+当前显式开发 API 默认监听 `127.0.0.1:8765`；W04 将进一步关闭生产网络面并加固
+`--dev-api` 语义。主要入口：
 
 - `GET /health`
 - `POST /api/chat`
@@ -83,7 +93,8 @@ uv run python app/main.py
 
 ### OpenAI-compatible LLM
 
-在 `config.yaml` 配置 provider、base URL、model，并把专用且额度受限的密钥放入未跟踪的 `.env`：
+在 `config.yaml` 配置 provider、base URL、model，使用 `--config config.yaml` 显式加载，
+并把专用且额度受限的密钥放入同目录下未跟踪的 `.env`：
 
 ```text
 COMPANION_LLM_API_KEY=...
@@ -136,4 +147,4 @@ tools/                    Gate A 与 STT 人工冒烟工具
 docs/                     范围、架构、验收记录与实现报告
 ```
 
-产品范围、隐私和资产边界以 [`docs/day1_scope_freeze.md`](docs/day1_scope_freeze.md) 为准。任何真实设备、Windows 或人工体验验收都应按最终报告中的清单单独执行。
+产品范围、隐私和资产边界以 [`docs/windows_development_plan.md`](docs/windows_development_plan.md) 第 1.3 节及 [`docs/decisions/w00_owner_decisions.md`](docs/decisions/w00_owner_decisions.md) 为准。任何真实设备、Windows 或人工体验验收都必须按对应 Gate 单独执行。

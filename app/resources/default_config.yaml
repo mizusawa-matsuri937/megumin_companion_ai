@@ -1,0 +1,123 @@
+app:
+  name: Megumin Desktop Companion AI
+  environment: dev
+  timezone: Asia/Shanghai
+  language: zh-CN
+  log_level: INFO
+
+server:
+  host: 127.0.0.1
+  port: 8765
+
+logging:
+  console_enabled: true
+  file_enabled: true
+  file_path: data/logs/app.jsonl
+
+# 默认使用不联网的确定性 Mock；切换到真实 provider 时才要求专用密钥和 model。
+llm:
+  provider: mock
+  api_key_env: COMPANION_LLM_API_KEY
+  base_url: https://api.openai.com
+  endpoint: /v1/chat/completions
+  model: ""
+  timeout_seconds: 45
+  temperature: 0.8
+  max_tokens: 600
+
+# 默认仍为离线 Mock。启用 GPT-SoVITS 时必须显式配置本机 /tts 地址和 preset。
+tts:
+  provider: mock
+  base_url: http://127.0.0.1:9880
+  output_directory: data/cache/audio/gpt-sovits/ephemeral
+  timeout_seconds: 30
+  max_audio_bytes: 33554432
+  default_preset: default
+  presets: {}
+  # 持久缓存涉及对话文本派生音频，默认关闭；启用后仍会跳过敏感文本。
+  cache_enabled: false
+  cache_directory: data/cache/audio/gpt-sovits/persistent
+  cache_max_bytes: 536870912
+  cache_ttl_seconds: 604800
+
+# 默认禁用；首次启用真实 VTS 时仍需用户在 VTube Studio 内人工 Allow。
+vts:
+  enabled: false
+  uri: ws://127.0.0.1:8001
+  plugin_name: Megumin Companion
+  plugin_developer: Local User
+  token_path: data/private/vts-token.json
+  request_timeout_seconds: 5
+  queue_capacity: 16
+  reconnect_initial_seconds: 1
+  reconnect_max_seconds: 30
+  expression_hotkeys: {}
+
+emotion:
+  enabled: true
+  max_delta_per_event: 0.15
+  max_delta_per_minute: 0.25
+  label_min_duration_seconds: 15
+  explosion_cooldown_seconds: 300
+  expression_cooldown_seconds: 4
+
+storage:
+  enabled: true
+  database_path: data/private/companion.sqlite3
+  busy_timeout_ms: 5000
+
+memory:
+  history_retention_days: 7
+  confirmation_ttl_minutes: 15
+  # 真实 LLM 的结构化候选分析需另行显式开启；长期记忆 feature 本身仍默认关闭。
+  candidate_analysis_enabled: false
+
+perception:
+  operation_timeout_seconds: 10
+  max_frame_bytes: 20971520
+  minimum_hash_distance: 0.08
+  max_tracked_windows: 128
+  ocr_max_spans: 2000
+  ocr_max_span_chars: 2000
+  max_ocr_text_chars: 100000
+  max_summary_chars: 2000
+  cloud_max_calls: 6
+  cloud_period_seconds: 60
+
+proactive:
+  minimum_score: 0.62
+  cooldown_seconds: 1200
+  idle_minimum_seconds: 180
+  perception_max_age_seconds: 30
+  daily_limit: 8
+  quiet_start_hour: 23
+  quiet_end_hour: 8
+
+# 默认禁用，且不会下载模型或请求麦克风权限。启用后需自行配置本机 whisper-cli 与模型。
+stt:
+  enabled: false
+  provider: whisper_cpp
+  executable: vendor/whisper.cpp/build/bin/whisper-cli
+  model_path: data/models/whisper/ggml-base.bin
+  language: auto
+  threads: null
+  temporary_directory: data/private/stt
+  terminate_grace_seconds: 0.5
+  max_audio_bytes: 67108864
+  max_output_bytes: 2097152
+  max_recording_seconds: 120
+  transcription_timeout_seconds: 60
+  device: null
+  blocksize: 0
+
+pipeline:
+  tts_worker_count: 2
+  segment_min_chars: 6
+  segment_max_chars: 42
+  segment_max_words: 25
+  mock_token_delay_ms: 20
+  mock_audio_duration_ms: 180
+  mock_audio_volume: 0.12
+  audio_cache_path: data/cache/audio/mock
+  # 默认静默模拟播放，避免后端启动后意外发声；Gate A 人工工具显式使用系统播放器。
+  playback_mode: silent

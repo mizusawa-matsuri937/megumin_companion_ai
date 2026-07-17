@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Mapping
+from importlib import resources
 from pathlib import Path
 from typing import Any, Literal
 
@@ -19,9 +20,9 @@ from pydantic import (
     model_validator,
 )
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config.yaml"
-DEFAULT_ENV_PATH = PROJECT_ROOT / ".env"
+DEFAULT_CONFIG_PACKAGE = "app.resources"
+DEFAULT_CONFIG_NAME = "default_config.yaml"
+DEFAULT_ENV_NAME = ".env"
 
 
 class ConfigurationError(RuntimeError):
@@ -221,6 +222,28 @@ class Settings(StrictModel):
     pipeline: PipelineConfig = Field(default_factory=PipelineConfig)
 
     _environment: dict[str, str] = PrivateAttr(default_factory=dict)
+    _runtime_base: Path = PrivateAttr(default_factory=Path.cwd)
+    _config_source: str = PrivateAttr(default="programmatic settings")
+
+    @property
+    def config_source(self) -> str:
+        """Return a non-sensitive description of the active configuration source."""
+
+        return self._config_source
+
+    @property
+    def runtime_base(self) -> Path:
+        """Return the temporary W01 base for relative runtime paths.
+
+        W02 replaces this compatibility rule with the approved Windows path service.
+        """
+
+        return self._runtime_base
+
+    def resolve_runtime_path(self, path: Path) -> Path:
+        """Resolve a relative runtime path without referring to the source tree."""
+
+        return path if path.is_absolute() else self._runtime_base / path
 
     def require_secret(self, env_name: str) -> SecretStr:
         """Return a configured secret without exposing it in repr or serialization."""
@@ -279,26 +302,47 @@ ENV_OVERRIDES: dict[str, tuple[str, str]] = {
 }
 
 
-def _read_yaml(path: Path) -> dict[str, Any]:
-    if not path.is_file():
-        raise ConfigurationError(
-            f"配置文件不存在：{path}。请从仓库根目录运行，或显式传入有效配置路径。"
-        )
+def _parse_yaml(content: str, *, source: str) -> dict[str, Any]:
     try:
-        content = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except (OSError, yaml.YAMLError) as exc:
-        raise ConfigurationError(f"无法读取配置文件 {path}：{exc}") from exc
-    if content is None:
+        parsed = yaml.safe_load(content)
+    except yaml.YAMLError as exc:
+        raise ConfigurationError(f"无法解析{source}：{exc}") from exc
+    if parsed is None:
         return {}
-    if not isinstance(content, dict):
-        raise ConfigurationError(f"配置文件 {path} 的顶层必须是键值映射。")
-    return content
+    if not isinstance(parsed, dict):
+        raise ConfigurationError(f"{source}的顶层必须是键值映射。")
+    return parsed
 
 
-def _merged_environment(env_path: Path, environ: Mapping[str, str] | None) -> dict[str, str]:
-    from_file = {
-        key: value for key, value in dotenv_values(env_path).items() if isinstance(value, str)
-    }
+def _read_yaml_path(path: Path) -> dict[str, Any]:
+    source = f"配置文件 {path.name or '<unnamed>'}"
+    if not path.is_file():
+        raise ConfigurationError(f"{source}不存在；请显式传入有效配置路径。")
+    try:
+        content = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ConfigurationError(f"无法读取{source}：{exc.strerror or type(exc).__name__}") from exc
+    return _parse_yaml(content, source=source)
+
+
+def _read_default_yaml() -> dict[str, Any]:
+    try:
+        content = (
+            resources.files(DEFAULT_CONFIG_PACKAGE)
+            .joinpath(DEFAULT_CONFIG_NAME)
+            .read_text(encoding="utf-8")
+        )
+    except (FileNotFoundError, ModuleNotFoundError, OSError, TypeError) as exc:
+        raise ConfigurationError("内置默认配置资源不可用；安装产物可能不完整。") from exc
+    return _parse_yaml(content, source="内置默认配置")
+
+
+def _merged_environment(env_path: Path | None, environ: Mapping[str, str] | None) -> dict[str, str]:
+    from_file = (
+        {key: value for key, value in dotenv_values(env_path).items() if isinstance(value, str)}
+        if env_path is not None
+        else {}
+    )
     process_env = dict(os.environ if environ is None else environ)
     return {**from_file, **process_env}
 
@@ -314,16 +358,33 @@ def _apply_environment_overrides(data: dict[str, Any], environment: Mapping[str,
 
 
 def load_settings(
-    config_path: Path | str = DEFAULT_CONFIG_PATH,
-    env_path: Path | str = DEFAULT_ENV_PATH,
+    config_path: Path | str | None = None,
+    env_path: Path | str | None = None,
     *,
     environ: Mapping[str, str] | None = None,
 ) -> Settings:
-    """Load YAML defaults, then overlay `.env` and process environment values."""
+    """Load packaged or explicit YAML, then overlay dev and process environment values."""
 
-    resolved_config = Path(config_path).expanduser().resolve()
-    resolved_env = Path(env_path).expanduser().resolve()
-    raw_config = _read_yaml(resolved_config)
+    if config_path is None:
+        raw_config = _read_default_yaml()
+        runtime_base = Path.cwd()
+        source = "内置默认配置"
+    else:
+        candidate = Path(config_path).expanduser()
+        resolved_config = (
+            candidate if candidate.is_absolute() else Path.cwd() / candidate
+        ).resolve(strict=False)
+        raw_config = _read_yaml_path(resolved_config)
+        runtime_base = resolved_config.parent
+        source = f"配置文件 {resolved_config.name or '<unnamed>'}"
+
+    if env_path is None:
+        resolved_env = runtime_base / DEFAULT_ENV_NAME
+    else:
+        candidate_env = Path(env_path).expanduser()
+        resolved_env = (
+            candidate_env if candidate_env.is_absolute() else Path.cwd() / candidate_env
+        ).resolve(strict=False)
     environment = _merged_environment(resolved_env, environ)
     _apply_environment_overrides(raw_config, environment)
     try:
@@ -333,9 +394,11 @@ def load_settings(
             f"{'.'.join(str(part) for part in error['loc'])}: {error['msg']}"
             for error in exc.errors(include_input=False, include_context=False)
         )
-        raise ConfigurationError(f"配置文件 {resolved_config} 无效：{issues}") from exc
+        raise ConfigurationError(f"{source}无效：{issues}") from exc
 
     settings._environment = environment
+    settings._runtime_base = runtime_base
+    settings._config_source = source
     if settings.llm.provider.lower() not in {"none", "mock"}:
         settings.require_llm_api_key()
     return settings

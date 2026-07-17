@@ -20,6 +20,12 @@ dependencies = [
     "websockets>=15,<17",
 ]
 
+[project.scripts]
+megumin-companion-api = "app.cli:main"
+
+[project.gui-scripts]
+megumin-companion-desktop = "desktop_client.entrypoint:main"
+
 [project.optional-dependencies]
 perception = [
     "onnxruntime>=1.20,<2",
