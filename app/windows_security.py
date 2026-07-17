@@ -36,6 +36,13 @@ class ReparsePointError(WindowsSecurityError):
     """A managed path contains a symlink, junction, or other reparse point."""
 
 
+def _get_last_error() -> int:  # pragma: no cover - Windows-native ctypes adapter
+    getter = getattr(ctypes, "get_last_error", None)
+    if not callable(getter):
+        raise WindowsSecurityError("Windows last-error API is unavailable")
+    return int(getter())
+
+
 class DataProtector(Protocol):
     """Protect bytes for one stable purpose and key identifier."""
 
@@ -123,7 +130,7 @@ def _load_dll(name: str) -> Any:  # pragma: no cover - native Windows scenario g
 
 
 def _last_error(operation: str) -> WindowsSecurityError:  # pragma: no cover
-    return WindowsSecurityError(f"{operation} failed (winerror={ctypes.get_last_error()})")
+    return WindowsSecurityError(f"{operation} failed (winerror={_get_last_error()})")
 
 
 def _extended_windows_path(path: Path) -> str:  # pragma: no cover
@@ -211,7 +218,7 @@ class WindowsDirectorySecurity:  # pragma: no cover - exercised by required Wind
         )
         if create_directory(_extended_windows_path(root), byref(attributes)):
             return
-        if ctypes.get_last_error() != _ERROR_ALREADY_EXISTS:
+        if _get_last_error() != _ERROR_ALREADY_EXISTS:
             raise _last_error("CreateDirectoryW")
         if is_reparse_point(root) or not root.is_dir():
             raise ReparsePointError("private application root changed during creation")
@@ -349,7 +356,7 @@ class WindowsDirectorySecurity:  # pragma: no cover - exercised by required Wind
             get_information.restype = c_int
             size = c_uint32()
             get_information(token, _TOKEN_USER_CLASS, None, 0, byref(size))
-            if ctypes.get_last_error() != _ERROR_INSUFFICIENT_BUFFER or size.value == 0:
+            if _get_last_error() != _ERROR_INSUFFICIENT_BUFFER or size.value == 0:
                 raise _last_error("GetTokenInformation(size)")
             buffer = ctypes.create_string_buffer(size.value)
             if not get_information(
@@ -462,8 +469,7 @@ class WindowsDataProtector:  # pragma: no cover - exercised by required Windows 
             if not succeeded:
                 operation = "CryptProtectData" if protect else "CryptUnprotectData"
                 raise WindowsSecurityError(
-                    f"{operation} failed for secret_id={key_id} "
-                    f"(winerror={ctypes.get_last_error()})"
+                    f"{operation} failed for secret_id={key_id} (winerror={_get_last_error()})"
                 )
             if not output_blob.pbData or output_blob.cbData == 0:
                 raise WindowsSecurityError(f"DPAPI returned empty output for secret_id={key_id}")
