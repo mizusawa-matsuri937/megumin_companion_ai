@@ -89,7 +89,7 @@ def test_registered_path_replaced_by_reparse_point_never_deletes_outside(
     assert result.status is TempDeleteStatus.rejected
     assert outside_file.read_bytes() == b"must remain outside"
     assert [item.asset_id for item in registry.entries()] == [entry.asset_id]
-    path.parent.rmdir()
+    _remove_directory_reparse(path.parent)
 
 
 def test_reparse_child_rejects_whole_directory_before_partial_deletion(
