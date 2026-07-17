@@ -1,9 +1,11 @@
 # Megumin Desktop Companion AI 基础架构设计文档
 
+> 计划状态说明：本文中的 Phase、Day、落地顺序和学习路线仅为历史设计背景。2026-07-15 起，Windows 实施顺序、责任划分和 Gate 统一以 [`windows_development_plan.md`](./windows_development_plan.md) 为准。
+
 > 设计目标：Windows 常驻陪伴型 AI 桌宠。第一阶段不做直播、不做复杂游戏 AI、不做自动控制电脑，而是先把 **Live2D 展示、低延迟语音与文字对话、记忆、情绪、屏幕感知、主动发话** 跑通。
 > 合规边界：当前产品是个人私用的 Megumin 桌宠；项目代码只提供框架、测试占位接口和用户自行导入模型/声音机制。源码仓库不提交受保护的角色模型、图片、音频、声线数据或原作台词库，也不提供未经授权的声音克隆素材。若未来公开分享，必须先重新命名并完成资产和许可审查。
 >
-> Day 1 的人工确认结果、数据矩阵和变更规则以 [`day1_scope_freeze.md`](day1_scope_freeze.md) 为准；本文件不得放宽其中的隐私与资产边界。
+> 当前人工确认结果、数据矩阵和变更规则以 [`windows_development_plan.md`](windows_development_plan.md) 第 1.3 节、[`decisions/w00_owner_decisions.md`](decisions/w00_owner_decisions.md) 和 [`gates/gate_w0.md`](gates/gate_w0.md) 为准；本文件不得放宽其中的隐私与资产边界。
 
 ---
 
@@ -2490,7 +2492,7 @@ http://127.0.0.1:7860
 
 ## 17.1 按天开发计划
 
-每日计划已单独拆分到 [`docs/daily_development_plan.md`](daily_development_plan.md)。该文档按单人使用 Codex 协作、每天约 4～6 小时有效开发时间估算，覆盖 Day 1 到 Day 31；新增的本地 STT 日使用了原 30 日目标的 1 天缓冲，整体仍在原计划允许的 `±5` 个有效开发日浮动内。具体任务顺序和人工关卡以每日计划为准。
+原按日计划曾拆分到 [`docs/daily_development_plan.md`](daily_development_plan.md)，现已失效并仅保留跳转说明。Day 1～31 和 `±5` 日浮动均为历史估算；当前任务顺序、责任划分和人工 Gate 统一以 [`windows_development_plan.md`](windows_development_plan.md) 为准。
 
 ## 17.2 每阶段完成标准
 

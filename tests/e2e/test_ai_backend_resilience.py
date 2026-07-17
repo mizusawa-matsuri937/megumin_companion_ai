@@ -19,6 +19,7 @@ from app.config.settings import LoggingConfig
 from app.core import CancellationToken, TurnService
 from app.emotion import FakeClock
 from app.memory.runtime import create_memory_runtime
+from app.paths import AppPaths
 from app.perception.change_detection import FrameChangeDetector
 from app.perception.classification import LocalSceneClassifier
 from app.perception.guards import OCRContentGuard, PreCaptureGuard, TextRedactor
@@ -235,15 +236,15 @@ class _SchedulerPipeline:
 
 
 def _logger(log_path: Path) -> logging.Logger:
-    return configure_logging(
-        Settings(
-            logging=LoggingConfig(
-                console_enabled=False,
-                file_enabled=True,
-                file_path=log_path,
-            )
+    settings = Settings(
+        logging=LoggingConfig(
+            console_enabled=False,
+            file_enabled=True,
+            file_path=Path(log_path.name),
         )
     )
+    settings._paths = AppPaths(root=log_path.parent.parent)
+    return configure_logging(settings)
 
 
 def _policy() -> ProactivePolicy:
@@ -423,7 +424,7 @@ def test_failure_storm_preserves_user_priority_and_all_settled_shutdown(
     tmp_path: Path,
 ) -> None:
     async def scenario() -> None:
-        log_path = tmp_path / "failure-storm.jsonl"
+        log_path = tmp_path / "logs" / "failure-storm.jsonl"
         logger = _logger(log_path)
         features = _StaticFeatures()
         proactive = ProactiveRuntime(features, _policy(), clock=FakeClock(NOW))

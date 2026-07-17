@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import subprocess
 import sys
 import wave
 from pathlib import Path
@@ -100,6 +101,14 @@ def _provider(
 
 
 def _process_exists(pid: int) -> bool:
+    if os.name == "nt":
+        result = subprocess.run(
+            ["tasklist.exe", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        return f'"{pid}"' in result.stdout
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -270,13 +279,15 @@ def test_close_terminates_an_active_process(tmp_path: Path) -> None:
     asyncio.run(scenario())
 
 
-def test_timeout_escalates_from_terminate_to_kill_and_reaps_process(tmp_path: Path) -> None:
+def test_timeout_terminates_and_reaps_process(tmp_path: Path) -> None:
     async def scenario() -> None:
         provider, pid_file, scratch = _provider(tmp_path, "sleep", grace=0.02)
         audio = tmp_path / "input.wav"
         _write_pcm_wav(audio)
         with pytest.raises(STTError) as caught:
-            await provider.transcribe(TranscriptionRequest(audio_path=audio, timeout_seconds=0.05))
+            # Windows process startup is materially slower than fork/exec on
+            # macOS. Leave enough time for the fake CLI to publish its PID.
+            await provider.transcribe(TranscriptionRequest(audio_path=audio, timeout_seconds=0.5))
         assert caught.value.code is STTErrorCode.timeout
         pid = int(pid_file.read_text(encoding="utf-8"))
         assert not _process_exists(pid)
@@ -324,12 +335,17 @@ def test_repeated_cancellation_cannot_interrupt_process_reaping(tmp_path: Path) 
             await asyncio.sleep(0.005)
         task.cancel()
         term_file = pid_file.with_suffix(".term")
-        for _ in range(100):
-            if term_file.exists():
-                break
-            await asyncio.sleep(0.005)
-        assert term_file.exists()
-        task.cancel()
+        if os.name == "nt":
+            # Proactor subprocess terminate() maps to TerminateProcess, so
+            # there is no catchable SIGTERM grace period on Windows.
+            task.cancel()
+        else:
+            for _ in range(100):
+                if term_file.exists():
+                    break
+                await asyncio.sleep(0.005)
+            assert term_file.exists()
+            task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
         pid = int(pid_file.read_text(encoding="utf-8"))
@@ -355,18 +371,23 @@ def test_concurrent_close_waiters_join_the_same_process_cleanup(tmp_path: Path) 
             await asyncio.sleep(0.005)
         first_close = asyncio.create_task(provider.close())
         term_file = pid_file.with_suffix(".term")
-        for _ in range(100):
-            if term_file.exists():
-                break
-            await asyncio.sleep(0.005)
         second_close = asyncio.create_task(provider.close())
-        await asyncio.sleep(0)
-        assert not first_close.done()
-        assert not second_close.done()
-        first_close.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await first_close
-        await second_close
+        if os.name == "nt":
+            # Windows termination is immediate; both close waiters must still
+            # converge on the same completed cleanup without racing.
+            await asyncio.gather(first_close, second_close)
+        else:
+            for _ in range(100):
+                if term_file.exists():
+                    break
+                await asyncio.sleep(0.005)
+            await asyncio.sleep(0)
+            assert not first_close.done()
+            assert not second_close.done()
+            first_close.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await first_close
+            await second_close
         result = await asyncio.gather(transcription, return_exceptions=True)
         assert isinstance(result[0], STTError)
         pid = int(pid_file.read_text(encoding="utf-8"))

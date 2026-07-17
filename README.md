@@ -4,6 +4,8 @@
 
 完整实现、测试证据、九个堆叠 Draft PR 与延期项见 [`docs/ai_backend_mac_implementation_report.md`](docs/ai_backend_mac_implementation_report.md)。这次交付不包含 Windows UI、前台窗口捕获、全局热键、打包或真实设备体验，也不宣称 Gate B～G 已通过。
 
+Windows 当前基线、剩余风险、分阶段工程量与各阶段人工关卡见 [`docs/windows_development_plan.md`](docs/windows_development_plan.md)。Gate W0 的已批准决策和残余风险见 [`docs/gates/gate_w0.md`](docs/gates/gate_w0.md)。
+
 ## 架构
 
 ```text
@@ -47,15 +49,53 @@ uv run ruff format --check .
 uv run mypy
 ```
 
-pytest 对 `app` 与 `desktop_client` 统计分支覆盖，并设置 90% 综合门槛。CI 在 GitHub `macos-latest` 执行同一组命令。
+Windows 11 可在 PowerShell 中一键完成 `uv`、Python 3.11、锁定依赖和完整门禁初始化：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools/setup_windows.ps1
+```
+
+若只需安装环境、不立即执行完整门禁，可增加 `-SkipQualityGate`。脚本不会创建 `.env`、下载 Whisper 模型、安装 GPT-SoVITS/VTube Studio，也不会写入真实密钥或用户资产；这些能力按需单独配置。
+
+pytest 对 `app` 与 `desktop_client` 统计分支覆盖，并设置 90% 综合门槛。CI 在 GitHub `macos-latest` 与 `windows-latest` 执行同一组命令。
 
 ## 启动后端
 
 ```bash
-uv run python app/main.py
+uv run megumin-companion-api --check-config
+uv run megumin-companion-api --serve
 ```
 
-默认监听 `127.0.0.1:8765`。主要入口：
+也可以使用 `uv run python -m app --serve`。`--help`、`--version` 和
+`--check-config` 只读取/校验配置，不启动数据库、设备或网络。默认配置作为
+`app.resources` 随 editable/wheel 安装；用户覆盖位于
+`%LOCALAPPDATA%\MeguminCompanion\config\settings.yaml`。仓库根的 `config.yaml`
+只是显式开发覆盖，使用方式为：
+
+```bash
+uv run megumin-companion-api --config config.yaml --serve
+```
+
+配置优先级固定为 package defaults → LocalAppData 用户设置 → 显式开发配置/
+环境覆盖。程序不会从 CWD 或配置目录自动发现 `.env`；开发时必须显式传入：
+
+```bash
+uv run megumin-companion-api --config config.yaml --env-file .env --serve
+```
+
+旧仓库 `data/` 只通过显式迁移入口导入。迁移只复制数据库与模型，跳过日志、
+缓存、临时录音和 secret，在 staging 校验后原子启用，并始终保留旧源：
+
+```bash
+uv run megumin-companion-api --migrate-from /path/to/old/data
+```
+
+迁移前若 LocalAppData 目标已存在会拒绝覆盖/合并。旧版无 `schema_version` 的
+用户设置可先通过 `--check-config` 只读预检，再显式执行 `--upgrade-settings`；写入
+使用原子替换并保留 `settings.yaml.bak`。
+
+当前显式开发 API 默认监听 `127.0.0.1:8765`；W04 将进一步关闭生产网络面并加固
+`--dev-api` 语义。主要入口：
 
 - `GET /health`
 - `POST /api/chat`
@@ -73,7 +113,9 @@ uv run python app/main.py
 
 ### OpenAI-compatible LLM
 
-在 `config.yaml` 配置 provider、base URL、model，并把专用且额度受限的密钥放入未跟踪的 `.env`：
+在 `config.yaml` 配置 provider、base URL、model，使用 `--config config.yaml` 显式加载。
+开发模式可把专用且额度受限的密钥放入未跟踪的 `.env`，但必须同时显式传
+`--env-file .env`：
 
 ```text
 COMPANION_LLM_API_KEY=...
@@ -126,4 +168,4 @@ tools/                    Gate A 与 STT 人工冒烟工具
 docs/                     范围、架构、验收记录与实现报告
 ```
 
-产品范围、隐私和资产边界以 [`docs/day1_scope_freeze.md`](docs/day1_scope_freeze.md) 为准。任何真实设备、Windows 或人工体验验收都应按最终报告中的清单单独执行。
+产品范围、隐私和资产边界以 [`docs/windows_development_plan.md`](docs/windows_development_plan.md) 第 1.3 节及 [`docs/decisions/w00_owner_decisions.md`](docs/decisions/w00_owner_decisions.md) 为准。任何真实设备、Windows 或人工体验验收都必须按对应 Gate 单独执行。

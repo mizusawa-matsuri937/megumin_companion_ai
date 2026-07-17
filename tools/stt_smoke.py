@@ -11,7 +11,6 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.config import load_settings  # noqa: E402
-from app.config.settings import DEFAULT_CONFIG_PATH, DEFAULT_ENV_PATH, PROJECT_ROOT  # noqa: E402
 from desktop_client.inputs import (  # noqa: E402
     TranscriptionRequest,
     build_stt_provider,
@@ -19,14 +18,10 @@ from desktop_client.inputs import (  # noqa: E402
 )
 
 
-def _resolved(path: Path) -> Path:
-    return path if path.is_absolute() else PROJECT_ROOT / path
-
-
 def _arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
-    parser.add_argument("--env", type=Path, default=DEFAULT_ENV_PATH)
+    parser.add_argument("--config", type=Path)
+    parser.add_argument("--env-file", type=Path)
     parser.add_argument(
         "--mode",
         choices=("check", "file", "microphone"),
@@ -39,12 +34,12 @@ def _arguments() -> argparse.Namespace:
 
 async def _run() -> None:
     args = _arguments()
-    settings = load_settings(args.config, args.env)
+    settings = load_settings(args.config, args.env_file)
     if not settings.stt.enabled:
         raise SystemExit("STT 默认关闭；请先在本地配置中显式设置 stt.enabled=true。")
 
-    executable = _resolved(settings.stt.executable)
-    model = _resolved(settings.stt.model_path)
+    executable = settings.stt_executable_path()
+    model = settings.stt_model_path()
     missing = [str(path) for path in (executable, model) if not path.is_file()]
     if missing:
         raise SystemExit("缺少本地 whisper.cpp 运行文件：" + ", ".join(missing))
@@ -79,7 +74,7 @@ async def _run() -> None:
     recorder = build_voice_input(settings)
     assert recorder is not None
     try:
-        await asyncio.to_thread(input, "按回车开始录音（可能触发 macOS 麦克风权限提示）...")
+        await asyncio.to_thread(input, "按回车开始录音（可能触发系统麦克风权限提示）...")
         await recorder.start()
         await asyncio.to_thread(input, "正在录音；按回车停止并进行本地转写...")
         message = await recorder.stop()

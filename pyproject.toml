@@ -15,9 +15,16 @@ dependencies = [
     "python-dotenv>=1.1,<2",
     "pyyaml>=6,<7",
     "sounddevice>=0.5,<1",
+    "tzdata>=2025.2,<2027; sys_platform == 'win32'",
     "uvicorn>=0.30,<1",
     "websockets>=15,<17",
 ]
+
+[project.scripts]
+megumin-companion-api = "app.cli:main"
+
+[project.gui-scripts]
+megumin-companion-desktop = "desktop_client.entrypoint:main"
 
 [project.optional-dependencies]
 perception = [

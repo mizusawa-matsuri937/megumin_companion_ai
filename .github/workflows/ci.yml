@@ -1,4 +1,4 @@
-name: macOS quality gate
+name: cross-platform quality gate
 
 on:
   pull_request:
@@ -7,7 +7,7 @@ on:
       - "codex/**"
 
 concurrency:
-  group: macos-${{ github.workflow }}-${{ github.ref }}
+  group: quality-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -15,7 +15,13 @@ permissions:
 
 jobs:
   quality:
-    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - macos-latest
+          - windows-latest
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4

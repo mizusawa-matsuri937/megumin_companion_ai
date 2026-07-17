@@ -107,9 +107,7 @@ def configure_logging(settings: Settings, *, file_path: Path | None = None) -> l
     if settings.logging.console_enabled:
         logger.addHandler(_handler(sys.stdout, redactor))
     if settings.logging.file_enabled:
-        target = file_path or settings.logging.file_path
-        if not target.is_absolute():
-            target = Path.cwd() / target
+        target = file_path or settings.log_file_path()
         target.parent.mkdir(parents=True, exist_ok=True)
         file_handler = logging.FileHandler(target, encoding="utf-8")
         file_handler.setFormatter(JsonFormatter(redactor))

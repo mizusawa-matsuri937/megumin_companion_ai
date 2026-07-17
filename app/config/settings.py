@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import os
 from collections.abc import Mapping
+from copy import deepcopy
+from importlib import resources
 from pathlib import Path
 from typing import Any, Literal
 
@@ -19,9 +21,11 @@ from pydantic import (
     model_validator,
 )
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config.yaml"
-DEFAULT_ENV_PATH = PROJECT_ROOT / ".env"
+from app.paths import AppPathError, AppPaths
+
+DEFAULT_CONFIG_PACKAGE = "app.resources"
+DEFAULT_CONFIG_NAME = "default_config.yaml"
+CURRENT_SETTINGS_SCHEMA_VERSION = 1
 
 
 class ConfigurationError(RuntimeError):
@@ -206,6 +210,11 @@ class PipelineConfig(StrictModel):
 
 
 class Settings(StrictModel):
+    schema_version: int = Field(
+        default=CURRENT_SETTINGS_SCHEMA_VERSION,
+        ge=CURRENT_SETTINGS_SCHEMA_VERSION,
+        le=CURRENT_SETTINGS_SCHEMA_VERSION,
+    )
     app: AppConfig = Field(default_factory=AppConfig)
     server: ServerConfig = Field(default_factory=ServerConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
@@ -221,6 +230,60 @@ class Settings(StrictModel):
     pipeline: PipelineConfig = Field(default_factory=PipelineConfig)
 
     _environment: dict[str, str] = PrivateAttr(default_factory=dict)
+    _paths: AppPaths = PrivateAttr(default_factory=AppPaths.discover)
+    _config_source: str = PrivateAttr(default="programmatic settings")
+    _settings_schema_upgrade_required: bool = PrivateAttr(default=False)
+
+    @property
+    def config_source(self) -> str:
+        """Return a non-sensitive description of the active configuration source."""
+
+        return self._config_source
+
+    @property
+    def paths(self) -> AppPaths:
+        return self._paths
+
+    @property
+    def settings_schema_upgrade_required(self) -> bool:
+        """Whether user settings were upgraded in memory but not written back."""
+
+        return self._settings_schema_upgrade_required
+
+    def log_file_path(self) -> Path:
+        return self._managed_path(self._paths.logs, self.logging.file_path, "日志")
+
+    def database_path(self) -> Path:
+        return self._managed_path(self._paths.state, self.storage.database_path, "数据库")
+
+    def vts_token_path(self) -> Path:
+        return self._managed_path(self._paths.secrets, self.vts.token_path, "VTS token")
+
+    def tts_output_directory(self) -> Path:
+        return self._managed_path(self._paths.temp / "audio", self.tts.output_directory, "TTS 临时")
+
+    def tts_cache_directory(self) -> Path:
+        return self._managed_path(self._paths.audio_cache, self.tts.cache_directory, "TTS 缓存")
+
+    def mock_audio_directory(self) -> Path:
+        return self._managed_path(
+            self._paths.temp / "audio", self.pipeline.audio_cache_path, "Mock 音频"
+        )
+
+    def stt_temporary_directory(self) -> Path:
+        return self._managed_path(self._paths.temp, self.stt.temporary_directory, "STT 临时")
+
+    def stt_executable_path(self) -> Path:
+        return self._paths.external_or_model(self.stt.executable, category="STT 可执行文件")
+
+    def stt_model_path(self) -> Path:
+        return self._paths.external_or_model(self.stt.model_path, category="STT 模型")
+
+    def _managed_path(self, base: Path, value: Path, category: str) -> Path:
+        try:
+            return self._paths.managed(base, value, category=category)
+        except AppPathError as exc:
+            raise ConfigurationError(str(exc)) from exc
 
     def require_secret(self, env_name: str) -> SecretStr:
         """Return a configured secret without exposing it in repr or serialization."""
@@ -228,8 +291,8 @@ class Settings(StrictModel):
         value = self._environment.get(env_name, "").strip()
         if not value or value == "replace_me":
             raise ConfigurationError(
-                f"缺少必需的密钥环境变量 {env_name}。请复制 .env.example 为 .env，"
-                "填入专用且额度受限的密钥；不要把 .env 提交到 Git。"
+                f"缺少必需的密钥 {env_name}。开发模式只能通过显式 --env-file 或进程环境"
+                "提供；生产密钥必须在 W03 后重新输入到 DPAPI secret store。"
             )
         return SecretStr(value)
 
@@ -279,28 +342,135 @@ ENV_OVERRIDES: dict[str, tuple[str, str]] = {
 }
 
 
-def _read_yaml(path: Path) -> dict[str, Any]:
-    if not path.is_file():
-        raise ConfigurationError(
-            f"配置文件不存在：{path}。请从仓库根目录运行，或显式传入有效配置路径。"
-        )
+LEGACY_PATH_REWRITES: tuple[tuple[str, str, str, str], ...] = (
+    ("logging", "file_path", "data/logs/app.jsonl", "app.jsonl"),
+    (
+        "tts",
+        "output_directory",
+        "data/cache/audio/gpt-sovits/ephemeral",
+        "tts/gpt-sovits/ephemeral",
+    ),
+    (
+        "tts",
+        "cache_directory",
+        "data/cache/audio/gpt-sovits/persistent",
+        "tts/gpt-sovits/persistent",
+    ),
+    ("vts", "token_path", "data/private/vts-token.json", "vts-token.json"),
+    ("storage", "database_path", "data/private/companion.sqlite3", "companion.sqlite3"),
+    ("stt", "model_path", "data/models/whisper/ggml-base.bin", "whisper/ggml-base.bin"),
+    ("stt", "temporary_directory", "data/private/stt", "stt"),
+    ("pipeline", "audio_cache_path", "data/cache/audio/mock", "mock"),
+)
+
+
+def _parse_yaml(content: str, *, source: str) -> dict[str, Any]:
     try:
-        content = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except (OSError, yaml.YAMLError) as exc:
-        raise ConfigurationError(f"无法读取配置文件 {path}：{exc}") from exc
-    if content is None:
+        parsed = yaml.safe_load(content)
+    except yaml.YAMLError as exc:
+        raise ConfigurationError(f"无法解析{source}：{exc}") from exc
+    if parsed is None:
         return {}
-    if not isinstance(content, dict):
-        raise ConfigurationError(f"配置文件 {path} 的顶层必须是键值映射。")
-    return content
+    if not isinstance(parsed, dict):
+        raise ConfigurationError(f"{source}的顶层必须是键值映射。")
+    return parsed
 
 
-def _merged_environment(env_path: Path, environ: Mapping[str, str] | None) -> dict[str, str]:
-    from_file = {
-        key: value for key, value in dotenv_values(env_path).items() if isinstance(value, str)
-    }
-    process_env = dict(os.environ if environ is None else environ)
-    return {**from_file, **process_env}
+def _read_yaml_path(path: Path, *, source_label: str = "配置文件") -> dict[str, Any]:
+    source = f"{source_label} {path.name or '<unnamed>'}"
+    if not path.is_file():
+        raise ConfigurationError(f"{source}不存在；请显式传入有效路径。")
+    try:
+        content = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ConfigurationError(f"无法读取{source}：{exc.strerror or type(exc).__name__}") from exc
+    return _parse_yaml(content, source=source)
+
+
+def _read_default_yaml() -> dict[str, Any]:
+    try:
+        content = (
+            resources.files(DEFAULT_CONFIG_PACKAGE)
+            .joinpath(DEFAULT_CONFIG_NAME)
+            .read_text(encoding="utf-8")
+        )
+    except (FileNotFoundError, ModuleNotFoundError, OSError, TypeError) as exc:
+        raise ConfigurationError("内置默认配置资源不可用；安装产物可能不完整。") from exc
+    return _parse_yaml(content, source="内置默认配置")
+
+
+def _deep_merge(base: Mapping[str, Any], overlay: Mapping[str, Any]) -> dict[str, Any]:
+    merged = deepcopy(dict(base))
+    for key, value in overlay.items():
+        current = merged.get(key)
+        if isinstance(current, dict) and isinstance(value, Mapping):
+            merged[key] = _deep_merge(current, value)
+        else:
+            merged[key] = deepcopy(value)
+    return merged
+
+
+def _upgrade_config_data(data: Mapping[str, Any], *, source: str) -> tuple[dict[str, Any], bool]:
+    upgraded = deepcopy(dict(data))
+    raw_version = upgraded.get("schema_version", 0)
+    if isinstance(raw_version, bool) or not isinstance(raw_version, int) or raw_version < 0:
+        raise ConfigurationError(f"{source}的 schema_version 必须是非负整数。")
+    if raw_version > CURRENT_SETTINGS_SCHEMA_VERSION:
+        raise ConfigurationError(
+            f"{source}使用较新的设置 schema_version={raw_version}；"
+            f"当前仅支持 {CURRENT_SETTINGS_SCHEMA_VERSION}。"
+        )
+    changed = False
+    if raw_version == 0:
+        for section_name, field_name, legacy, replacement in LEGACY_PATH_REWRITES:
+            section = upgraded.get(section_name)
+            if isinstance(section, dict) and section.get(field_name) == legacy:
+                section[field_name] = replacement
+        upgraded["schema_version"] = 1
+        raw_version = 1
+        changed = True
+    if raw_version != CURRENT_SETTINGS_SCHEMA_VERSION:
+        raise ConfigurationError(f"{source}无法升级到当前设置 schema。")
+    return upgraded, changed
+
+
+def _validate_settings_data(data: Mapping[str, Any], *, source: str) -> Settings:
+    try:
+        return Settings.model_validate(data)
+    except ValidationError as exc:
+        issues = "; ".join(
+            f"{'.'.join(str(part) for part in error['loc'])}: {error['msg']}"
+            for error in exc.errors(include_input=False, include_context=False)
+        )
+        raise ConfigurationError(f"{source}无效：{issues}") from exc
+
+
+def _resolve_explicit_path(value: Path | str) -> Path:
+    candidate = Path(value).expanduser()
+    return candidate.resolve(strict=False)
+
+
+def _read_explicit_environment(
+    env_path: Path | str | None, environment: Mapping[str, str]
+) -> dict[str, str]:
+    from_file: dict[str, str] = {}
+    if env_path is not None:
+        resolved_env = _resolve_explicit_path(env_path)
+        if not resolved_env.is_file():
+            raise ConfigurationError(
+                f"开发环境文件 {resolved_env.name or '<unnamed>'}不存在；不会自动回退到仓库 .env。"
+            )
+        try:
+            from_file = {
+                key: value
+                for key, value in dotenv_values(resolved_env, interpolate=False).items()
+                if isinstance(value, str)
+            }
+        except OSError as exc:
+            raise ConfigurationError(
+                "无法读取显式开发环境文件：" + (exc.strerror or type(exc).__name__)
+            ) from exc
+    return {**from_file, **environment}
 
 
 def _apply_environment_overrides(data: dict[str, Any], environment: Mapping[str, str]) -> None:
@@ -313,29 +483,87 @@ def _apply_environment_overrides(data: dict[str, Any], environment: Mapping[str,
         section[field_name] = environment[env_name]
 
 
+def _validate_runtime_paths(settings: Settings) -> None:
+    """Validate every managed path without creating or opening it."""
+
+    settings.log_file_path()
+    settings.database_path()
+    settings.vts_token_path()
+    settings.tts_output_directory()
+    settings.tts_cache_directory()
+    settings.mock_audio_directory()
+    settings.stt_temporary_directory()
+    settings.stt_executable_path()
+    settings.stt_model_path()
+
+
 def load_settings(
-    config_path: Path | str = DEFAULT_CONFIG_PATH,
-    env_path: Path | str = DEFAULT_ENV_PATH,
+    config_path: Path | str | None = None,
+    env_path: Path | str | None = None,
     *,
     environ: Mapping[str, str] | None = None,
+    app_paths: AppPaths | None = None,
 ) -> Settings:
-    """Load YAML defaults, then overlay `.env` and process environment values."""
+    """Load defaults, user settings, then explicit development-only overrides.
 
-    resolved_config = Path(config_path).expanduser().resolve()
-    resolved_env = Path(env_path).expanduser().resolve()
-    raw_config = _read_yaml(resolved_config)
-    environment = _merged_environment(resolved_env, environ)
-    _apply_environment_overrides(raw_config, environment)
+    The loader never searches the CWD for configuration or ``.env`` files and
+    never writes an upgraded schema during preflight.
+    """
+
+    process_environment = dict(os.environ if environ is None else environ)
     try:
-        settings = Settings.model_validate(raw_config)
-    except ValidationError as exc:
-        issues = "; ".join(
-            f"{'.'.join(str(part) for part in error['loc'])}: {error['msg']}"
-            for error in exc.errors(include_input=False, include_context=False)
-        )
-        raise ConfigurationError(f"配置文件 {resolved_config} 无效：{issues}") from exc
+        paths = app_paths or AppPaths.discover(process_environment)
+    except AppPathError as exc:
+        raise ConfigurationError(str(exc)) from exc
 
-    settings._environment = environment
+    defaults, default_changed = _upgrade_config_data(_read_default_yaml(), source="内置默认配置")
+    if default_changed:
+        raise ConfigurationError("内置默认配置缺少当前 schema_version；安装产物不完整。")
+
+    source_parts = ["内置默认配置"]
+    user_changed = False
+    if paths.settings.exists():
+        user_raw = _read_yaml_path(paths.settings, source_label="用户设置")
+        user_layer, user_changed = _upgrade_config_data(user_raw, source="用户设置")
+        raw_config = _deep_merge(defaults, user_layer)
+        source_parts.append("用户设置")
+    else:
+        raw_config = deepcopy(defaults)
+
+    base_settings = _validate_settings_data(raw_config, source="基础设置")
+    recognized_process_override = any(name in process_environment for name in ENV_OVERRIDES)
+    dev_override_requested = (
+        config_path is not None or env_path is not None or recognized_process_override
+    )
+    if base_settings.app.environment == "prod" and dev_override_requested:
+        raise ConfigurationError(
+            "生产设置禁止 --config、--env-file 和 MEGUMIN_* 环境覆盖；请更新用户设置。"
+        )
+
+    effective_environment: dict[str, str] = {}
+    if base_settings.app.environment != "prod":
+        if config_path is not None:
+            resolved_config = _resolve_explicit_path(config_path)
+            explicit_raw = _read_yaml_path(resolved_config, source_label="开发配置")
+            explicit_layer, _ = _upgrade_config_data(explicit_raw, source="开发配置")
+            raw_config = _deep_merge(raw_config, explicit_layer)
+            source_parts.append(f"开发配置 {resolved_config.name or '<unnamed>'}")
+        effective_environment = _read_explicit_environment(env_path, process_environment)
+        if env_path is not None:
+            source_parts.append("显式开发环境文件")
+        if recognized_process_override:
+            source_parts.append("开发环境覆盖")
+        _apply_environment_overrides(raw_config, effective_environment)
+
+    settings = _validate_settings_data(raw_config, source=" + ".join(source_parts))
+    if settings.app.environment == "prod" and dev_override_requested:
+        raise ConfigurationError("不能通过开发覆盖进入生产模式；请把 production 设置写入用户设置。")
+
+    settings._environment = effective_environment
+    settings._paths = paths
+    settings._config_source = " + ".join(source_parts)
+    settings._settings_schema_upgrade_required = user_changed
+    _validate_runtime_paths(settings)
     if settings.llm.provider.lower() not in {"none", "mock"}:
         settings.require_llm_api_key()
     return settings
