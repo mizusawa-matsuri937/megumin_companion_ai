@@ -547,7 +547,7 @@ flowchart LR
 
 #### PR W04：关闭生产网络面并加固 dev API
 
-- **状态：2026-07-17 实现、自动验收与项目所有者人工安全审计均已通过；允许合并 PR #14，确认合并后进入 W05。** 实现、攻击证据、残余风险接受和非独立审计记录见 [`implementation/w04_secure_dev_api.md`](./implementation/w04_secure_dev_api.md)。
+- **状态：2026-07-17 实现、自动验收与项目所有者人工安全审计均已通过；PR #14 已合并，W04 已关闭。** 实现、攻击证据、残余风险接受和非独立审计记录见 [`implementation/w04_secure_dev_api.md`](./implementation/w04_secure_dev_api.md)。
 - **责任：AI-R；安全签字 H。依赖：W01、W03。风险：P0-01、P1-17。**
 - GUI 生产入口不包含 Uvicorn 生命周期；dev API 必须显式 flag 才启动。
 - 非 loopback host 直接配置错误；不提供“忽略风险继续”的开关。
@@ -561,6 +561,7 @@ flowchart LR
 
 #### PR W05：安装产物与源码双轨 CI smoke
 
+- **状态：2026-07-17 已实现且本地自动验收通过；GitHub 双 OS checks、Action/仓库设置人工审计与 Gate W1 结论待完成，保持 Draft，不得进入 W06。** 实现证据、当前 GitHub 设置差距和详细人工步骤见 [`implementation/w05_installed_artifact_ci.md`](./implementation/w05_installed_artifact_ci.md)。
 - **责任：AI-F（workflow/fixture）+ AI-R（供应链配置）。依赖：W01～W04。风险：P2-07、P2-08。**
 - Windows/macOS 源码质量门保留；新增 wheel 隔离安装、仓库外 CLI/ASGI、任意 CWD smoke。
 - push 覆盖 `main` 和实际开发分支；required checks 与 branch protection 由仓库管理员配置。
@@ -1018,9 +1019,9 @@ flowchart LR
 下一步只做以下五件事：
 
 1. W00 已在 [`gates/gate_w0.md`](./gates/gate_w0.md) 有条件批准；保持非独立自审、云视觉、安装器和设备残余风险可见。
-2. W01～W03 已按顺序完成；各自的自动证据、人工边界与关闭记录以对应 implementation 文档为准。
-3. W04 实现、攻击矩阵、产物验证与项目所有者非独立人工安全审计均已通过；当前唯一下一动作是合并 PR #14 并确认 W04 关闭。
-4. PR #14 合并后只开始 W05 安装产物与源码双轨 CI smoke；不得同时实现 W06 或后续阶段。
+2. W01～W04 已按顺序完成；PR #14 已合并，自动证据、人工边界与关闭记录以对应 implementation 文档为准。
+3. 当前只完成 W05 安装产物与源码双轨 CI 的实现、自动验证、Draft PR 和人工供应链/仓库设置审计；不得同时实现 W06 或后续阶段。
+4. 只有 W05 人工审计明确通过并关闭 Gate W1 后才允许开始 W06；private Free 仓库无 branch protection 的例外若被接受，必须写入 W05 关闭记录和 ADR，不能伪装成已配置保护。
 5. W12 通过后才开始 W13 PySide6 spike；窗口捕获和安装器仍分别等待其依赖 PR。任何跳过顺序都要在 ADR 中说明理由和新增风险。
 
 ## 12. 官方平台依据
