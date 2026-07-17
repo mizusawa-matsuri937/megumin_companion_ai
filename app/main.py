@@ -26,6 +26,7 @@ from app.core import TurnService
 from app.memory.analyzer import LLMMemoryCandidateAnalyzer
 from app.memory.runtime import MemoryRuntime, create_memory_runtime
 from app.proactive import ProactivePolicy, ProactiveRuntime
+from app.runtime_storage import prepare_runtime_storage
 
 
 async def _settle_resource_close(
@@ -61,12 +62,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        runtime_storage = prepare_runtime_storage(resolved_settings.paths)
         logger = configure_logging(resolved_settings)
         app.state.settings = resolved_settings
         app.state.logger = logger
         app.state.memory_runtime = None
         app.state.proactive_runtime = None
         app.state.turn_service = None
+        app.state.temp_asset_registry = runtime_storage.temp_registry
         standalone_analyzer_provider: LLMProvider | None = None
         try:
             memory_runtime: MemoryRuntime | None = None
@@ -126,6 +129,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     prompt_context_source=(
                         memory_runtime.context_source if memory_runtime is not None else None
                     ),
+                    temp_registry=runtime_storage.temp_registry,
                 ),
                 observers=observers,
                 event_sinks=event_sinks,
@@ -141,6 +145,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 environment=resolved_settings.app.environment,
                 host=resolved_settings.server.host,
                 port=resolved_settings.server.port,
+                temp_deleted=runtime_storage.scavenge_report.deleted,
+                temp_pending=runtime_storage.scavenge_report.pending,
+                temp_rejected=runtime_storage.scavenge_report.rejected,
             )
             yield
         finally:

@@ -84,13 +84,16 @@ def test_missing_config_has_actionable_error(tmp_path: Path) -> None:
     assert str(tmp_path) not in str(error.value)
 
 
-def test_enabled_provider_requires_named_secret(tmp_path: Path) -> None:
+def test_enabled_provider_secret_check_is_deferred_without_disk_access(tmp_path: Path) -> None:
     config_path = tmp_path / "config.yaml"
     write_config(config_path, provider="deepseek")
+    paths = local_paths(tmp_path)
 
+    settings = load_settings(config_path, environ={}, app_paths=paths)
+
+    assert not paths.root.exists()
     with pytest.raises(ConfigurationError, match="TEST_LLM_KEY") as error:
-        load_settings(config_path, environ={}, app_paths=local_paths(tmp_path))
-
+        settings.require_llm_api_key()
     assert "--env-file" in str(error.value)
     assert "DPAPI" in str(error.value)
 
@@ -99,12 +102,13 @@ def test_placeholder_is_not_accepted_as_a_secret(tmp_path: Path) -> None:
     config_path = tmp_path / "config.yaml"
     write_config(config_path, provider="deepseek")
 
+    settings = load_settings(
+        config_path,
+        environ={"TEST_LLM_KEY": "replace_me"},
+        app_paths=local_paths(tmp_path),
+    )
     with pytest.raises(ConfigurationError, match="缺少必需的密钥"):
-        load_settings(
-            config_path,
-            environ={"TEST_LLM_KEY": "replace_me"},
-            app_paths=local_paths(tmp_path),
-        )
+        settings.require_llm_api_key()
 
 
 def test_unknown_config_key_is_reported(tmp_path: Path) -> None:

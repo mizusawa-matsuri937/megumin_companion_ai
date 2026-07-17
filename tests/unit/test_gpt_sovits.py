@@ -15,7 +15,10 @@ import httpx
 import pytest
 from app.clients.tts.gpt_sovits import GPTSoVITSPreset, GPTSoVITSProvider, _await_with_token
 from app.core import CancellationToken
+from app.paths import AppPaths
 from app.schemas import AudioResult, TTSJob
+from app.temp_assets import TempAssetRegistry
+from app.windows_security import PortableDirectorySecurity
 
 
 def _wave_bytes(*, sample_rate: int = 16_000, frame_count: int = 160) -> bytes:
@@ -889,6 +892,53 @@ def test_cache_enforces_lru_capacity_and_ttl_without_deleting_leased_audio(
         assert fourth.audio_path is not None and fourth.audio_path.exists()
         await provider.discard(fourth)
         assert sum(path.stat().st_size for path in cache_dir.glob("*.wav")) <= len(audio) * 2
+        await provider.close()
+        await client.aclose()
+
+    asyncio.run(scenario())
+
+
+def test_uncached_audio_part_and_final_are_tracked_until_discard(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        audio = _wave_bytes()
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                headers={"content-type": "audio/wav"},
+                content=audio,
+                request=request,
+            )
+
+        paths = AppPaths(root=tmp_path / "private")
+        registry = TempAssetRegistry(
+            paths,
+            minimum_scavenge_age_seconds=0.0,
+            directory_security=PortableDirectorySecurity(),
+        )
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        provider = GPTSoVITSProvider(
+            "http://gpt-sovits.local",
+            paths.temp / "audio" / "tts",
+            _presets(),
+            client=client,
+            temp_registry=registry,
+        )
+        token = CancellationToken("turn_registry")
+
+        result = await provider.synthesize(_job(token), segment_index=0, token=token)
+
+        assert result.success
+        assert result.audio_path is not None and result.audio_path.exists()
+        entries = registry.entries()
+        assert len(entries) == 1
+        assert entries[0].relative_path == result.audio_path.relative_to(paths.temp).as_posix()
+        assert entries[0].kind.value == "tts_wav"
+        assert not tuple(result.audio_path.parent.glob("*.part"))
+
+        await provider.discard(result)
+        assert registry.entries() == ()
+        assert not result.audio_path.exists()
         await provider.close()
         await client.aclose()
 

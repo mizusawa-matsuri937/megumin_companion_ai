@@ -203,8 +203,11 @@ def test_feature_memory_and_history_control_plane(tmp_path: Path) -> None:
         assert disabled.json()["enabled"] is False
 
 
-def test_private_state_api_is_explicitly_unavailable_when_storage_is_off() -> None:
+def test_private_state_api_is_explicitly_unavailable_when_storage_is_off(
+    tmp_path: Path,
+) -> None:
     settings = Settings(logging=LoggingConfig(console_enabled=False, file_enabled=False))
+    settings._paths = AppPaths(root=tmp_path / "app")
     app = create_app(settings)
     with TestClient(app) as client:
         response = client.get("/api/features")

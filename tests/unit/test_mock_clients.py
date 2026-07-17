@@ -8,8 +8,11 @@ import pytest
 from app.clients.llm import MockLLMProvider
 from app.clients.tts import MockTTSProvider
 from app.core import CancellationToken
+from app.paths import AppPaths
 from app.pipelines.audio_player import SystemAudioPlayer
 from app.schemas import TTSJob, UserMessage
+from app.temp_assets import TempAssetRegistry
+from app.windows_security import PortableDirectorySecurity
 
 
 def test_mock_llm_emits_exact_controllable_deltas() -> None:
@@ -65,6 +68,45 @@ def test_mock_tts_writes_valid_pcm_wave_and_discards_it(tmp_path: Path) -> None:
 
     assert (channels, sample_width, sample_rate) == (1, 2, 16_000)
     assert not path.exists()
+
+
+def test_mock_tts_registers_before_write_and_unregisters_after_discard(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        paths = AppPaths(root=tmp_path / "private")
+        registry = TempAssetRegistry(
+            paths,
+            minimum_scavenge_age_seconds=0.0,
+            directory_security=PortableDirectorySecurity(),
+        )
+        provider = MockTTSProvider(
+            paths.temp / "audio" / "mock",
+            duration_ms=0,
+            synthesis_delay_seconds=0,
+            temp_registry=registry,
+        )
+        token = CancellationToken("turn_registry")
+        result = await provider.synthesize(
+            TTSJob(
+                turn_id="turn_registry",
+                segment_id="segment_registry",
+                text="registry",
+                cancellation_token_id=token.token_id,
+            ),
+            segment_index=0,
+            token=token,
+        )
+
+        assert result.audio_path is not None and result.audio_path.exists()
+        assert [entry.relative_path for entry in registry.entries()] == [
+            result.audio_path.relative_to(paths.temp).as_posix()
+        ]
+        await provider.discard(result)
+        assert registry.entries() == ()
+        assert not result.audio_path.exists()
+
+    asyncio.run(scenario())
 
 
 def test_system_player_reuses_one_stream_for_adjacent_segments(

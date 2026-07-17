@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import shutil
 import tempfile
 import wave
 from collections.abc import Awaitable, Callable
@@ -21,6 +22,7 @@ from uuid import uuid4
 
 from app.core.contracts import UserMessageSink
 from app.schemas import InputMode, TurnState, UserMessage
+from app.temp_assets import TempAssetKind, TempAssetRegistry
 
 from desktop_client.inputs.stt_contracts import (
     STTProvider,
@@ -151,11 +153,13 @@ class PushToTalkRecorder:
         *,
         config: PushToTalkConfig | None = None,
         watchdog_wait: Callable[[float], Awaitable[None]] | None = None,
+        temp_registry: TempAssetRegistry | None = None,
     ) -> None:
         self._source = source
         self._stt = stt
         self._config = config or PushToTalkConfig()
         self._watchdog_wait = watchdog_wait or asyncio.sleep
+        self._temp_registry = temp_registry
         self._state = RecordingState.idle
         self._pcm = bytearray()
         self._recording_id: str | None = None
@@ -339,38 +343,37 @@ class PushToTalkRecorder:
                 raise VoiceInputError(VoiceInputErrorCode.empty_recording, "录音中没有音频帧")
 
             temporary_root = self._config.temporary_directory
-            if temporary_root is not None:
-                temporary_root.mkdir(parents=True, exist_ok=True)
-            with tempfile.TemporaryDirectory(
-                prefix="companion-recording-", dir=temporary_root
-            ) as root:
-                audio_path = Path(root) / "input.wav"
-                await _drainable_to_thread(lambda: self._write_wav(audio_path, pcm))
-                async with self._lock:
-                    if self._cancel_requested:
-                        raise asyncio.CancelledError
-                    task = asyncio.create_task(
-                        self._stt.transcribe(
-                            TranscriptionRequest(
-                                audio_path=audio_path,
-                                language=self._config.language,
-                                timeout_seconds=self._config.transcription_timeout_seconds,
-                            )
-                        ),
-                        name="local-stt-transcription",
+            if temporary_root is None:
+                with tempfile.TemporaryDirectory(prefix="companion-recording-") as root_name:
+                    return await self._transcribe_recording(
+                        Path(root_name), pcm, session_id=session_id, user_id=user_id
                     )
-                    self._transcription_task = task
-                transcript = await task
-                return UserMessage(
-                    session_id=session_id,
-                    user_id=user_id,
-                    text=transcript.text,
-                    input_mode=InputMode.voice,
-                    metadata={
-                        "stt_language": transcript.language,
-                        "stt_segment_count": transcript.segment_count,
-                    },
+            root = temporary_root / f"companion-recording-{uuid4().hex}"
+            asset_id: str | None = None
+            registry = self._temp_registry
+            if registry is not None:
+                entry = await _drainable_to_thread(
+                    lambda: registry.register(
+                        root,
+                        TempAssetKind.recording_directory,
+                    )
                 )
+                asset_id = entry.asset_id
+            root.mkdir(parents=True)
+            try:
+                return await self._transcribe_recording(
+                    root, pcm, session_id=session_id, user_id=user_id
+                )
+            finally:
+                if registry is not None and asset_id is not None:
+                    await _drainable_to_thread(
+                        lambda: registry.delete(
+                            asset_id,
+                            ignore_retry_deadline=True,
+                        )
+                    )
+                else:
+                    await _drainable_to_thread(lambda: shutil.rmtree(root, ignore_errors=True))
         finally:
             _wipe(pcm)
             async with self._lock:
@@ -381,6 +384,42 @@ class PushToTalkRecorder:
                     self._operation_task = None
                 if self._state is not RecordingState.closed:
                     self._reset_to_idle()
+
+    async def _transcribe_recording(
+        self,
+        root: Path,
+        pcm: bytearray,
+        *,
+        session_id: str,
+        user_id: str,
+    ) -> UserMessage:
+        audio_path = root / "input.wav"
+        await _drainable_to_thread(lambda: self._write_wav(audio_path, pcm))
+        async with self._lock:
+            if self._cancel_requested:
+                raise asyncio.CancelledError
+            task = asyncio.create_task(
+                self._stt.transcribe(
+                    TranscriptionRequest(
+                        audio_path=audio_path,
+                        language=self._config.language,
+                        timeout_seconds=self._config.transcription_timeout_seconds,
+                    )
+                ),
+                name="local-stt-transcription",
+            )
+            self._transcription_task = task
+        transcript = await task
+        return UserMessage(
+            session_id=session_id,
+            user_id=user_id,
+            text=transcript.text,
+            input_mode=InputMode.voice,
+            metadata={
+                "stt_language": transcript.language,
+                "stt_segment_count": transcript.segment_count,
+            },
+        )
 
     async def stop_and_send(
         self,

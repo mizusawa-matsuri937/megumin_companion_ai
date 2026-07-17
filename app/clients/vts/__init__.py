@@ -16,11 +16,16 @@ from app.clients.vts.client import (
 )
 from app.clients.vts.event_sink import VTSTurnEventSink
 from app.clients.vts.expression_mapper import ExpressionMapper
-from app.clients.vts.token_store import FileTokenStore, TokenStore, VTSToken
+from app.clients.vts.token_store import (
+    DPAPITokenStore,
+    TokenStore,
+    VTSToken,
+    read_legacy_plaintext_token,
+)
 
 __all__ = [
     "ExpressionMapper",
-    "FileTokenStore",
+    "DPAPITokenStore",
     "TokenStore",
     "VTSAPIError",
     "VTSAction",
@@ -34,4 +39,5 @@ __all__ = [
     "VTSRequestTimeout",
     "VTSToken",
     "VTSTurnEventSink",
+    "read_legacy_plaintext_token",
 ]

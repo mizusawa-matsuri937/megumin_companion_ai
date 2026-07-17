@@ -13,6 +13,7 @@ from uuid import uuid4
 from app.clients.vts.client import VTSAPIError, VTSConnectionError, VTSError
 from app.clients.vts.expression_mapper import ExpressionMapper
 from app.clients.vts.token_store import TokenStore, VTSToken
+from app.secret_store import SecretStoreError
 
 
 class VTSBridgeState(StrEnum):
@@ -183,7 +184,12 @@ class VTSBridge:
                     if self._stop.is_set():
                         break
                     self._reconnect_count += 1
-                    error_code = exc.code if isinstance(exc, VTSError) else "vts_unavailable"
+                    if isinstance(exc, VTSError):
+                        error_code = exc.code
+                    elif isinstance(exc, SecretStoreError):
+                        error_code = exc.code.value
+                    else:
+                        error_code = "vts_unavailable"
                     self._set_state(VTSBridgeState.backoff, error_code)
                     await _safe_close(client)
                     self._active_client = None

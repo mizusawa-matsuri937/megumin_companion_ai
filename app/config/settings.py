@@ -564,6 +564,4 @@ def load_settings(
     settings._config_source = " + ".join(source_parts)
     settings._settings_schema_upgrade_required = user_changed
     _validate_runtime_paths(settings)
-    if settings.llm.provider.lower() not in {"none", "mock"}:
-        settings.require_llm_api_key()
     return settings

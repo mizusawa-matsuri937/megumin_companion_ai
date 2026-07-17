@@ -11,6 +11,7 @@ from app.clients.vts.bridge import VTSBridge, VTSBridgeSnapshot, VTSBridgeState
 from app.clients.vts.client import VTSAPIError, VTSConnectionError
 from app.clients.vts.expression_mapper import ExpressionMapper
 from app.clients.vts.token_store import VTSToken
+from app.secret_store import VTS_TOKEN_ID, SecretStoreError, SecretStoreErrorCode
 
 
 @dataclass
@@ -94,6 +95,11 @@ class _SlowCloseClient(_FakeClient):
         self.close_started.set()
         await self.finish_close.wait()
         self._closed.set()
+
+
+class _CorruptTokenStore(_MemoryTokenStore):
+    async def load(self) -> VTSToken | None:
+        raise SecretStoreError(SecretStoreErrorCode.corrupt, VTS_TOKEN_ID)
 
 
 async def _wait_until(predicate: Callable[[], bool], timeout: float = 1.0) -> None:
@@ -287,6 +293,33 @@ def test_unmapped_and_missing_hotkeys_are_isolated_and_next_action_still_runs() 
         await _wait_until(lambda: client.triggered == ["neutral-key"])
         assert bridge.snapshot().processed_actions == 1
         assert bridge.snapshot().error_code is None
+        await bridge.close()
+
+    asyncio.run(scenario())
+
+
+def test_corrupt_encrypted_token_exposes_only_stable_error_code() -> None:
+    async def scenario() -> None:
+        snapshots: list[VTSBridgeSnapshot] = []
+        bridge = VTSBridge(
+            _FakeClient,
+            _CorruptTokenStore(),
+            plugin_name="Companion",
+            plugin_developer="Local User",
+            reconnect_initial_seconds=0.1,
+            reconnect_max_seconds=0.1,
+            state_listener=snapshots.append,
+        )
+
+        bridge.start()
+        await _wait_until(
+            lambda: any(
+                snapshot.error_code == SecretStoreErrorCode.corrupt.value for snapshot in snapshots
+            )
+        )
+
+        assert "authentication_token" not in repr(snapshots)
+        assert VTS_TOKEN_ID not in repr(snapshots)
         await bridge.close()
 
     asyncio.run(scenario())
