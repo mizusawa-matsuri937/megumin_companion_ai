@@ -8,7 +8,7 @@ configuration preflight free of filesystem side effects.
 from __future__ import annotations
 
 import os
-import sys
+import platform
 from collections.abc import Mapping
 from dataclasses import dataclass
 from importlib import resources
@@ -17,6 +17,14 @@ from pathlib import Path, PurePath
 
 APP_DIRECTORY_NAME = "MeguminCompanion"
 RESOURCE_PACKAGE = "app.resources"
+
+
+def _default_non_windows_data_home(home: Path, platform_name: str) -> Path:
+    """Return the portable data base used only by non-Windows quality gates."""
+
+    if platform_name == "Darwin":
+        return home / "Library" / "Application Support"
+    return home / ".local" / "share"
 
 
 class AppPathError(ValueError):
@@ -58,9 +66,7 @@ class AppPaths:
         if xdg_data_home:
             return cls.from_local_app_data(xdg_data_home)
         home = Path.home()
-        if sys.platform == "darwin":
-            return cls.from_local_app_data(home / "Library" / "Application Support")
-        return cls.from_local_app_data(home / ".local" / "share")
+        return cls.from_local_app_data(_default_non_windows_data_home(home, platform.system()))
 
     @property
     def resource_root(self) -> Traversable:

@@ -4,7 +4,26 @@ import os
 from pathlib import Path
 
 import pytest
-from app.paths import APP_DIRECTORY_NAME, AppPathError, AppPaths
+from app.paths import (
+    APP_DIRECTORY_NAME,
+    AppPathError,
+    AppPaths,
+    _default_non_windows_data_home,
+)
+
+
+@pytest.mark.parametrize(
+    ("platform_name", "relative_base"),
+    [
+        ("Darwin", Path("Library/Application Support")),
+        ("Linux", Path(".local/share")),
+        ("FreeBSD", Path(".local/share")),
+    ],
+)
+def test_default_non_windows_data_home(
+    tmp_path: Path, platform_name: str, relative_base: Path
+) -> None:
+    assert _default_non_windows_data_home(tmp_path, platform_name) == (tmp_path / relative_base)
 
 
 def test_redirected_local_appdata_exposes_every_managed_category(tmp_path: Path) -> None:
