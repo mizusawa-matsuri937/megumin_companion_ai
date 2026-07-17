@@ -1,0 +1,16 @@
+version: 2
+updates:
+  # GitHub Action SHAs are updated in dedicated supply-chain PRs. Python/pytest
+  # advisory changes remain separate dependency PRs with their own lock diff.
+  - package-ecosystem: github-actions
+    directory: /
+    target-branch: agent/windows-development-baseline
+    schedule:
+      interval: weekly
+      day: monday
+      time: "05:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 3
+    rebase-strategy: auto
+    commit-message:
+      prefix: "build(actions)"

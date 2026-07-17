@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling>=1.27,<2"]
+requires = ["hatchling==1.31.0"]
 build-backend = "hatchling.build"
 
 [project]
@@ -79,4 +79,10 @@ strict = true
 pretty = true
 show_error_codes = true
 warn_unreachable = true
-files = ["app", "desktop_client", "tests"]
+files = [
+    "app",
+    "desktop_client",
+    "tests",
+    "tools/installed_wheel_smoke.py",
+    "tools/w05_ci_smoke.py",
+]

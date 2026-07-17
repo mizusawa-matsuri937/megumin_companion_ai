@@ -27,3 +27,10 @@ For ordinary project questions, documentation edits, folder creation, file inspe
 - Use the `Wxx` identifier in the PR title and make the current Windows development plan the authority when older plans or PR descriptions conflict with it.
 - Include the PR URL, validation evidence, remaining manual gates, and any publication blocker in the completion report.
 - Never include unrelated user changes in a `Wxx` PR without explicit authorization.
+
+## Guarded Merge Without Platform Enforcement
+
+- When an owner explicitly accepts a missing branch-protection or ruleset Gate, do not treat that acceptance alone as sufficient evidence that the intended PR is safe to merge.
+- First record the accepted residual risks, push the closing record, wait for every required check on that exact final head, and re-read the PR base, head, diff scope, reviews, conversations, mergeability, and draft state.
+- Merge only with an expected-head guard such as `--match-head-commit`; abort if the head changed, a check is not successful, the base changed unexpectedly, or the diff contains unreviewed scope.
+- After the merge, verify the remote PR state and merge commit instead of inferring success from the merge command's exit code.
