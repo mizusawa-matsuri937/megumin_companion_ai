@@ -96,6 +96,76 @@ def test_provider_rejects_unsafe_limits(tmp_path: Path, changes: dict[str, objec
         GPTSoVITSProvider(**options)  # type: ignore[arg-type]
 
 
+def test_reference_scope_distinguishes_local_file_from_service_resource(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        local_reference = tmp_path / "private-user-reference.wav"
+        local_reference.write_bytes(b"fixture")
+        local = GPTSoVITSProvider(
+            "http://127.0.0.1:9880",
+            tmp_path / "out-local",
+            {
+                "default": GPTSoVITSPreset(
+                    ref_audio_path=str(local_reference),
+                    ref_audio_scope="local_file",
+                )
+            },
+        )
+        await local.close()
+
+        remote_resource = GPTSoVITSProvider(
+            "https://tts.example.invalid",
+            tmp_path / "out-remote",
+            {
+                "default": GPTSoVITSPreset(
+                    ref_audio_path="/container/voice/reference.wav",
+                    ref_audio_scope="service_resource",
+                )
+            },
+        )
+        await remote_resource.close()
+
+        private_path = str(tmp_path / "missing-private-reference.wav")
+        with pytest.raises(ValueError) as missing:
+            GPTSoVITSProvider(
+                "http://127.0.0.1:9880",
+                tmp_path / "out-missing",
+                {
+                    "default": GPTSoVITSPreset(
+                        ref_audio_path=private_path,
+                        ref_audio_scope="local_file",
+                    )
+                },
+            )
+        assert private_path not in str(missing.value)
+
+        with pytest.raises(ValueError) as remote_local:
+            GPTSoVITSProvider(
+                "https://tts.example.invalid",
+                tmp_path / "out-invalid",
+                {
+                    "default": GPTSoVITSPreset(
+                        ref_audio_path=str(local_reference),
+                        ref_audio_scope="local_file",
+                    )
+                },
+            )
+        assert str(local_reference) not in str(remote_local.value)
+
+        with pytest.raises(ValueError, match="unavailable"):
+            GPTSoVITSProvider(
+                "http://127.0.0.1:9880",
+                tmp_path / "out-relative",
+                {
+                    "default": GPTSoVITSPreset(
+                        ref_audio_path="relative-reference.wav",
+                        ref_audio_scope="local_file",
+                    )
+                },
+            )
+
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize(
     ("status", "available", "error_code"),
     [(422, True, None), (404, False, "tts_protocol_error"), (503, False, "tts_unavailable")],

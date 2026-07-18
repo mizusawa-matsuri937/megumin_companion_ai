@@ -39,6 +39,8 @@ tts:
   max_audio_bytes: 33554432
   default_preset: default
   presets: {}
+  # preset.ref_audio_scope=local_file 仅用于同机 loopback 服务且会检查本机文件；
+  # service_resource（默认）是由 GPT-SoVITS 服务解释的远端/容器内资源，不做本机路径假设。
   # 持久缓存涉及对话文本派生音频，默认关闭；启用后仍会跳过敏感文本。
   cache_enabled: false
   cache_directory: tts/gpt-sovits/persistent

@@ -182,6 +182,125 @@ def test_mismatched_response_type_is_rejected() -> None:
     asyncio.run(scenario())
 
 
+def test_malformed_server_frame_is_classified_as_protocol_error() -> None:
+    async def scenario() -> None:
+        async def handler(connection: ServerConnection) -> None:
+            await connection.recv()
+            await connection.send("{malformed-json")
+
+        server = await serve(handler, "127.0.0.1", 0)
+        client = VTSClient(_uri(server), request_timeout_seconds=1)
+        try:
+            await client.connect()
+            with pytest.raises(VTSProtocolError):
+                await client.api_state()
+        finally:
+            await client.close()
+            server.close()
+            await server.wait_closed()
+
+    asyncio.run(scenario())
+
+
+def test_fake_vts_server_validates_preflight_protocol_and_redacts_capabilities() -> None:
+    async def scenario() -> None:
+        requests: list[dict[str, Any]] = []
+
+        async def handler(connection: ServerConnection) -> None:
+            async for raw in connection:
+                request = json.loads(raw)
+                requests.append(request)
+                message_type = request["messageType"]
+                data: dict[str, Any]
+                if message_type == "APIStateRequest":
+                    data = {"active": True, "currentSessionAuthenticated": True}
+                elif message_type == "CurrentModelRequest":
+                    data = {
+                        "modelLoaded": True,
+                        "modelID": "private-model-id",
+                        "live2DModelName": "private/user/model/path.model3.json",
+                    }
+                elif message_type == "HotkeysInCurrentModelRequest":
+                    data = {
+                        "availableHotkeys": [
+                            {"hotkeyID": "neutral-key", "name": "private neutral name"},
+                            {"hotkeyID": "happy-key", "file": "private-expression.exp3.json"},
+                        ]
+                    }
+                else:
+                    raise AssertionError(f"unexpected request: {message_type}")
+                await connection.send(_response(request, data))
+
+        server = await serve(handler, "127.0.0.1", 0)
+        client = VTSClient(_uri(server), request_timeout_seconds=1)
+        try:
+            await client.connect()
+            missing = await client.preflight(frozenset({"neutral-key", "happy-key", "missing-key"}))
+            assert not missing.ready
+            assert missing.error_code == "vts_hotkey_missing"
+            assert missing.configured_hotkey_count == 3
+            assert missing.missing_hotkey_count == 1
+            assert "private" not in repr(missing)
+
+            ready = await client.preflight(frozenset({"neutral-key", "happy-key"}))
+            assert ready.ready
+            assert ready.missing_hotkey_count == 0
+            assert [request["messageType"] for request in requests] == [
+                "APIStateRequest",
+                "CurrentModelRequest",
+                "HotkeysInCurrentModelRequest",
+                "APIStateRequest",
+                "CurrentModelRequest",
+                "HotkeysInCurrentModelRequest",
+            ]
+            assert all(request["apiName"] == "VTubeStudioPublicAPI" for request in requests)
+            assert all(request["apiVersion"] == "1.0" for request in requests)
+        finally:
+            await client.close()
+            server.close()
+            await server.wait_closed()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    ("state", "model_loaded", "expected"),
+    [
+        ({"active": False, "currentSessionAuthenticated": False}, True, "vts_api_unavailable"),
+        ({"active": True, "currentSessionAuthenticated": False}, True, "vts_auth_revoked"),
+        ({"active": True, "currentSessionAuthenticated": True}, False, "vts_model_missing"),
+    ],
+)
+def test_fake_vts_server_classifies_preflight_failures(
+    state: dict[str, bool], model_loaded: bool, expected: str
+) -> None:
+    async def scenario() -> None:
+        async def handler(connection: ServerConnection) -> None:
+            async for raw in connection:
+                request = json.loads(raw)
+                if request["messageType"] == "APIStateRequest":
+                    data: dict[str, Any] = state
+                elif request["messageType"] == "CurrentModelRequest":
+                    data = {"modelLoaded": model_loaded}
+                else:
+                    data = {"availableHotkeys": [{"hotkeyID": "neutral-key"}]}
+                await connection.send(_response(request, data))
+
+        server = await serve(handler, "127.0.0.1", 0)
+        client = VTSClient(_uri(server), request_timeout_seconds=1)
+        try:
+            await client.connect()
+            result = await client.preflight(frozenset({"neutral-key"}))
+            assert not result.ready
+            assert result.error_code == expected
+        finally:
+            await client.close()
+            server.close()
+            await server.wait_closed()
+
+    asyncio.run(scenario())
+
+
 class _LifecycleConnection:
     def __init__(self) -> None:
         self.close_count = 0
