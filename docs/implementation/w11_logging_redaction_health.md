@@ -3,7 +3,7 @@
 > 基线：`7eb82f14fe1be4395b8e73373c580dde334f8863`（W05 merge commit）
 > 分支：`codex/w11-logging-redaction-health`
 > 风险：P1-11、P1-12、P2-01、P2-13
-> Gate：**OPEN；等待项目所有者明确回复“W11 审计合格”**
+> Gate：**CLOSED；项目所有者已于 2026-07-18 明确回复“W11 审计合格”**
 
 ## 已实现范围
 
@@ -79,7 +79,12 @@ retention_days: 14
 
 ## 与并行 W06/W10 的共享文件
 
-2026-07-18 只读检查时没有远端 W06/W10 open PR 或分支；以下仍按用户要求视为潜在共享面：
+2026-07-18 关闭 Gate 前二次只读检查发现 W06 Draft PR #17（head `c99b6c6d41c47ac4e6b6017605ce35d406f49c3b`）；
+W10 仍无远端分支或 open PR。W06 与 W11 的实际共享文件为 `app/api/routes.py`、`app/cli.py`、
+`app/main.py`、`tests/e2e/test_ai_backend_resilience.py`、`tests/integration/test_api.py` 和
+`tests/integration/test_dev_api_security.py`。W06 保留 baseline 的旧 `/health` 实现，未定义新的
+`HealthProvider` 或 health 聚合接口；但它在 `app/main.py` 把 `client_id` 加入日志 additional secrets，
+未来集成时必须逐 hunk 增量重审脱敏接线。以下同时保留 W10/配置文件的潜在共享面：
 
 | 文件 | W11 的局部语义 | 合并纪律 |
 | --- | --- | --- |
@@ -112,7 +117,7 @@ retention_days: 14
   不上传为 release artifact。
 - GitHub `quality` 与 `installed-wheel` 的 Windows/macOS 四项证据以 Draft PR 最终 head 的 check URLs 为准，
   避免为回填动态 URL 改写已测试 head；任一项未成功时不得提交人工 Gate。人工 Gate 在全部自动检查通过后仍保持
-  OPEN。
+  OPEN，直到项目所有者给出规定的明确授权；该授权已于 2026-07-18 给出。
 
 ## 人工审计方案（Gate W11）
 
@@ -177,6 +182,27 @@ readiness 传播或虚构 capability 即拒绝。
 扫描输出、每个 fault case 的稳定 error code 和零残留截图。任何 sentinel/path/DB/image/WAV 泄漏、manifest
 不是首项、hash 不符、恶意源被静默接受或失败残留均拒绝。
 
+## 人工审计执行结果
+
+2026-07-18 在精确产品 head `bf4c14e304a97114d4ed946d2febb35e9dd21bd8` 上完成隔离 Windows 实物审计；
+只使用 synthetic sentinel，审计根位于被忽略的 `dist/w11-audit-bf4c14e-20260718-final/`。结果如下：
+
+- 写入 29,597 条 allowlisted 记录并观察 6 次真实 10 MiB rollover；最终保留 active + `.1`～`.4`，
+  四个归档均不超过 10,485,760 bytes。过期归档、dead-PID active、emit 时过期 active 及无 emit 的 active
+  均按 14 天策略清理；维护线程在 0.187 秒内执行无 emit 清理，handler close 后线程退出。
+- 保护 DACL 包含当前用户与 SYSTEM、排除 Everyone。两个并发 writer 各写 1,000 条完整 JSON；Windows
+  Restart Manager 对每个文件只报告对应 PID，关闭后不再报告持有者。
+- 实际认证 HTTP 覆盖 live=200、required failure ready=503、optional degraded ready=200、capabilities=200、
+  unauthenticated live=401；provider 调用分离及顶层/component allowlist 全部符合预期，未虚构未来组件。
+- 实际 CLI 生成 7-member ZIP，`manifest.json` 为首项，逐 member size/SHA-256 复算一致；DB/WAL、PNG、WAV、
+  用户路径、secret/body/path sentinel 均未进入包。非法 UTF-8、额外正文、强 secret、matching directory 与
+  Windows junction/reparse 均被拒绝；三个 fault phase 均无 final/partial/staging 残留。
+- 启动故障实际生成 content-free crash report；crash count/age retention、字段 allowlist 与 sentinel 扫描均通过。
+
+审计摘要 SHA-256 为 `a64375335334ccebca88210e84ff46ef403bbb9b0ed622cd30d48c298ff3f9a7`；
+诊断 ZIP SHA-256 为 `2d619efd784ee07f28846af0f62b935e28cca05e35136f78dd408ea096f228ee`。
+未出现产品断言失败，不需要实现补丁。项目所有者随后明确回复 **“W11 审计合格”**，满足 Gate 关闭条件。
+
 ## 残余风险
 
 - 日志 5-file 上限按**每个 process lineage**执行；总体上限还依赖 W12 最终进程数。W12 接入前不得声称已有
@@ -200,5 +226,6 @@ readiness 传播或虚构 capability 即拒绝。
 
 ## Gate 状态
 
-自动验证通过不关闭 Gate。只有项目所有者明确回复 **“W11 审计合格”** 后，才可记录关闭结论；本分支不会
-自行合并，也不会开始 W12。
+**CLOSED（2026-07-18）**。项目所有者已明确回复 **“W11 审计合格”**；自动验证、实物审计和授权条件均已满足。
+关闭 Gate 不等于授权合并：本分支仍保持 Draft，不自行合并，也不会开始 W12。最终合并前仍须基于最新 baseline
+重跑全部测试；若 W06/W10 导致 health 或 logging 接口变化，必须增量重审。
