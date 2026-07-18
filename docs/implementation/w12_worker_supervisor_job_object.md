@@ -17,6 +17,21 @@ settings、bootstrap、`windows_security.py` 和 W11 health/logging 实现均未
 文档均明确标为 fake，不作为 Windows Job Object 证据。`WorkerSupervisor` 实现 W11 `HealthProvider` 契约，
 但本 PR 不把不存在的 Media/Perception worker 注册进应用 health 聚合器。
 
+### 公开仓库与证据边界（2026-07-18）
+
+项目所有者已把仓库改为 public，并声明其检查过没有隐私数据上传。这里将该声明记录为 **owner attestation**；
+它不是由本 PR 完成的独立全历史安全审计。旧文档中“仓库必须保持 private”的前提已由所有者的新决定覆盖，
+不再作为 W12 阻塞条件。
+
+公开化没有自动建立合并保护：协调器只读检查确认 `agent/windows-development-baseline` 当前没有 branch
+protection，仓库 ruleset 为空。因此本 PR 仍依赖 Draft PR、exact-head checks、expected-head guard 与合并后读回，
+不得把仓库公开状态描述为受保护状态。
+
+PR 分支、Actions 日志和上传 artifact 现在可能公开可见。W12 只允许合成 sentinel、计数型指标和无用户路径的
+provenance/最小诊断证据进入这些表面；严禁真实 secret/token、用户正文、数据库、运行日志、截图、WAV、模型或
+角色资产以及用户路径进入 commit、PR、CI 日志或 artifact。本 PR 的 sentinel 和 helper 输入均为合成数据；该
+结论仅描述 W12 diff 与验证证据，不扩张为仓库全历史审计结论。
+
 ## 契约与 owner
 
 | 资源 | 唯一 owner | 上限/终止语义 |
