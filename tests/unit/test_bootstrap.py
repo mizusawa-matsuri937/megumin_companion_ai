@@ -203,8 +203,14 @@ def test_vts_wiring_starts_bounded_sink(
         def start(self) -> None:
             self.started = True
 
-        def enqueue_expression(self, _expression: str, *, turn_id: str | None = None) -> bool:
-            return turn_id is not None
+        def begin_turn(self, turn_id: str) -> int | None:
+            return 1 if turn_id else None
+
+        def cancel_turn(self, turn_id: str, generation: int) -> bool:
+            return bool(turn_id and generation == 1)
+
+        def enqueue_expression(self, _expression: str, *, turn_id: str, generation: int) -> bool:
+            return bool(turn_id and generation == 1)
 
         def snapshot(self) -> VTSBridgeSnapshot:
             return VTSBridgeSnapshot(
@@ -245,7 +251,9 @@ def test_vts_wiring_starts_bounded_sink(
     "options",
     [
         {"uri": "http://127.0.0.1:8001"},
+        {"reconnect_initial_seconds": 0.0},
         {"reconnect_initial_seconds": 2.0, "reconnect_max_seconds": 1.0},
+        {"expression_hotkeys": {"happy": " "}},
     ],
 )
 def test_vts_settings_reject_invalid_network_bounds(options: dict[str, object]) -> None:

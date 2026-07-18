@@ -8,9 +8,12 @@ from app.clients.vts.bridge import (
 )
 from app.clients.vts.client import (
     VTSAPIError,
+    VTSAuthenticationError,
     VTSClient,
+    VTSConfigurationError,
     VTSConnectionError,
     VTSError,
+    VTSPreflight,
     VTSProtocolError,
     VTSRequestTimeout,
 )
@@ -29,12 +32,15 @@ __all__ = [
     "TokenStore",
     "VTSAPIError",
     "VTSAction",
+    "VTSAuthenticationError",
     "VTSBridge",
     "VTSBridgeSnapshot",
     "VTSBridgeState",
     "VTSClient",
+    "VTSConfigurationError",
     "VTSConnectionError",
     "VTSError",
+    "VTSPreflight",
     "VTSProtocolError",
     "VTSRequestTimeout",
     "VTSToken",
