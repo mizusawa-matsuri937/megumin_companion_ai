@@ -236,8 +236,15 @@ class WindowsDirectorySecurity:  # pragma: no cover - exercised by required Wind
             try:
                 current_stat = current.lstat()
             except FileNotFoundError:
-                current.mkdir()
-                continue
+                # Another process may be creating the same inherited
+                # category.  Treat it as a race only after validating the
+                # winning entry below.
+                with suppress(FileExistsError):
+                    current.mkdir()
+                try:
+                    current_stat = current.lstat()
+                except FileNotFoundError as exc:
+                    raise WindowsSecurityError("private child changed during creation") from exc
             if is_reparse_point(current) or not stat.S_ISDIR(current_stat.st_mode):
                 raise ReparsePointError("private child contains a reparse point")
 

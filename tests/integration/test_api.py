@@ -172,8 +172,9 @@ def test_lifecycle_writes_start_and_stop_events(tmp_path: Path) -> None:
     with secured_client(app) as client:
         assert client.get("/health").status_code == 200
 
+    actual_log = next(log_path.parent.glob("lifecycle.main.*.jsonl"))
     events = [
-        json.loads(line)["event"] for line in log_path.read_text(encoding="utf-8").splitlines()
+        json.loads(line)["event"] for line in actual_log.read_text(encoding="utf-8").splitlines()
     ]
     assert events == ["application.started", "application.stopped"]
 

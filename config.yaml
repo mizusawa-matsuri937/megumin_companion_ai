@@ -15,6 +15,9 @@ logging:
   console_enabled: true
   file_enabled: true
   file_path: app.jsonl
+  max_bytes: 10485760
+  file_count: 5
+  retention_days: 14
 
 # 默认使用不联网的确定性 Mock；切换到真实 provider 时才要求专用密钥和 model。
 llm:

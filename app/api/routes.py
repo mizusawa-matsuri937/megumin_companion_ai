@@ -6,11 +6,10 @@ import asyncio
 import json
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, WebSocket
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, Response, WebSocket
 from pydantic import ValidationError
 from starlette.websockets import WebSocketDisconnect
 
-from app import __version__
 from app.api.protocol import (
     DevAPIProtocolError,
     ensure_authorized_session,
@@ -28,6 +27,12 @@ from app.api.security import (
     security_from_scope,
 )
 from app.core import TurnService
+from app.health import (
+    CapabilitiesPayload,
+    HealthAggregator,
+    LivenessPayload,
+    ReadinessPayload,
+)
 from app.memory import (
     ConfirmationNotFoundError,
     CredentialRejectedError,
@@ -100,19 +105,55 @@ def _validate_http_message(
         raise HTTPException(status_code=status, detail=exc.code) from exc
 
 
-@router.get("/health")
-async def health(request: Request, _principal: ChatPrincipal) -> dict[str, str | bool]:
-    ready = isinstance(getattr(request.app.state, "turn_service", None), TurnService)
-    if not ready:
+def _health_aggregator(request: Request) -> HealthAggregator:
+    aggregate = getattr(request.app.state, "health", None)
+    if not isinstance(aggregate, HealthAggregator):
         raise HTTPException(status_code=503, detail="service_not_ready")
-    return {
-        "status": "ready",
-        "service": "megumin-companion-ai",
-        "version": __version__,
-        "private_state": isinstance(
-            getattr(request.app.state, "memory_runtime", None), MemoryRuntime
-        ),
-    }
+    return aggregate
+
+
+async def _readiness_payload(request: Request, response: Response) -> ReadinessPayload:
+    payload = await _health_aggregator(request).readiness()
+    if payload.status == "not_ready":
+        response.status_code = 503
+    return payload
+
+
+@router.get("/health/live", response_model=LivenessPayload, response_model_exclude_none=True)
+async def health_liveness(request: Request, _principal: ChatPrincipal) -> LivenessPayload:
+    return await _health_aggregator(request).liveness()
+
+
+@router.get("/health/ready", response_model=ReadinessPayload, response_model_exclude_none=True)
+async def health_readiness(
+    request: Request,
+    response: Response,
+    _principal: ChatPrincipal,
+) -> ReadinessPayload:
+    return await _readiness_payload(request, response)
+
+
+@router.get("/health", response_model=ReadinessPayload, response_model_exclude_none=True)
+async def health(
+    request: Request,
+    response: Response,
+    _principal: ChatPrincipal,
+) -> ReadinessPayload:
+    """Compatibility alias for readiness; new clients use ``/health/ready``."""
+
+    return await _readiness_payload(request, response)
+
+
+@router.get(
+    "/health/capabilities",
+    response_model=CapabilitiesPayload,
+    response_model_exclude_none=True,
+)
+async def health_capabilities(
+    request: Request,
+    _principal: ChatPrincipal,
+) -> CapabilitiesPayload:
+    return await _health_aggregator(request).capabilities()
 
 
 @router.post("/api/chat", response_model=TurnState)

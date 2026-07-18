@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator, Awaitable, Callable
-from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
+from contextlib import asynccontextmanager, suppress
 from datetime import timedelta
 
 from fastapi import FastAPI, Request
@@ -22,12 +22,35 @@ from app.bootstrap import (
 )
 from app.clients.llm.base import LLMProvider
 from app.config import Settings, load_settings
-from app.config.logging import configure_logging, log_event
+from app.config.logging import close_logging, configure_logging, log_event
 from app.core import TurnService
+from app.diagnostics import write_crash_report
+from app.health import (
+    CapabilityCheck,
+    CapabilityState,
+    HealthAggregator,
+    HealthProvider,
+)
 from app.memory.analyzer import LLMMemoryCandidateAnalyzer
 from app.memory.runtime import MemoryRuntime, create_memory_runtime
 from app.proactive import ProactivePolicy, ProactiveRuntime
 from app.runtime_storage import prepare_runtime_storage
+
+
+class _CoreHealthProvider:
+    name = "core"
+    required_for_readiness = True
+
+    def __init__(self, app: FastAPI) -> None:
+        self._app = app
+
+    async def check_health(self) -> CapabilityCheck:
+        if isinstance(getattr(self._app.state, "turn_service", None), TurnService):
+            return CapabilityCheck(status=CapabilityState.ready)
+        return CapabilityCheck(
+            status=CapabilityState.unavailable,
+            error_code="service_not_ready",
+        )
 
 
 async def _settle_resource_close(
@@ -62,6 +85,7 @@ def create_app(
     settings: Settings | None = None,
     *,
     dev_api: DevAPIConfig | None = None,
+    health_providers: Sequence[HealthProvider] = (),
 ) -> FastAPI:
     resolved_settings = settings or load_settings()
     dev_api_security = DevAPISecurity(dev_api) if dev_api is not None else None
@@ -80,6 +104,7 @@ def create_app(
         app.state.memory_runtime = None
         app.state.proactive_runtime = None
         app.state.turn_service = None
+        app.state.health = None
         app.state.temp_asset_registry = runtime_storage.temp_registry
         standalone_analyzer_provider: LLMProvider | None = None
         try:
@@ -147,6 +172,11 @@ def create_app(
                 priority_controller=proactive_runtime,
             )
             app.state.turn_service = turn_service
+            app.state.health = HealthAggregator(
+                service="megumin-companion-ai",
+                version=__version__,
+                providers=(_CoreHealthProvider(app), *health_providers),
+            )
             if proactive_runtime is not None:
                 proactive_runtime.start(turn_service.run_proactive)
             log_event(
@@ -161,6 +191,16 @@ def create_app(
                 temp_rejected=runtime_storage.scavenge_report.rejected,
             )
             yield
+        except Exception as exc:
+            with suppress(Exception):
+                write_crash_report(
+                    resolved_settings.paths,
+                    error_code="application_runtime_failure",
+                    exception=exc,
+                    file_count=resolved_settings.logging.file_count,
+                    retention_days=resolved_settings.logging.retention_days,
+                )
+            raise
         finally:
             proactive = getattr(app.state, "proactive_runtime", None)
             service = getattr(app.state, "turn_service", None)
@@ -194,8 +234,7 @@ def create_app(
                         )
                 log_event(logger, logging.INFO, "application.stopped")
             finally:
-                for handler in logger.handlers:
-                    handler.flush()
+                close_logging(logger)
             if cancelled is not None:
                 raise cancelled
 
