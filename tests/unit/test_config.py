@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 import yaml
 from app.config import ConfigurationError, load_settings, write_user_settings
+from app.config.settings import LLMConfig, ProviderTransportConfig, TTSConfig, VTSConfig
 from app.paths import AppPaths
 
 
@@ -252,3 +253,34 @@ def test_repository_config_matches_packaged_default() -> None:
     repository = (Path(__file__).parents[2] / "config.yaml").read_text(encoding="utf-8")
 
     assert yaml.safe_load(packaged) == yaml.safe_load(repository)
+
+
+def test_w08_tts_deadline_defaults_have_one_settings_source() -> None:
+    config = TTSConfig()
+
+    assert config.connect_timeout_seconds == 8.0
+    assert config.first_byte_timeout_seconds == 8.0
+    assert config.timeout_seconds == 30.0
+    assert config.cancellation_timeout_seconds == 1.0
+
+
+@pytest.mark.parametrize(
+    ("model", "options"),
+    [
+        (LLMConfig, {"base_url": "http://provider.example"}),
+        (TTSConfig, {"base_url": "http://tts.example"}),
+        (VTSConfig, {"uri": "ws://vts.example"}),
+    ],
+)
+def test_remote_provider_cleartext_is_rejected_at_configuration_time(
+    model: type[object], options: dict[str, str]
+) -> None:
+    with pytest.raises(ValueError, match="provider_endpoint_invalid"):
+        model(**options)
+
+
+def test_provider_transport_config_is_explicit_and_rejects_url_credentials() -> None:
+    assert ProviderTransportConfig().proxy_url is None
+    assert ProviderTransportConfig().ca_bundle_path is None
+    with pytest.raises(ValueError, match="provider_proxy_invalid"):
+        ProviderTransportConfig(proxy_url="http://user:password@proxy.example:8080")

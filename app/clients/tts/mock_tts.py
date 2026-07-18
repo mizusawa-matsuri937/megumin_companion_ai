@@ -7,12 +7,16 @@ import hashlib
 import math
 import struct
 import wave
+from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path
+from typing import TypeVar
 
 from app.core.cancellation import CancellationToken
 from app.schemas import AudioResult, TTSJob
 from app.temp_assets import TempAssetKind, TempAssetRegistry
+
+_ResultT = TypeVar("_ResultT")
 
 
 class MockTTSProvider:
@@ -42,6 +46,7 @@ class MockTTSProvider:
         self._temp_registry = temp_registry
         self._paths: set[Path] = set()
         self._asset_ids: dict[Path, str] = {}
+        self._filesystem_lock = asyncio.Lock()
 
     async def synthesize(
         self,
@@ -50,9 +55,14 @@ class MockTTSProvider:
         segment_index: int,
         token: CancellationToken,
     ) -> AudioResult:
+        deadline = asyncio.get_running_loop().time() + job.timeout_ms / 1000
         delay = self._delay_by_index.get(segment_index, self._synthesis_delay)
-        if await token.wait_or_timeout(delay):
-            token.raise_if_cancelled()
+        try:
+            async with asyncio.timeout_at(deadline):
+                if await token.wait_or_timeout(delay):
+                    token.raise_if_cancelled()
+        except TimeoutError:
+            return self._failure(job, "tts_total_timeout")
         token.raise_if_cancelled()
 
         turn_key = hashlib.sha256(job.turn_id.encode()).hexdigest()[:16]
@@ -60,22 +70,48 @@ class MockTTSProvider:
         directory = self._cache_directory / turn_key
         path = directory / f"{segment_index:04d}-{job_key}.wav"
         frequency_hz = 440.0 + (segment_index % 6) * 110.0
-        # The file is tiny and generated synchronously so cancellation cannot leave a
-        # background writer racing with cleanup on Windows.
-        if self._temp_registry is not None:
-            entry = self._temp_registry.register(path, TempAssetKind.mock_wav)
-            self._asset_ids[path] = entry.asset_id
+        lock_acquired = False
         try:
-            self._write_wave(path, frequency_hz)
-        except BaseException:
-            await self._delete_path(path)
-            raise
-        self._paths.add(path)
-        if token.cancelled:
-            self._paths.discard(path)
-            await self._delete_path(path)
-            self._remove_empty_parent(path.parent)
+            async with asyncio.timeout_at(deadline):
+                await self._filesystem_lock.acquire()
+                lock_acquired = True
+        except TimeoutError:
+            if lock_acquired:
+                self._filesystem_lock.release()
+            return self._failure(job, "tts_total_timeout")
+        try:
             token.raise_if_cancelled()
+            if self._temp_registry is not None:
+                entry = self._temp_registry.register(path, TempAssetKind.mock_wav)
+                self._asset_ids[path] = entry.asset_id
+            try:
+                self._raise_if_expired(deadline)
+                await _run_owned_thread(
+                    self._write_wave,
+                    path,
+                    frequency_hz,
+                    token=token,
+                    deadline=deadline,
+                )
+                await _run_owned_thread(
+                    _validate_wave,
+                    path,
+                    self._sample_rate,
+                    round(self._sample_rate * self._duration_ms / 1000),
+                    token=token,
+                    deadline=deadline,
+                )
+                self._raise_if_expired(deadline)
+                token.raise_if_cancelled()
+            except TimeoutError:
+                await self._cleanup_failed_path_locked(path)
+                return self._failure(job, "tts_total_timeout")
+            except BaseException:
+                await self._cleanup_failed_path_locked(path)
+                raise
+            self._paths.add(path)
+        finally:
+            self._filesystem_lock.release()
         return AudioResult(
             job_id=job.job_id,
             turn_id=job.turn_id,
@@ -85,6 +121,26 @@ class MockTTSProvider:
             sample_rate=self._sample_rate,
             duration_ms=self._duration_ms,
         )
+
+    @staticmethod
+    def _failure(job: TTSJob, error_code: str) -> AudioResult:
+        return AudioResult(
+            job_id=job.job_id,
+            turn_id=job.turn_id,
+            segment_id=job.segment_id,
+            success=False,
+            error_code=error_code,
+        )
+
+    @staticmethod
+    def _raise_if_expired(deadline: float) -> None:
+        if asyncio.get_running_loop().time() >= deadline:
+            raise TimeoutError
+
+    async def _cleanup_failed_path_locked(self, path: Path) -> None:
+        self._paths.discard(path)
+        await self._delete_path(path)
+        await asyncio.to_thread(self._remove_empty_parent, path.parent)
 
     def _write_wave(self, path: Path, frequency_hz: float) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -105,18 +161,20 @@ class MockTTSProvider:
         if result.audio_path is None:
             return
         path = result.audio_path
-        self._paths.discard(path)
-        await self._delete_path(path)
-        await asyncio.to_thread(self._remove_empty_parent, path.parent)
+        async with self._filesystem_lock:
+            self._paths.discard(path)
+            await self._delete_path(path)
+            await asyncio.to_thread(self._remove_empty_parent, path.parent)
 
     async def close(self) -> None:
-        paths = tuple(self._paths)
-        self._paths.clear()
-        await asyncio.gather(*(self._delete_path(path) for path in paths))
-        parents = {path.parent for path in paths}
-        await asyncio.gather(
-            *(asyncio.to_thread(self._remove_empty_parent, parent) for parent in parents)
-        )
+        async with self._filesystem_lock:
+            paths = tuple(self._paths)
+            self._paths.clear()
+            await asyncio.gather(*(self._delete_path(path) for path in paths))
+            parents = {path.parent for path in paths}
+            await asyncio.gather(
+                *(asyncio.to_thread(self._remove_empty_parent, parent) for parent in parents)
+            )
 
     def _remove_empty_parent(self, parent: Path) -> None:
         with suppress(FileNotFoundError, OSError):
@@ -132,3 +190,67 @@ class MockTTSProvider:
             )
             return
         await asyncio.to_thread(path.unlink, missing_ok=True)
+
+
+async def _run_owned_thread(
+    function: Callable[..., _ResultT],
+    /,
+    *args: object,
+    token: CancellationToken,
+    deadline: float,
+) -> _ResultT:
+    """Run one local file operation without leaving a thread after return."""
+
+    remaining = deadline - asyncio.get_running_loop().time()
+    if remaining <= 0:
+        raise TimeoutError
+    operation = asyncio.create_task(asyncio.to_thread(function, *args))
+    cancellation = asyncio.create_task(token.wait())
+    try:
+        done, _pending = await asyncio.wait(
+            {operation, cancellation},
+            timeout=remaining,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if operation in done:
+            return operation.result()
+        await _finish_owned(operation)
+        if cancellation in done:
+            token.raise_if_cancelled()
+        raise TimeoutError
+    except asyncio.CancelledError:
+        await _finish_owned(operation)
+        raise
+    finally:
+        cancellation.cancel()
+        await asyncio.gather(cancellation, return_exceptions=True)
+
+
+async def _finish_owned(task: asyncio.Task[_ResultT]) -> _ResultT:
+    cancelled = False
+    while True:
+        try:
+            result = await asyncio.shield(task)
+            if cancelled:
+                raise asyncio.CancelledError
+            return result
+        except asyncio.CancelledError:
+            cancelled = True
+            if task.done():
+                await asyncio.gather(task, return_exceptions=True)
+                raise
+
+
+def _validate_wave(path: Path, sample_rate: int, frame_count: int) -> None:
+    try:
+        with wave.open(str(path), "rb") as audio:
+            if (
+                audio.getnchannels() != 1
+                or audio.getsampwidth() != 2
+                or audio.getframerate() != sample_rate
+                or audio.getnframes() != frame_count
+                or audio.getcomptype() != "NONE"
+            ):
+                raise ValueError("mock wav validation failed")
+    except (EOFError, OSError, wave.Error) as exc:
+        raise ValueError("mock wav validation failed") from exc

@@ -186,9 +186,25 @@ class DialoguePipeline:
         segment_max_chars: int = 42,
         segment_max_words: int = 25,
         limits: LimitsConfig | None = None,
+        tts_connect_timeout_ms: int,
+        tts_first_byte_timeout_ms: int,
+        tts_total_timeout_ms: int,
+        tts_cancellation_timeout_ms: int,
     ) -> None:
         if tts_worker_count < 1:
             raise ValueError("tts_worker_count 必须大于 0")
+        if (
+            min(
+                tts_connect_timeout_ms,
+                tts_first_byte_timeout_ms,
+                tts_total_timeout_ms,
+                tts_cancellation_timeout_ms,
+            )
+            <= 0
+        ):
+            raise ValueError("TTS deadlines must be positive")
+        if max(tts_connect_timeout_ms, tts_first_byte_timeout_ms) > tts_total_timeout_ms:
+            raise ValueError("TTS stage timeout cannot exceed total timeout")
         self._llm = llm
         self._tts = tts
         self._audio_player = audio_player
@@ -202,6 +218,10 @@ class DialoguePipeline:
         self._segment_max_chars = segment_max_chars
         self._segment_max_words = segment_max_words
         self._limits = limits or LimitsConfig()
+        self._tts_connect_timeout_ms = tts_connect_timeout_ms
+        self._tts_first_byte_timeout_ms = tts_first_byte_timeout_ms
+        self._tts_total_timeout_ms = tts_total_timeout_ms
+        self._tts_cancellation_timeout_ms = tts_cancellation_timeout_ms
         self._close_lock = asyncio.Lock()
         self._close_task: asyncio.Task[None] | None = None
         self._last_resource_report: PipelineResourceReport | None = None
@@ -276,6 +296,7 @@ class DialoguePipeline:
         workers_remaining = self._tts_worker_count
         workers_clean = True
         worker_group_lock = asyncio.Lock()
+        playback_started = False
 
         async def stream_to_tts() -> None:
             nonlocal terminal, terminal_reason, total_output_bytes
@@ -377,23 +398,11 @@ class DialoguePipeline:
                         reservation = self._limits.audio_single_result_bytes
                         synthesized_at = time.perf_counter()
                         try:
-                            try:
-                                result = await asyncio.wait_for(
-                                    self._tts.synthesize(
-                                        indexed_job.job,
-                                        segment_index=indexed_job.index,
-                                        token=token,
-                                    ),
-                                    timeout=indexed_job.job.timeout_ms / 1000,
-                                )
-                            except TimeoutError:
-                                result = AudioResult(
-                                    job_id=indexed_job.job.job_id,
-                                    turn_id=indexed_job.job.turn_id,
-                                    segment_id=indexed_job.job.segment_id,
-                                    success=False,
-                                    error_code="tts_timeout",
-                                )
+                            result = await self._tts.synthesize(
+                                indexed_job.job,
+                                segment_index=indexed_job.index,
+                                token=token,
+                            )
                             ready_at = time.perf_counter()
                             metrics.tts_job_latency_ms.append(
                                 max(0, round((ready_at - synthesized_at) * 1000))
@@ -472,7 +481,7 @@ class DialoguePipeline:
                         await audio_queue.close(1)
 
         async def ordered_playback() -> None:
-            nonlocal max_reorder_depth
+            nonlocal max_reorder_depth, playback_started
             pending: dict[int, _IndexedAudio] = {}
             next_index = 0
             try:
@@ -511,6 +520,7 @@ class DialoguePipeline:
                                     "segment_id": result.segment_id,
                                 },
                             )
+                            playback_started = True
                             await self._audio_player.play(result, token)
                             token.raise_if_cancelled()
                             metrics.playback_count += 1
@@ -556,6 +566,22 @@ class DialoguePipeline:
                     group.create_task(ordered_playback())
             token.raise_if_cancelled()
             succeeded = True
+        except ExceptionGroup as exc:
+            stable = _stable_provider_error(exc)
+            if stable is None:
+                raise
+            code = _exception_code(stable)
+            terminal = "failed"
+            terminal_reason = code
+            await emit(
+                "assistant.output_incomplete",
+                {
+                    "error_code": code,
+                    "visible_output": bool(full_text_parts),
+                    "playback_started": playback_started,
+                },
+            )
+            raise stable from None
         finally:
             cleanup_started = time.perf_counter()
 
@@ -581,7 +607,9 @@ class DialoguePipeline:
             observed_reason = terminal_reason
             if not succeeded:
                 observed_terminal = "cancelled" if token.cancelled else "failed"
-                observed_reason = "turn_cancelled" if token.cancelled else "pipeline_failed"
+                observed_reason = (
+                    "turn_cancelled" if token.cancelled else terminal_reason or "pipeline_failed"
+                )
             report = PipelineResourceReport(
                 tts_queue=tts_queue.report(),
                 ready_audio_queue=audio_queue.report(),
@@ -648,6 +676,10 @@ class DialoguePipeline:
             emotion=segment.emotion,
             speed_factor=segment.tts_speed_factor,
             interruptible=segment.interruptible,
+            connect_timeout_ms=self._tts_connect_timeout_ms,
+            first_byte_timeout_ms=self._tts_first_byte_timeout_ms,
+            timeout_ms=self._tts_total_timeout_ms,
+            cancellation_timeout_ms=self._tts_cancellation_timeout_ms,
             cancellation_token_id=token.token_id,
         )
         await emit(
@@ -728,3 +760,22 @@ async def _gather_cleanup(*awaitables: Awaitable[None]) -> None:
     if not awaitables:
         return
     await asyncio.gather(*awaitables, return_exceptions=True)
+
+
+def _stable_provider_error(group: BaseExceptionGroup[BaseException]) -> Exception | None:
+    for error in group.exceptions:
+        if isinstance(error, BaseExceptionGroup):
+            nested = _stable_provider_error(error)
+            if nested is not None:
+                return nested
+        elif isinstance(error, Exception) and _exception_code(error) != "pipeline_failed":
+            return error
+    return None
+
+
+def _exception_code(error: Exception) -> str:
+    code = getattr(error, "code", None)
+    value = getattr(code, "value", code)
+    if isinstance(value, str) and 1 <= len(value) <= 128:
+        return value
+    return "pipeline_failed"

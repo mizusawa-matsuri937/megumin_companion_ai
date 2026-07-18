@@ -89,9 +89,18 @@ class TTSJob(ContractModel):
     emotion: str = "neutral"
     speed_factor: float = Field(default=1.0, gt=0.0, le=3.0)
     interruptible: bool = True
-    timeout_ms: int = Field(default=8000, gt=0)
+    connect_timeout_ms: int = Field(gt=0)
+    first_byte_timeout_ms: int = Field(gt=0)
+    timeout_ms: int = Field(gt=0)
+    cancellation_timeout_ms: int = Field(gt=0)
     created_at: datetime = Field(default_factory=utc_now)
     cancellation_token_id: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_deadline_order(self) -> TTSJob:
+        if max(self.connect_timeout_ms, self.first_byte_timeout_ms) > self.timeout_ms:
+            raise ValueError("TTS stage timeout cannot exceed total timeout")
+        return self
 
 
 class AudioResult(ContractModel):

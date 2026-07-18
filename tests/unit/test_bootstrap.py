@@ -128,6 +128,7 @@ def test_gpt_sovits_wiring_is_explicit_and_cache_defaults_off(tmp_path: Path) ->
     assert pipeline is not None
     assert isinstance(pipeline._tts, GPTSoVITSProvider)
     assert not pipeline._tts._cache_enabled
+    assert pipeline._tts._max_owned_synthesis_tasks == settings.limits.tts_queue_capacity
     asyncio.run(pipeline.close())
 
 

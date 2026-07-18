@@ -25,6 +25,13 @@ from pydantic import (
 
 from app.limits import LimitsConfig
 from app.paths import AppPathError, AppPaths
+from app.provider_transport import (
+    EndpointKind,
+    ProviderTransportError,
+    build_ssl_context,
+    validate_endpoint,
+    validate_proxy_url,
+)
 
 DEFAULT_CONFIG_PACKAGE = "app.resources"
 DEFAULT_CONFIG_NAME = "default_config.yaml"
@@ -79,6 +86,22 @@ class LoggingConfig(StrictModel):
     retention_days: int = Field(default=14, ge=1, le=14)
 
 
+class ProviderTransportConfig(StrictModel):
+    """Explicit provider proxy and additive trust configuration."""
+
+    proxy_url: str | None = None
+    ca_bundle_path: Path | None = None
+
+    @model_validator(mode="after")
+    def validate_transport(self) -> ProviderTransportConfig:
+        if self.proxy_url is not None:
+            try:
+                validate_proxy_url(self.proxy_url)
+            except ProviderTransportError as exc:
+                raise ValueError(str(exc)) from exc
+        return self
+
+
 class LLMConfig(StrictModel):
     provider: str = "none"
     api_key_env: str | None = "COMPANION_LLM_API_KEY"
@@ -88,6 +111,18 @@ class LLMConfig(StrictModel):
     timeout_seconds: float = Field(default=45.0, gt=0.0, le=300.0)
     temperature: float = Field(default=0.8, ge=0.0, le=2.0)
     max_tokens: int = Field(default=600, ge=1, le=100_000)
+    stream_completion_mode: Literal["done_and_finish_reason", "done", "finish_reason", "eof"] = (
+        "done_and_finish_reason"
+    )
+    transport: ProviderTransportConfig = Field(default_factory=ProviderTransportConfig)
+
+    @model_validator(mode="after")
+    def validate_endpoint_policy(self) -> LLMConfig:
+        try:
+            validate_endpoint(self.base_url, kind=EndpointKind.http)
+        except ProviderTransportError as exc:
+            raise ValueError(str(exc)) from exc
+        return self
 
 
 class GPTSoVITSPresetConfig(StrictModel):
@@ -114,7 +149,10 @@ class TTSConfig(StrictModel):
     provider: str = "mock"
     base_url: str = "http://127.0.0.1:9880"
     output_directory: Path = Path("data/cache/audio/gpt-sovits/ephemeral")
+    connect_timeout_seconds: float = Field(default=8.0, gt=0.0, le=60.0)
+    first_byte_timeout_seconds: float = Field(default=8.0, gt=0.0, le=60.0)
     timeout_seconds: float = Field(default=30.0, gt=0.0, le=300.0)
+    cancellation_timeout_seconds: float = Field(default=1.0, gt=0.0, le=10.0)
     max_audio_bytes: int = Field(default=32 * 1024 * 1024, ge=44)
     default_preset: str = "default"
     presets: dict[str, GPTSoVITSPresetConfig] = Field(default_factory=dict)
@@ -122,6 +160,20 @@ class TTSConfig(StrictModel):
     cache_directory: Path = Path("data/cache/audio/gpt-sovits/persistent")
     cache_max_bytes: int = Field(default=512 * 1024 * 1024, ge=1)
     cache_ttl_seconds: float = Field(default=7 * 24 * 60 * 60, gt=0.0)
+    transport: ProviderTransportConfig = Field(default_factory=ProviderTransportConfig)
+
+    @model_validator(mode="after")
+    def validate_endpoint_policy(self) -> TTSConfig:
+        try:
+            validate_endpoint(self.base_url, kind=EndpointKind.http)
+        except ProviderTransportError as exc:
+            raise ValueError(str(exc)) from exc
+        if (
+            max(self.connect_timeout_seconds, self.first_byte_timeout_seconds)
+            > self.timeout_seconds
+        ):
+            raise ValueError("TTS stage timeout cannot exceed total timeout")
+        return self
 
 
 class VTSConfig(StrictModel):
@@ -135,13 +187,16 @@ class VTSConfig(StrictModel):
     reconnect_initial_seconds: float = Field(default=1.0, gt=0.0, le=60.0)
     reconnect_max_seconds: float = Field(default=30.0, gt=0.0, le=300.0)
     expression_hotkeys: dict[str, str] = Field(default_factory=dict)
+    transport: ProviderTransportConfig = Field(default_factory=ProviderTransportConfig)
 
     @model_validator(mode="after")
     def validate_reconnect_bounds(self) -> VTSConfig:
         if self.reconnect_max_seconds < self.reconnect_initial_seconds:
             raise ValueError("reconnect_max_seconds 不能小于 reconnect_initial_seconds")
-        if not self.uri.startswith(("ws://", "wss://")):
-            raise ValueError("VTS uri 必须使用 WebSocket")
+        try:
+            validate_endpoint(self.uri, kind=EndpointKind.websocket)
+        except ProviderTransportError as exc:
+            raise ValueError(str(exc)) from exc
         if any(
             not expression.strip() or not hotkey_id.strip()
             for expression, hotkey_id in self.expression_hotkeys.items()
@@ -293,6 +348,23 @@ class Settings(StrictModel):
 
     def tts_cache_directory(self) -> Path:
         return self._managed_path(self._paths.audio_cache, self.tts.cache_directory, "TTS 缓存")
+
+    def llm_ca_bundle_path(self) -> Path | None:
+        return self._provider_ca_bundle_path(self.llm.transport.ca_bundle_path)
+
+    def tts_ca_bundle_path(self) -> Path | None:
+        return self._provider_ca_bundle_path(self.tts.transport.ca_bundle_path)
+
+    def vts_ca_bundle_path(self) -> Path | None:
+        return self._provider_ca_bundle_path(self.vts.transport.ca_bundle_path)
+
+    def _provider_ca_bundle_path(self, value: Path | None) -> Path | None:
+        if value is None:
+            return None
+        candidate = value.expanduser()
+        if candidate.is_absolute():
+            return candidate
+        return self._managed_path(self._paths.config, candidate, "Provider CA")
 
     def mock_audio_directory(self) -> Path:
         return self._managed_path(
@@ -528,6 +600,16 @@ def _validate_runtime_paths(settings: Settings) -> None:
     settings.vts_token_path()
     settings.tts_output_directory()
     settings.tts_cache_directory()
+    for ca_bundle in (
+        settings.llm_ca_bundle_path(),
+        settings.tts_ca_bundle_path(),
+        settings.vts_ca_bundle_path(),
+    ):
+        if ca_bundle is not None:
+            try:
+                build_ssl_context(ca_bundle)
+            except ProviderTransportError as exc:
+                raise ConfigurationError(str(exc)) from exc
     settings.mock_audio_directory()
     settings.stt_temporary_directory()
     settings.stt_executable_path()

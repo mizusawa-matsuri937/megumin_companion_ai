@@ -7,16 +7,28 @@ import json
 import logging
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Protocol, cast
 from uuid import uuid4
 
 from websockets.asyncio.client import connect as websocket_connect
-from websockets.exceptions import ConnectionClosed
+from websockets.exceptions import ConnectionClosed, WebSocketException
+
+from app.provider_transport import (
+    EndpointKind,
+    build_ssl_context,
+    validate_endpoint,
+    validate_proxy_url,
+)
 
 VTS_API_NAME = "VTubeStudioPublicAPI"
 VTS_API_VERSION = "1.0"
 _WEBSOCKET_LOGGER = logging.getLogger("megumin.vts.websocket.transport")
 _WEBSOCKET_LOGGER.setLevel(logging.WARNING)
+
+
+def _reject_redirect(exc: Exception) -> Exception:
+    return exc
 
 
 class WebSocketConnection(Protocol):
@@ -101,8 +113,20 @@ class VTSPreflight:
         )
 
 
-async def _default_connection_factory(uri: str) -> WebSocketConnection:
-    connection = await websocket_connect(
+async def _default_connection_factory(
+    uri: str,
+    *,
+    proxy_url: str | None,
+    ca_bundle_path: Path | None,
+) -> WebSocketConnection:
+    policy = validate_endpoint(uri, kind=EndpointKind.websocket)
+    options: dict[str, Any] = {"proxy": proxy_url}
+    if policy.tls:
+        context = build_ssl_context(ca_bundle_path)
+        options["ssl"] = context
+        if proxy_url is not None and proxy_url.startswith("https://"):
+            options["proxy_ssl"] = context
+    connector = websocket_connect(
         uri,
         open_timeout=5,
         close_timeout=3,
@@ -111,7 +135,11 @@ async def _default_connection_factory(uri: str) -> WebSocketConnection:
         max_size=1024 * 1024,
         max_queue=16,
         logger=_WEBSOCKET_LOGGER,
+        **options,
     )
+    if hasattr(connector, "process_redirect"):
+        cast(Any, connector).process_redirect = _reject_redirect
+    connection = await connector
     return cast(WebSocketConnection, connection)
 
 
@@ -121,13 +149,20 @@ class VTSClient:
         uri: str = "ws://127.0.0.1:8001",
         *,
         request_timeout_seconds: float = 5.0,
+        proxy_url: str | None = None,
+        ca_bundle_path: Path | None = None,
         connection_factory: ConnectionFactory | None = None,
     ) -> None:
         if request_timeout_seconds <= 0.0:
             raise ValueError("request_timeout_seconds 必须大于 0")
+        validate_endpoint(uri, kind=EndpointKind.websocket)
+        if proxy_url is not None:
+            validate_proxy_url(proxy_url)
         self._uri = uri
         self._request_timeout = request_timeout_seconds
-        self._connection_factory = connection_factory or _default_connection_factory
+        self._proxy_url = proxy_url
+        self._ca_bundle_path = ca_bundle_path
+        self._connection_factory = connection_factory
         self._connection: WebSocketConnection | None = None
         self._receiver: asyncio.Task[None] | None = None
         self._connect_task: asyncio.Task[WebSocketConnection] | None = None
@@ -156,7 +191,7 @@ class VTSClient:
             self._connect_task = task
         try:
             connection = await asyncio.shield(task)
-        except (OSError, TimeoutError, ConnectionClosed) as exc:
+        except (OSError, TimeoutError, ConnectionClosed, WebSocketException) as exc:
             if self._connect_task is task:
                 self._connect_task = None
             raise VTSConnectionError from exc
@@ -177,7 +212,13 @@ class VTSClient:
         self._receiver = asyncio.create_task(self._receive_loop(), name="vts-receiver")
 
     async def _open_connection(self) -> WebSocketConnection:
-        return await self._connection_factory(self._uri)
+        if self._connection_factory is not None:
+            return await self._connection_factory(self._uri)
+        return await _default_connection_factory(
+            self._uri,
+            proxy_url=self._proxy_url,
+            ca_bundle_path=self._ca_bundle_path,
+        )
 
     async def request(
         self,
