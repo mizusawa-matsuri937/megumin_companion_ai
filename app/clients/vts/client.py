@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import dataclass
 from typing import Any, Protocol, cast
 from uuid import uuid4
 
@@ -13,6 +15,8 @@ from websockets.exceptions import ConnectionClosed
 
 VTS_API_NAME = "VTubeStudioPublicAPI"
 VTS_API_VERSION = "1.0"
+_WEBSOCKET_LOGGER = logging.getLogger("megumin.vts.websocket.transport")
+_WEBSOCKET_LOGGER.setLevel(logging.WARNING)
 
 
 class WebSocketConnection(Protocol):
@@ -52,6 +56,51 @@ class VTSAPIError(VTSError):
         self.error_id = error_id
 
 
+class VTSAuthenticationError(VTSError):
+    code = "vts_auth_failed"
+
+
+class VTSConfigurationError(VTSError):
+    """A stable preflight failure that must not enter a reconnect loop."""
+
+    _ALLOWED_CODES = frozenset(
+        {
+            "vts_api_unavailable",
+            "vts_auth_revoked",
+            "vts_model_missing",
+            "vts_hotkey_missing",
+        }
+    )
+
+    def __init__(self, code: str) -> None:
+        if code not in self._ALLOWED_CODES:
+            raise ValueError("unsupported VTS configuration error code")
+        super().__init__(code)
+        self.code = code
+
+
+@dataclass(frozen=True, slots=True)
+class VTSPreflight:
+    """Content-free capability summary safe for health and diagnostic snapshots."""
+
+    available: bool
+    authenticated: bool
+    model_loaded: bool
+    configured_hotkey_count: int
+    missing_hotkey_count: int
+    error_code: str | None = None
+
+    @property
+    def ready(self) -> bool:
+        return (
+            self.available
+            and self.authenticated
+            and self.model_loaded
+            and self.missing_hotkey_count == 0
+            and self.error_code is None
+        )
+
+
 async def _default_connection_factory(uri: str) -> WebSocketConnection:
     connection = await websocket_connect(
         uri,
@@ -61,6 +110,7 @@ async def _default_connection_factory(uri: str) -> WebSocketConnection:
         ping_timeout=10,
         max_size=1024 * 1024,
         max_queue=16,
+        logger=_WEBSOCKET_LOGGER,
     )
     return cast(WebSocketConnection, connection)
 
@@ -193,6 +243,76 @@ class VTSClient:
             raise VTSProtocolError
         return authenticated
 
+    async def current_model(self) -> dict[str, Any]:
+        return await self.request("CurrentModelRequest")
+
+    async def available_hotkey_ids(self) -> frozenset[str]:
+        data = await self.request("HotkeysInCurrentModelRequest")
+        values = data.get("availableHotkeys")
+        if not isinstance(values, list):
+            raise VTSProtocolError
+        hotkey_ids: set[str] = set()
+        for value in values:
+            if not isinstance(value, dict):
+                raise VTSProtocolError
+            hotkey_id = value.get("hotkeyID")
+            if not isinstance(hotkey_id, str) or not hotkey_id.strip():
+                raise VTSProtocolError
+            hotkey_ids.add(hotkey_id)
+        return frozenset(hotkey_ids)
+
+    async def preflight(self, required_hotkey_ids: frozenset[str]) -> VTSPreflight:
+        """Verify API/auth/model/hotkeys without returning names, IDs, or paths."""
+
+        state = await self.api_state()
+        active = state.get("active")
+        authenticated = state.get("currentSessionAuthenticated")
+        if not isinstance(active, bool) or not isinstance(authenticated, bool):
+            raise VTSProtocolError
+        if not active:
+            return VTSPreflight(
+                available=False,
+                authenticated=authenticated,
+                model_loaded=False,
+                configured_hotkey_count=len(required_hotkey_ids),
+                missing_hotkey_count=len(required_hotkey_ids),
+                error_code="vts_api_unavailable",
+            )
+        if not authenticated:
+            return VTSPreflight(
+                available=True,
+                authenticated=False,
+                model_loaded=False,
+                configured_hotkey_count=len(required_hotkey_ids),
+                missing_hotkey_count=len(required_hotkey_ids),
+                error_code="vts_auth_revoked",
+            )
+
+        model = await self.current_model()
+        model_loaded = model.get("modelLoaded")
+        if not isinstance(model_loaded, bool):
+            raise VTSProtocolError
+        if not model_loaded:
+            return VTSPreflight(
+                available=True,
+                authenticated=True,
+                model_loaded=False,
+                configured_hotkey_count=len(required_hotkey_ids),
+                missing_hotkey_count=len(required_hotkey_ids),
+                error_code="vts_model_missing",
+            )
+
+        available = await self.available_hotkey_ids()
+        missing_count = len(required_hotkey_ids - available)
+        return VTSPreflight(
+            available=True,
+            authenticated=True,
+            model_loaded=True,
+            configured_hotkey_count=len(required_hotkey_ids),
+            missing_hotkey_count=missing_count,
+            error_code="vts_hotkey_missing" if missing_count else None,
+        )
+
     async def trigger_hotkey(self, hotkey_id: str) -> None:
         if not hotkey_id.strip():
             raise ValueError("hotkey_id 不能为空")
@@ -213,7 +333,11 @@ class VTSClient:
                 self._dispatch(raw)
         except asyncio.CancelledError:
             raise
-        except (OSError, UnicodeError, json.JSONDecodeError, ConnectionClosed, VTSProtocolError):
+        except VTSProtocolError as exc:
+            failure = exc
+        except (UnicodeError, json.JSONDecodeError):
+            failure = VTSProtocolError()
+        except (OSError, ConnectionClosed):
             pass
         finally:
             if self._connection is connection:

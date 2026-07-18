@@ -13,8 +13,9 @@ import wave
 from collections.abc import Awaitable, Callable, Mapping
 from contextlib import suppress
 from dataclasses import asdict, dataclass, field
+from ipaddress import ip_address
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any, Literal, TypeVar
 from uuid import uuid4
 
 import httpx
@@ -38,6 +39,7 @@ class GPTSoVITSPreset:
     """Voice-affecting parameters accepted by GPT-SoVITS ``/tts``."""
 
     ref_audio_path: str
+    ref_audio_scope: Literal["service_resource", "local_file"] = "service_resource"
     prompt_text: str = ""
     prompt_lang: str = "zh"
     text_lang: str = "zh"
@@ -57,6 +59,8 @@ class GPTSoVITSPreset:
     def __post_init__(self) -> None:
         if not self.ref_audio_path.strip():
             raise ValueError("ref_audio_path 不能为空")
+        if self.ref_audio_scope not in {"service_resource", "local_file"}:
+            raise ValueError("ref_audio_scope 无效")
         if self.top_k < 1 or self.batch_size < 1:
             raise ValueError("top_k 和 batch_size 必须大于 0")
         if not 0.0 < self.top_p <= 1.0 or self.temperature <= 0.0:
@@ -128,6 +132,8 @@ class GPTSoVITSProvider:
         self._sensitive_text_predicate = sensitive_text_predicate
         self._temp_registry = temp_registry
         self._tts_endpoint = httpx.URL(base_url.rstrip("/") + "/").join("tts")
+        for preset in presets.values():
+            _validate_reference_scope(self._tts_endpoint, preset)
         self._owns_client = client is None
         self._client = client or httpx.AsyncClient(
             timeout=httpx.Timeout(timeout_seconds),
@@ -207,6 +213,7 @@ class GPTSoVITSProvider:
 
         preset = self._presets.get(job.style, self._presets[self._default_preset])
         request_payload = asdict(preset)
+        request_payload.pop("ref_audio_scope")
         request_payload.update(
             {
                 "text": job.text,
@@ -705,6 +712,29 @@ def _content_length(response: httpx.Response) -> int | None:
         return int(value)
     except ValueError:
         return None
+
+
+def _validate_reference_scope(endpoint: httpx.URL, preset: GPTSoVITSPreset) -> None:
+    """Fail closed without exposing a configured path in the error text."""
+
+    if preset.ref_audio_scope == "service_resource":
+        return
+    host = endpoint.host
+    loopback = host == "localhost"
+    if host is not None and not loopback:
+        try:
+            loopback = ip_address(host).is_loopback
+        except ValueError:
+            loopback = False
+    if not loopback:
+        raise ValueError("local_file reference requires a loopback GPT-SoVITS service")
+    try:
+        reference = Path(preset.ref_audio_path)
+        exists = reference.is_absolute() and reference.is_file()
+    except OSError:
+        exists = False
+    if not exists:
+        raise ValueError("local_file GPT-SoVITS reference is unavailable")
 
 
 def _inspect_wave(path: Path) -> tuple[int, int]:
