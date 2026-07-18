@@ -53,6 +53,44 @@ async def _runtime(path: Path, clock: FakeClock) -> MemoryRuntime:
     return runtime
 
 
+async def _restart_runtime_after_single_busy_retry(
+    path: Path,
+    clock: FakeClock,
+) -> MemoryRuntime:
+    candidate = await create_memory_runtime(str(path), clock=clock)
+    if isinstance(candidate, MemoryRuntime):
+        assert candidate._clock is clock
+        return candidate
+
+    recovery = await candidate.recovery_status()
+    reason = recovery["reason_code"]
+    if reason != "db_busy":
+        await candidate.close()
+        pytest.fail(f"unexpected restart safe mode: {reason}")
+    if "retry_migration" not in recovery["recovery_options"]:
+        await candidate.close()
+        pytest.fail("db_busy did not offer retry_migration")
+
+    try:
+        version = await candidate.retry_migration()
+        assert candidate.database.status.mode is DatabaseAccessMode.read_write
+        assert candidate.database.status.reason_code is None
+        assert candidate.database.status.schema_version == version
+    finally:
+        await candidate.close()
+
+    rebuilt = await create_memory_runtime(str(path), clock=clock)
+    if isinstance(rebuilt, SafeModeMemoryRuntime):
+        second_recovery = await rebuilt.recovery_status()
+        await rebuilt.close()
+        pytest.fail(
+            "restart remained in safe mode after one db_busy retry: "
+            f"{second_recovery['reason_code']}"
+        )
+    assert rebuilt._clock is clock
+    return rebuilt
+
+
 def _save_synthetic_memory(
     runtime: MemoryRuntime,
     *,
@@ -311,7 +349,7 @@ def test_cleanup_retry_due_order_and_completion_survive_restart_with_frozen_cloc
         monkeypatch.setattr(runtime.database, "secure_cleanup", original_cleanup)
         await runtime.close()
 
-        restarted = await _runtime(path, clock)
+        restarted = await _restart_runtime_after_single_busy_retry(path, clock)
         restart_cleanup = restarted.database.secure_cleanup
         cleanup_calls: list[bool] = []
 
