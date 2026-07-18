@@ -20,7 +20,9 @@ _HELPER = Path(__file__).parents[1] / "helpers" / "w12_worker_helper.py"
 
 
 def _process_alive(pid: int) -> bool:
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    loader = getattr(ctypes, "WinDLL", None)
+    assert callable(loader)
+    kernel32 = loader("kernel32", use_last_error=True)
     kernel32.OpenProcess.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32]
     kernel32.OpenProcess.restype = ctypes.c_void_p
     kernel32.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
@@ -36,7 +38,9 @@ def _process_alive(pid: int) -> bool:
 
 
 def _handle_count() -> int:
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    loader = getattr(ctypes, "WinDLL", None)
+    assert callable(loader)
+    kernel32 = loader("kernel32", use_last_error=True)
     kernel32.GetCurrentProcess.restype = ctypes.c_void_p
     kernel32.GetProcessHandleCount.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32)]
     count = ctypes.c_uint32()
@@ -166,8 +170,11 @@ def test_only_explicit_additional_handle_is_inherited(tmp_path: Path) -> None:
 
         marker = tmp_path / "handle-read.json"
         read_fd, write_fd = os.pipe()
-        read_handle = msvcrt.get_osfhandle(read_fd)
-        os.set_handle_inheritable(read_handle, True)
+        get_osfhandle = getattr(msvcrt, "get_osfhandle", None)
+        set_handle_inheritable = getattr(os, "set_handle_inheritable", None)
+        assert callable(get_osfhandle) and callable(set_handle_inheritable)
+        read_handle = get_osfhandle(read_fd)
+        set_handle_inheritable(read_handle, True)
         process = await WindowsJobProcessAdapter().spawn(
             (
                 sys.executable,

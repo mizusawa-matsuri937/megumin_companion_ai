@@ -363,6 +363,10 @@ class WindowsJobProcessAdapter:
     ) -> ManagedProcess:
         import msvcrt
 
+        open_osfhandle = getattr(msvcrt, "open_osfhandle", None)
+        if not callable(open_osfhandle):
+            raise ProcessAdapterError("worker_platform_unsupported")
+        binary_flag = int(getattr(os, "O_BINARY", 0))
         k32 = self._kernel32
         pipes = _WindowsPipeSet()
         job = 0
@@ -449,13 +453,13 @@ class WindowsJobProcessAdapter:
                 if not _close_handle(k32, getattr(pipes, child_handle_name)):
                     raise _win_error("worker_handle_close")
                 setattr(pipes, child_handle_name, 0)
-            stdin_fd = msvcrt.open_osfhandle(pipes.stdin_write, os.O_BINARY)
+            stdin_fd = open_osfhandle(pipes.stdin_write, binary_flag)
             converted_fds.append(stdin_fd)
             pipes.stdin_write = 0
-            stdout_fd = msvcrt.open_osfhandle(pipes.stdout_read, os.O_BINARY)
+            stdout_fd = open_osfhandle(pipes.stdout_read, binary_flag)
             converted_fds.append(stdout_fd)
             pipes.stdout_read = 0
-            stderr_fd = msvcrt.open_osfhandle(pipes.stderr_read, os.O_BINARY)
+            stderr_fd = open_osfhandle(pipes.stderr_read, binary_flag)
             converted_fds.append(stderr_fd)
             pipes.stderr_read = 0
             process = _WindowsManagedProcess(

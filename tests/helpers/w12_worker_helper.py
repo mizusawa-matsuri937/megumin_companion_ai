@@ -50,7 +50,10 @@ class _SyntheticHandler:
         if job_kind == "complete":
             return {"status": "ok"}
         if job_kind == "console.check":
-            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            loader = getattr(ctypes, "WinDLL", None)
+            if not callable(loader):
+                raise RuntimeError("windows loader unavailable")
+            kernel32 = loader("kernel32", use_last_error=True)
             kernel32.GetConsoleWindow.restype = ctypes.c_void_p
             return {"console_window": int(kernel32.GetConsoleWindow() or 0)}
         if job_kind == "tree.hang":
@@ -99,7 +102,10 @@ def _standalone_tree(marker: Path) -> None:
 def _read_inherited_handle(handle: int, marker: Path) -> None:
     import msvcrt
 
-    descriptor = msvcrt.open_osfhandle(handle, os.O_RDONLY)
+    open_osfhandle = getattr(msvcrt, "open_osfhandle", None)
+    if not callable(open_osfhandle):
+        raise RuntimeError("windows handle adapter unavailable")
+    descriptor = open_osfhandle(handle, os.O_RDONLY)
     try:
         payload = os.read(descriptor, 4096)
     finally:
