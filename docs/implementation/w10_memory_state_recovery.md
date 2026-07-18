@@ -71,7 +71,15 @@
 - backup 包含敏感数据的风险没有被 hash manifest 消除；hash 只验证完整性。backup 生命周期和最终用户承诺仍需按已批准隐私文档执行。
 - restore 会保留原 DB/WAL/SHM quarantine，便于失败回退，但也延长敏感字节的本地留存；当前没有把 quarantine 当成已擦除数据。
 - future/corrupt safe mode 是 fail-closed 的内容隔离，不是通用 SQLite 修复器；verified restore 后必须重启，避免旧 runtime 状态与磁盘 schema 混用。
-- 90.00% 恰好达到项目覆盖率门槛；exact-head CI 是最终自动判据。
+- 本地 branch coverage 为 90.07%，仅略高于 90% 门槛；exact-head CI 是最终自动判据。
+
+## Public repository 与证据边界
+
+- 2026-07-18 已通过 GitHub API 确认仓库 visibility 为 `public`。项目所有者声明其已检查没有隐私数据上传；本记录是 **owner attestation**，不是独立的全历史安全审计，也不替代 secret scanning 或历史重写审计。
+- 旧文档中“仓库必须保持 private”的前提已被项目所有者的新决定覆盖；W10 不再以仓库公开为阻塞条件。
+- 公开化没有自动启用保护：`agent/windows-development-baseline` 当前返回 `Branch not protected`，仓库 ruleset 列表为空。因此仍强制使用 Draft PR、exact-head checks、expected-head guard；未来只有收到审计授权后才可合并，并须执行合并后读回。不得声称公开仓库已受保护。
+- PR 分支、Actions 日志和上传 artifact 可能被公开读取。W10 commit、PR 和 CI 只允许 synthetic sentinel、稳定 error code、hash/count 和无路径 provenance；禁止真实 secret/token、用户正文、数据库、日志、截图、WAV、模型/角色资产或用户路径。
+- W10 自动检查只证明本 PR 的合成 fixture、生成物和规定扫描面符合上述边界；没有把 owner attestation 扩张为对仓库全部历史、其他 PR 或第三方缓存的独立结论。
 
 ## 回滚
 
