@@ -29,6 +29,13 @@
 
 - <https://github.com/DenchiSoft/VTubeStudio>
 
+## Public 仓库证据边界
+
+- 2026-07-18 通过 GitHub 只读元数据确认仓库 visibility 为 `PUBLIC`；项目所有者声明已检查没有隐私数据上传。该声明仅记录为 owner attestation，不等同于本分支执行了独立的全历史安全审计。
+- 所有者将仓库公开的决定覆盖旧文档中的 private 前提；公开化本身不提供合并保护。当前 `agent/windows-development-baseline` 没有 branch protection，仓库 ruleset 为空，因此继续使用 Draft PR、exact-head checks、expected-head guard 与合并后读回。
+- PR 分支、Actions 日志与 artifact 均可能公开可见。W09 只允许合成 sentinel、无路径 provenance 和最小诊断证据；不得提交或输出真实 secret/token、用户正文、数据库、日志、截图、WAV、模型/角色资产或用户路径。
+- W09 当前差异、测试 sentinel 和 PR 证据已按上述边界扫描，未发现受保护内容；该结论仅覆盖 W09 变更及其运行证据，不扩张为仓库全历史审计。
+
 fake server 会校验 `apiName`、`apiVersion`、request correlation、认证、model/hotkey preflight、断线和重连。
 
 ## GPT-SoVITS reference 边界
