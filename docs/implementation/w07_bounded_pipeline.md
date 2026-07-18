@@ -39,6 +39,19 @@ VTS 重连均不在本 PR 中改变。
 W07 对 `settings`、`bootstrap`、dev API security/protocol 和 dialogue pipeline 做最小接线；不修改
 根目录交接/总体计划状态，不改变 VTS reconnect、远端 TLS 或 provider 完成协议。
 
+## W09 baseline 增量审计
+
+- W07 分支已合并远端 `agent/windows-development-baseline@a8a4fdba2e64919b785393cdc3e0b2fd4ce4146e`。
+  该 baseline 包含已受控合并的 W09 VTS generation/preflight；合并提交为
+  `5c78b8f5363b3fe7363a96caf59093528fa42948`，未使用 force push。
+- 共享 `settings.py` 与 `default_config.yaml` 自动合并：W07 `limits`、启动自检与 prompt/audio 配额
+  保留，W09 `ref_audio_scope`、正数 reconnect 配置和非空 hotkey 校验同时保留。
+- W07 未修改 W09 的 `begin_turn`/`cancel_turn`/generation-aware `enqueue_expression`、preflight、
+  neutral reset、purge/drop 或 reconnect 状态机语义；VTS/TTS 文件变化全部来自已合并 baseline。
+- 合并后的共享聚焦回归覆盖 W07、settings/bootstrap、GPT-SoVITS 与 W09 VTS fake-server/client/
+  bridge/event-sink，共 `139 passed`。旧 head `7f894f8...` 的审计签字与 exact-head CI 只保留为
+  历史证据，不能用于合并当前 head；当前 head 必须重新通过全量与双平台 exact-head CI。
+
 ## 回滚
 
 可降低 worker 数、queue 容量、切换 silent playback 或完全串行 TTS；不得回滚为无界 queue、
@@ -52,12 +65,12 @@ W07 对 `settings`、`bootstrap`、dev API security/protocol 和 dialogue pipeli
 - macOS exact-head CI 首次真实运行在 25 轮取消风暴中捕获一个 handoff/temp-discard 时序竞态：
   queue 已归零但报告仍有 9,644 bytes lease。修复后本地把同一测试重复 10 次（250 个取消回合），
   每回合 queue、lease 和 WAV temp 均归零。
-- 修复后全仓：`787 passed, 2 skipped`；branch coverage `90.20%`。两个 skip 是既有 optional
+- 合并 W09 baseline 后全仓：`803 passed, 2 skipped`；branch coverage `90.25%`。两个 skip 是既有 optional
   RapidOCR/Pillow 环境，不属于 W07。
-- Ruff check 通过；Ruff format `179 files already formatted`；strict mypy `174 source files`
+- Ruff check 通过；Ruff format `180 files already formatted`；strict mypy `175 source files`
   通过。
 - installed-wheel smoke 通过：109 wheel members，manifest SHA-256
-  `2781fb7ccfe0573bcdcd32a8f58f55bec7f8a742ae66b76b7e75911f6b6e5bf4`；源码包隔离、任意
+  `d64982092ff3a9efc5983b5caeac940b62b834d4277dfea07043c627d8eb2282`；源码包隔离、任意
   CWD、CLI/desktop preflight、locked/authenticated ASGI health 和 idempotent chat 全部通过。
 - 背压 stress 使用 TTS queue=2、ready audio=1、audio lease=256 KiB：queue 最大深度分别不超过
   2/1，LLM producer 阻塞计数大于 0，最大音频 lease 不超过 256 KiB；每轮结束两条 queue
