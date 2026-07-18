@@ -18,7 +18,7 @@ from app.config.logging import configure_logging
 from app.config.settings import LoggingConfig
 from app.core import CancellationToken, TurnService
 from app.emotion import FakeClock
-from app.memory.runtime import create_memory_runtime
+from app.memory.runtime import MemoryRuntime, create_memory_runtime
 from app.paths import AppPaths
 from app.perception.change_detection import FrameChangeDetector
 from app.perception.classification import LocalSceneClassifier
@@ -310,6 +310,7 @@ def test_privacy_sentinel_never_crosses_persistence_event_network_or_file_bounda
         logger = _logger(log_path)
 
         memory = await create_memory_runtime(str(database_path))
+        assert isinstance(memory, MemoryRuntime)
         await memory.set_feature(FeatureName.proactive, True)
         await memory.set_feature(FeatureName.vision, True)
         proactive = ProactiveRuntime(memory.features, _policy(), clock=FakeClock(NOW))
@@ -504,6 +505,7 @@ def test_scheduler_to_turn_service_never_persists_as_user_or_memory(tmp_path: Pa
     async def scenario() -> None:
         database_path = tmp_path / "scheduler.sqlite3"
         memory = await create_memory_runtime(str(database_path))
+        assert isinstance(memory, MemoryRuntime)
         await memory.set_feature(FeatureName.proactive, True)
         proactive = ProactiveRuntime(
             memory.features,

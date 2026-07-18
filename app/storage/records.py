@@ -24,6 +24,47 @@ class ConversationOrigin(StrEnum):
     assistant_proactive = "assistant_proactive"
 
 
+class CleanupKind(StrEnum):
+    memory_delete = "memory_delete"
+    memory_clear = "memory_clear"
+    history_clear = "history_clear"
+    history_retention = "history_retention"
+    evidence_migration = "evidence_migration"
+
+
+class CleanupState(StrEnum):
+    pending = "pending"
+    retrying = "retrying"
+    completed = "completed"
+
+
+class CleanupJob(StorageRecord):
+    cleanup_id: str
+    kind: CleanupKind
+    state: CleanupState
+    vacuum_required: bool
+    attempt_count: int = Field(ge=0)
+    reason_code: str | None = None
+    created_at: datetime
+    updated_at: datetime
+    next_attempt_at: datetime
+    completed_at: datetime | None = None
+
+
+class DeletionResult(StorageRecord):
+    deleted_count: int = Field(ge=0)
+    cleanup_id: str | None = None
+    cleanup_state: CleanupState | None = None
+
+    @property
+    def logical_deleted(self) -> bool:
+        return self.deleted_count > 0
+
+    @property
+    def cleanup_pending(self) -> bool:
+        return self.cleanup_state in {CleanupState.pending, CleanupState.retrying}
+
+
 class ConversationRecord(StorageRecord):
     message_id: str = Field(min_length=1, max_length=128)
     session_id: str = Field(min_length=1, max_length=128)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -10,6 +11,7 @@ from app.memory.models import (
     MemorySourceKind,
     MemoryStatus,
     MemoryType,
+    SourceProvenance,
 )
 from app.schemas.ai import FeatureName
 from app.storage.database import SQLiteDatabase, StorageConflictError
@@ -73,7 +75,9 @@ def _approved(
         sensitivity=MemorySensitivity.normal,
         source_kind=MemorySourceKind.dialogue,
         source_message_id=source_message_id,
-        source_excerpt=f"source {source_message_id}: {content}",
+        evidence_quote=f"source {source_message_id}: {content}",
+        source_sha256=hashlib.sha256(content.encode("utf-8")).hexdigest(),
+        provenance=SourceProvenance.dialogue_text,
         created_at=created_at or _now(),
     )
 
