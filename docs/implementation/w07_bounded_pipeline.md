@@ -52,6 +52,22 @@ W07 对 `settings`、`bootstrap`、dev API security/protocol 和 dialogue pipeli
   bridge/event-sink，共 `139 passed`。旧 head `7f894f8...` 的审计签字与 exact-head CI 只保留为
   历史证据，不能用于合并当前 head；当前 head 必须重新通过全量与双平台 exact-head CI。
 
+## W10 baseline 增量审计
+
+- W07 分支继续合并远端
+  `agent/windows-development-baseline@0034e7362a605f68c51ba315acf156a9074a7642`；该 baseline 是
+  PR #20 的受控合并提交，包含 W10 memory state/deletion/recovery。W07 的非快进合并提交为
+  `38f80d3b954411a862751e9bea7dd2425ea2dcc2`，未使用 force push。
+- W10 与 W07 只有 `app/main.py` 文件级重叠，修改位于不同代码段：W07 保留 limits 启动自检和
+  dev API hard limits，W10 保留 memory safe-mode 生命周期、health provider 与关闭语义；ort
+  自动合并无冲突。
+- W07 相对旧 W09 baseline 与相对新 W10 baseline 的 stable patch-id 均为
+  `e6e7a01fa96ad2608ce5398723ccc3054df5e29b`。相对新 baseline 的净 diff 仍精确为原 W07 的
+  19 个文件、`+1459/-159`；W10 memory/storage/routes 实现文件没有进入 W07 净补丁。
+- W10 合并后的 focused 回归覆盖 W07、W10 memory recovery、API/security/bootstrap/config、
+  `app/main.py` 生命周期、health 与 VTS event-sink，共 `225 passed`。W09 baseline 后的旧审计
+  签字不能自动沿用；新 exact head 必须重新通过全量与双平台 exact-head CI。
+
 ## 回滚
 
 可降低 worker 数、queue 容量、切换 silent playback 或完全串行 TTS；不得回滚为无界 queue、
@@ -65,12 +81,12 @@ W07 对 `settings`、`bootstrap`、dev API security/protocol 和 dialogue pipeli
 - macOS exact-head CI 首次真实运行在 25 轮取消风暴中捕获一个 handoff/temp-discard 时序竞态：
   queue 已归零但报告仍有 9,644 bytes lease。修复后本地把同一测试重复 10 次（250 个取消回合），
   每回合 queue、lease 和 WAV temp 均归零。
-- 合并 W09 baseline 后全仓：`803 passed, 2 skipped`；branch coverage `90.25%`。两个 skip 是既有 optional
+- 合并 W10 baseline 后全仓：`834 passed, 2 skipped`；branch coverage `90.15%`。两个 skip 是既有 optional
   RapidOCR/Pillow 环境，不属于 W07。
-- Ruff check 通过；Ruff format `180 files already formatted`；strict mypy `175 source files`
+- Ruff check 通过；Ruff format `183 files already formatted`；strict mypy `178 source files`
   通过。
-- installed-wheel smoke 通过：109 wheel members，manifest SHA-256
-  `d64982092ff3a9efc5983b5caeac940b62b834d4277dfea07043c627d8eb2282`；源码包隔离、任意
+- installed-wheel smoke 通过：110 wheel members，manifest SHA-256
+  `12987be72d2e3064a75d9b347b006b9f93962ce3053b9a91305e5c75d1af3f64`；源码包隔离、任意
   CWD、CLI/desktop preflight、locked/authenticated ASGI health 和 idempotent chat 全部通过。
 - 背压 stress 使用 TTS queue=2、ready audio=1、audio lease=256 KiB：queue 最大深度分别不超过
   2/1，LLM producer 阻塞计数大于 0，最大音频 lease 不超过 256 KiB；每轮结束两条 queue
