@@ -26,7 +26,7 @@ from app.schemas.ai import (
     FeatureName,
     FeatureState,
 )
-from app.storage.database import SQLiteDatabase, StorageConflictError, transaction
+from app.storage.database import SQLiteDatabase, StorageConflictError, StorageError, transaction
 from app.storage.records import (
     CleanupJob,
     CleanupKind,
@@ -390,6 +390,33 @@ class PhysicalCleanupRepository:
             )
 
 
+def _repair_legacy_fts5_secure_delete_version(connection: sqlite3.Connection) -> bool:
+    """Apply SQLite 3.46.1's missing FTS5 secure-delete state transition."""
+
+    # FTS5 secure-delete exists from SQLite 3.42.0; 3.46.1 contains the fix.
+    if not (3, 42, 0) <= sqlite3.sqlite_version_info < (3, 46, 1):
+        return False
+    if not connection.in_transaction:
+        raise StorageError("FTS5 secure-delete compatibility update requires a transaction")
+    # SQLite 3.46.1 fixed fts5SpecialDelete() to set bUpdateOrDelete after a
+    # secure delete, advancing the FTS config format from version 4 to 5:
+    # https://sqlite.org/releaselog/3_46_1.html
+    # https://sqlite.org/src/info/80bef4d60ba9e3679ea66655ca36fcfaa888775a3d1598d50e9649ad84a95b63
+    # Older runtimes omit only this state update. This exact conditional write
+    # restores it; integrity checks remain strict and are never ignored here.
+    cursor = connection.execute(
+        """
+        UPDATE memories_fts_config SET v = 5
+        WHERE k = 'version' AND v = 4
+          AND EXISTS (
+              SELECT 1 FROM memories_fts_config
+              WHERE k = 'secure-delete' AND v = 1
+          )
+        """
+    )
+    return cursor.rowcount == 1
+
+
 class MemoryRepository:
     def __init__(self, database: SQLiteDatabase) -> None:
         self._database = database
@@ -404,7 +431,7 @@ class MemoryRepository:
                 """,
                 (approved.user_id, approved.canonical_key, approved.normalized_content),
             ).fetchone()
-            connection.execute(
+            superseded = connection.execute(
                 """
                 UPDATE memories SET status = 'superseded', updated_at = ?
                 WHERE user_id = ? AND canonical_key = ? AND status = 'active'
@@ -412,6 +439,7 @@ class MemoryRepository:
                 """,
                 (now, approved.user_id, approved.canonical_key, approved.normalized_content),
             )
+            used_special_delete = superseded.rowcount > 0
             if exact is None:
                 connection.execute(
                     """
@@ -450,6 +478,7 @@ class MemoryRepository:
                 created_at = str(exact["created_at"])
                 if str(exact["memory_type"]) != approved.memory_type.value:
                     raise StorageConflictError("canonical memory key changed type")
+                used_special_delete = used_special_delete or str(exact["status"]) == "active"
                 connection.execute(
                     """
                     UPDATE memories SET
@@ -476,6 +505,8 @@ class MemoryRepository:
                         memory_id,
                     ),
                 )
+            if used_special_delete:
+                _repair_legacy_fts5_secure_delete_version(connection)
             self._add_source(connection, memory_id, approved)
             if approved.memory_type is MemoryType.user_profile:
                 connection.execute(
@@ -610,6 +641,8 @@ class MemoryRepository:
                 )
             except sqlite3.IntegrityError as exc:
                 raise StorageConflictError("edited memory duplicates an existing value") from exc
+            if str(existing["status"]) == "active":
+                _repair_legacy_fts5_secure_delete_version(connection)
             connection.execute(
                 "UPDATE user_profiles SET value = ?, updated_at = ? WHERE memory_id = ?",
                 (content, now, memory_id),
@@ -654,15 +687,24 @@ class MemoryRepository:
     ) -> DeletionResult:
         with self._database.connect() as connection, transaction(connection):
             if user_id is None:
+                existing = connection.execute(
+                    "SELECT status FROM memories WHERE memory_id = ?", (memory_id,)
+                ).fetchone()
                 cursor = connection.execute(
                     "DELETE FROM memories WHERE memory_id = ?", (memory_id,)
                 )
             else:
+                existing = connection.execute(
+                    "SELECT status FROM memories WHERE memory_id = ? AND user_id = ?",
+                    (memory_id, user_id),
+                ).fetchone()
                 cursor = connection.execute(
                     "DELETE FROM memories WHERE memory_id = ? AND user_id = ?",
                     (memory_id, user_id),
                 )
             deleted = cursor.rowcount
+            if deleted and existing is not None and str(existing["status"]) == "active":
+                _repair_legacy_fts5_secure_delete_version(connection)
             cleanup_id = (
                 _queue_cleanup(
                     connection,
@@ -684,8 +726,14 @@ class MemoryRepository:
 
     def clear_logically(self, *, user_id: str, now: datetime) -> DeletionResult:
         with self._database.connect() as connection, transaction(connection):
+            active = connection.execute(
+                "SELECT 1 FROM memories WHERE user_id = ? AND status = 'active' LIMIT 1",
+                (user_id,),
+            ).fetchone()
             cursor = connection.execute("DELETE FROM memories WHERE user_id = ?", (user_id,))
             deleted = cursor.rowcount
+            if deleted and active is not None:
+                _repair_legacy_fts5_secure_delete_version(connection)
             cleanup_id = (
                 _queue_cleanup(
                     connection,

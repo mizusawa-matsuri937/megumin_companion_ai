@@ -3,11 +3,9 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
-from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-import app.storage.database as database_module
 import app.storage.repositories as repositories_module
 import pytest
 from app.emotion import FakeClock
@@ -53,169 +51,6 @@ async def _runtime(path: Path, clock: FakeClock) -> MemoryRuntime:
     runtime = await create_memory_runtime(str(path), clock=clock)
     assert isinstance(runtime, MemoryRuntime)
     return runtime
-
-
-def _sqlite_error_code(error: BaseException) -> int | None:
-    code = getattr(error, "sqlite_errorcode", None)
-    return code if isinstance(code, int) else None
-
-
-def _sidecar_metadata(path: Path) -> dict[str, object]:
-    metadata: dict[str, object] = {}
-    for name, suffix in (("wal", "-wal"), ("shm", "-shm")):
-        sidecar = Path(f"{path}{suffix}")
-        try:
-            stat = sidecar.stat()
-        except FileNotFoundError:
-            metadata[name] = {"exists": False, "size": None}
-        except OSError as exc:
-            metadata[name] = {
-                "outcome": "stat_exception",
-                "exception_class": type(exc).__name__,
-            }
-        else:
-            metadata[name] = {"exists": True, "size": stat.st_size}
-    return metadata
-
-
-def _redacted_quick_check(path: Path) -> dict[str, object]:
-    connection: sqlite3.Connection | None = None
-    result: dict[str, object]
-    try:
-        uri = f"{path.resolve().as_uri()}?mode=ro"
-        connection = sqlite3.connect(
-            uri,
-            uri=True,
-            timeout=0,
-            isolation_level=None,
-        )
-        connection.execute("PRAGMA busy_timeout = 0")
-        connection.execute("PRAGMA query_only = ON")
-        row = connection.execute("PRAGMA quick_check").fetchone()
-        result = {"outcome": "ok" if row is not None and str(row[0]) == "ok" else "non_ok"}
-    except (OSError, sqlite3.Error) as exc:
-        result = {
-            "outcome": "sqlite_exception",
-            "exception_class": type(exc).__name__,
-            "sqlite_errorcode": _sqlite_error_code(exc),
-        }
-    finally:
-        if connection is not None:
-            try:
-                connection.close()
-            except sqlite3.Error as exc:
-                result = {
-                    "outcome": "sqlite_exception",
-                    "exception_class": type(exc).__name__,
-                    "sqlite_errorcode": _sqlite_error_code(exc),
-                }
-    return result
-
-
-def _writer_lock_probe(path: Path) -> dict[str, object]:
-    connection: sqlite3.Connection | None = None
-    result: dict[str, object] = {"outcome": "acquired"}
-    try:
-        uri = f"{path.resolve().as_uri()}?mode=rw"
-        connection = sqlite3.connect(
-            uri,
-            uri=True,
-            timeout=0,
-            isolation_level=None,
-        )
-        connection.execute("PRAGMA busy_timeout = 0")
-        connection.execute("BEGIN IMMEDIATE")
-        connection.rollback()
-    except (OSError, sqlite3.Error) as exc:
-        result = {
-            "outcome": "sqlite_exception",
-            "exception_class": type(exc).__name__,
-            "sqlite_errorcode": _sqlite_error_code(exc),
-        }
-    finally:
-        if connection is not None:
-            if connection.in_transaction:
-                with suppress(sqlite3.Error):
-                    connection.rollback()
-            try:
-                connection.close()
-            except sqlite3.Error as exc:
-                result = {
-                    "outcome": "sqlite_exception",
-                    "exception_class": type(exc).__name__,
-                    "sqlite_errorcode": _sqlite_error_code(exc),
-                }
-    return result
-
-
-async def _restart_runtime_with_probe_diagnostics(
-    path: Path,
-    clock: FakeClock,
-    monkeypatch: pytest.MonkeyPatch,
-    *,
-    close_state: dict[str, object],
-    sidecars_after_close: dict[str, object],
-) -> MemoryRuntime:
-    original_probe = database_module._probe_database_file
-    probe_trace: dict[str, object] = {
-        "outcome": "not_called",
-        "immutable": None,
-        "reason_code": None,
-        "exception_class": None,
-        "sqlite_errorcode": None,
-    }
-
-    def recording_probe(target: Path, *, immutable: bool) -> DatabaseStatus:
-        try:
-            status = original_probe(target, immutable=immutable)
-        except sqlite3.Error as exc:
-            probe_trace.update(
-                outcome="sqlite_exception",
-                immutable=immutable,
-                reason_code=None,
-                exception_class=type(exc).__name__,
-                sqlite_errorcode=_sqlite_error_code(exc),
-            )
-            raise
-        probe_trace.update(
-            outcome=(
-                "returned_non_ok" if status.reason_code == "db_corrupt" else "returned_status"
-            ),
-            immutable=immutable,
-            reason_code=status.reason_code,
-            exception_class=None,
-            sqlite_errorcode=None,
-        )
-        return status
-
-    with monkeypatch.context() as probe_patch:
-        probe_patch.setattr(database_module, "_probe_database_file", recording_probe)
-        candidate = await create_memory_runtime(str(path), clock=clock)
-    sidecars_after_factory = _sidecar_metadata(path)
-    if isinstance(candidate, MemoryRuntime):
-        assert candidate._clock is clock
-        return candidate
-
-    recovery = await candidate.recovery_status()
-    production_reason = recovery["reason_code"]
-    await candidate.close()
-    original_quick_check = _redacted_quick_check(path)
-    # BEGIN IMMEDIATE is rolled back without logical row changes, but SQLite may
-    # still alter WAL/SHM sidecar state while acquiring and releasing the lock.
-    writer_lock = _writer_lock_probe(path)
-    diagnostic = {
-        "close_state": close_state,
-        "original_quick_check": original_quick_check,
-        "probe_trace": probe_trace,
-        "production_reason": production_reason,
-        "sidecars_after_close": sidecars_after_close,
-        "sidecars_after_factory": sidecars_after_factory,
-        "writer_lock_probe": writer_lock,
-    }
-    pytest.fail(
-        "restart_probe_diag=" + json.dumps(diagnostic, sort_keys=True, separators=(",", ":")),
-        pytrace=False,
-    )
 
 
 def _save_synthetic_memory(
@@ -474,30 +309,9 @@ def test_cleanup_retry_due_order_and_completion_survive_restart_with_frozen_cloc
         assert retrying.next_attempt_at == frozen + timedelta(seconds=60)
 
         monkeypatch.setattr(runtime.database, "secure_cleanup", original_cleanup)
-        maintenance_task = runtime._maintenance_task
         await runtime.close()
-        close_state: dict[str, object] = {
-            "candidate_close_task_done": (
-                runtime.candidates._close_task is not None and runtime.candidates._close_task.done()
-            ),
-            "candidate_tasks_remaining": len(runtime.candidates._tasks),
-            "maintenance_attr_cleared": runtime._maintenance_task is None,
-            "maintenance_task_done": (maintenance_task is None or maintenance_task.done()),
-            "maintenance_task_was_present": maintenance_task is not None,
-            "runtime_close_task_done": (
-                runtime._close_task is not None and runtime._close_task.done()
-            ),
-            "runtime_closed": runtime._closed,
-        }
-        sidecars_after_close = _sidecar_metadata(path)
 
-        restarted = await _restart_runtime_with_probe_diagnostics(
-            path,
-            clock,
-            monkeypatch,
-            close_state=close_state,
-            sidecars_after_close=sidecars_after_close,
-        )
+        restarted = await _runtime(path, clock)
         restart_cleanup = restarted.database.secure_cleanup
         cleanup_calls: list[bool] = []
 
