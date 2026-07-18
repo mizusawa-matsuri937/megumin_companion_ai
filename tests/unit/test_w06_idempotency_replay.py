@@ -11,11 +11,14 @@ import pytest
 from app.core import CancellationToken, TurnService
 from app.core.idempotency import (
     IdempotencyAccessError,
+    IdempotencyClaim,
     IdempotencyConflictError,
+    IdempotencyKey,
     IdempotencyStore,
     IdempotencyUnavailableError,
     InMemoryIdempotencyStore,
     UnavailableIdempotencyStore,
+    message_fingerprint,
 )
 from app.core.turns import SlowConsumerError, TurnAccessError
 from app.schemas import (
@@ -138,6 +141,69 @@ class FaultInjectingMemoryStore(InMemoryIdempotencyStore):
         await super().update(client_id=client_id, state=state, now=now)
 
 
+class CompletingAfterDuplicateClaimStore(SQLiteIdempotencyStore):
+    """Commit an owner terminal state after a duplicate transaction read its old state."""
+
+    def __init__(
+        self,
+        database: SQLiteDatabase,
+        terminal_state: TurnState,
+        *,
+        lookup_failure: str | None = None,
+    ) -> None:
+        super().__init__(database)
+        self._owner_store = SQLiteIdempotencyStore(database)
+        self._terminal_state = terminal_state
+        self._lookup_failure = lookup_failure
+        self.duplicate_claim_reads = 0
+
+    async def claim(
+        self,
+        key: IdempotencyKey,
+        *,
+        fingerprint: str,
+        state: TurnState,
+        now: datetime,
+    ) -> IdempotencyClaim:
+        claim = await super().claim(
+            key,
+            fingerprint=fingerprint,
+            state=state,
+            now=now,
+        )
+        if not claim.created:
+            self.duplicate_claim_reads += 1
+            await self._owner_store.update(
+                client_id=key.client_id,
+                state=self._terminal_state,
+                now=self._terminal_state.updated_at,
+            )
+        return claim
+
+    async def lookup_turn(
+        self,
+        *,
+        client_id: str,
+        session_id: str,
+        turn_id: str,
+        now: datetime,
+    ) -> TurnState | None:
+        if self._lookup_failure == "missing":
+            return None
+        if self._lookup_failure == "unavailable":
+            raise IdempotencyUnavailableError
+        if self._lookup_failure == "access":
+            raise IdempotencyAccessError
+        if self._lookup_failure == "conflict":
+            raise IdempotencyConflictError
+        return await super().lookup_turn(
+            client_id=client_id,
+            session_id=session_id,
+            turn_id=turn_id,
+            now=now,
+        )
+
+
 def _logger() -> logging.Logger:
     instance = logging.getLogger("test.w06")
     instance.handlers = [logging.NullHandler()]
@@ -228,7 +294,7 @@ def test_two_services_share_one_sqlite_claim_without_duplicate_side_effects(
         )
         await asyncio.gather(*(service.wait_idle() for service in services))
         terminal = await asyncio.gather(
-            *(service.accept(message, client_id="client-w06") for service in services)
+            *(services[index % 2].accept(message, client_id="client-w06") for index in range(128))
         )
 
         assert len({state.turn_id for state in (*states, *terminal)}) == 1
@@ -240,6 +306,181 @@ def test_two_services_share_one_sqlite_claim_without_duplicate_side_effects(
         assert sum(observer.accepted for observer in observers) == 1
         assert sum(observer.completed for observer in observers) == 1
         await asyncio.gather(*(service.shutdown() for service in services))
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("local_status", [TurnStatus.streaming, TurnStatus.speaking])
+@pytest.mark.parametrize(
+    "terminal_status",
+    [TurnStatus.completed, TurnStatus.cancelled, TurnStatus.failed],
+)
+def test_duplicate_repair_conflict_refreshes_sqlite_authoritative_terminal(
+    tmp_path: Path,
+    local_status: TurnStatus,
+    terminal_status: TurnStatus,
+) -> None:
+    async def scenario() -> None:
+        database = SQLiteDatabase(
+            tmp_path / f"repair-{local_status.value}-{terminal_status.value}.sqlite3"
+        )
+        database.initialize()
+        message = _message()
+        accepted_at = datetime(2026, 7, 18, 12, 0, tzinfo=UTC)
+        accepted = TurnState(
+            turn_id="turn-repair-race",
+            session_id=message.session_id,
+            source_message_id=message.message_id,
+            input_mode=message.input_mode,
+            created_at=accepted_at,
+            updated_at=accepted_at,
+        )
+        local = accepted.model_copy(
+            update={
+                "status": local_status,
+                "updated_at": accepted_at + timedelta(seconds=1),
+            }
+        )
+        terminal = accepted.model_copy(
+            update={
+                "status": terminal_status,
+                "updated_at": accepted_at + timedelta(seconds=2),
+                "error_code": "owner_failed" if terminal_status is TurnStatus.failed else None,
+            }
+        )
+        owner_store = SQLiteIdempotencyStore(database)
+        await owner_store.claim(
+            IdempotencyKey("client-w06", message.session_id, message.message_id),
+            fingerprint=message_fingerprint(message),
+            state=accepted,
+            now=accepted_at,
+        )
+        race_store = CompletingAfterDuplicateClaimStore(database, terminal)
+        pipeline = SideEffectPipeline()
+        service = TurnService(_logger(), pipeline, idempotency_store=race_store)
+        service._remember_existing("client-w06", local)
+
+        refreshed = await service.accept(message, client_id="client-w06")
+
+        assert race_store.duplicate_claim_reads == 1
+        assert refreshed == terminal
+        assert refreshed.updated_at == terminal.updated_at
+        assert service.snapshot()["turns"][accepted.turn_id]["status"] == terminal_status.value
+        assert pipeline.provider_calls == pipeline.tts_calls == pipeline.playback_calls == 0
+        await service.shutdown()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("local_status", [TurnStatus.streaming, TurnStatus.speaking])
+def test_duplicate_repair_preserves_valid_forward_progress_and_timestamp(
+    tmp_path: Path,
+    local_status: TurnStatus,
+) -> None:
+    async def scenario() -> None:
+        database = SQLiteDatabase(tmp_path / f"repair-forward-{local_status.value}.sqlite3")
+        database.initialize()
+        message = _message()
+        accepted_at = datetime(2026, 7, 18, 12, 0, tzinfo=UTC)
+        accepted = TurnState(
+            turn_id="turn-forward-repair",
+            session_id=message.session_id,
+            source_message_id=message.message_id,
+            input_mode=message.input_mode,
+            created_at=accepted_at,
+            updated_at=accepted_at,
+        )
+        local = accepted.model_copy(
+            update={
+                "status": local_status,
+                "updated_at": accepted_at + timedelta(seconds=1),
+            }
+        )
+        store = SQLiteIdempotencyStore(database)
+        await store.claim(
+            IdempotencyKey("client-w06", message.session_id, message.message_id),
+            fingerprint=message_fingerprint(message),
+            state=accepted,
+            now=accepted_at,
+        )
+        service = TurnService(_logger(), idempotency_store=store)
+        service._remember_existing("client-w06", local)
+
+        repaired = await service.accept(message, client_id="client-w06")
+        stored = await store.lookup_turn(
+            client_id="client-w06",
+            session_id=message.session_id,
+            turn_id=accepted.turn_id,
+            now=accepted_at + timedelta(seconds=2),
+        )
+
+        assert repaired == local
+        assert stored == local
+        await service.shutdown()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    ("lookup_failure", "expected_error"),
+    [
+        ("missing", IdempotencyUnavailableError),
+        ("unavailable", IdempotencyUnavailableError),
+        ("access", IdempotencyAccessError),
+        ("conflict", IdempotencyConflictError),
+    ],
+)
+def test_duplicate_repair_refresh_failure_is_fail_closed_without_pipeline(
+    tmp_path: Path,
+    lookup_failure: str,
+    expected_error: type[Exception],
+) -> None:
+    async def scenario() -> None:
+        database = SQLiteDatabase(tmp_path / f"repair-failure-{lookup_failure}.sqlite3")
+        database.initialize()
+        message = _message()
+        accepted_at = datetime(2026, 7, 18, 12, 0, tzinfo=UTC)
+        accepted = TurnState(
+            turn_id="turn-repair-failure",
+            session_id=message.session_id,
+            source_message_id=message.message_id,
+            input_mode=message.input_mode,
+            created_at=accepted_at,
+            updated_at=accepted_at,
+        )
+        local = accepted.model_copy(
+            update={
+                "status": TurnStatus.streaming,
+                "updated_at": accepted_at + timedelta(seconds=1),
+            }
+        )
+        terminal = accepted.model_copy(
+            update={
+                "status": TurnStatus.completed,
+                "updated_at": accepted_at + timedelta(seconds=2),
+            }
+        )
+        owner_store = SQLiteIdempotencyStore(database)
+        await owner_store.claim(
+            IdempotencyKey("client-w06", message.session_id, message.message_id),
+            fingerprint=message_fingerprint(message),
+            state=accepted,
+            now=accepted_at,
+        )
+        race_store = CompletingAfterDuplicateClaimStore(
+            database,
+            terminal,
+            lookup_failure=lookup_failure,
+        )
+        pipeline = SideEffectPipeline()
+        service = TurnService(_logger(), pipeline, idempotency_store=race_store)
+        service._remember_existing("client-w06", local)
+
+        with pytest.raises(expected_error):
+            await service.accept(message, client_id="client-w06")
+
+        assert pipeline.provider_calls == pipeline.tts_calls == pipeline.playback_calls == 0
+        await service.shutdown()
 
     asyncio.run(scenario())
 
