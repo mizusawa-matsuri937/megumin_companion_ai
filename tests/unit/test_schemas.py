@@ -31,6 +31,10 @@ def test_day4_contracts_serialize() -> None:
         turn_id="turn_1",
         segment_id=segment.segment_id,
         text=segment.text,
+        connect_timeout_ms=8000,
+        first_byte_timeout_ms=8000,
+        timeout_ms=30000,
+        cancellation_timeout_ms=1000,
         cancellation_token_id="cancel_1",
         created_at=now,
     )
@@ -53,7 +57,10 @@ def test_day4_contracts_serialize() -> None:
     )
 
     assert segment.model_dump(mode="json")["index"] == 0
-    assert job.model_dump(mode="json")["timeout_ms"] == 8000
+    assert job.model_dump(mode="json")["connect_timeout_ms"] == 8000
+    assert job.model_dump(mode="json")["first_byte_timeout_ms"] == 8000
+    assert job.model_dump(mode="json")["timeout_ms"] == 30000
+    assert job.model_dump(mode="json")["cancellation_timeout_ms"] == 1000
     assert Path(audio.model_dump(mode="json")["audio_path"]) == Path("data/cache/test.wav")
     assert state.model_dump(mode="json")["status"] == "accepted"
 

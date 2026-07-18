@@ -51,8 +51,18 @@ class MockTTSProvider:
         token: CancellationToken,
     ) -> AudioResult:
         delay = self._delay_by_index.get(segment_index, self._synthesis_delay)
-        if await token.wait_or_timeout(delay):
-            token.raise_if_cancelled()
+        try:
+            async with asyncio.timeout(job.timeout_ms / 1000):
+                if await token.wait_or_timeout(delay):
+                    token.raise_if_cancelled()
+        except TimeoutError:
+            return AudioResult(
+                job_id=job.job_id,
+                turn_id=job.turn_id,
+                segment_id=job.segment_id,
+                success=False,
+                error_code="tts_total_timeout",
+            )
         token.raise_if_cancelled()
 
         turn_key = hashlib.sha256(job.turn_id.encode()).hexdigest()[:16]

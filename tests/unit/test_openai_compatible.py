@@ -6,7 +6,12 @@ from collections.abc import AsyncIterator
 
 import httpx
 import pytest
-from app.clients.llm import LLMErrorCode, LLMProviderError, OpenAICompatibleLLMProvider
+from app.clients.llm import (
+    LLMErrorCode,
+    LLMProviderError,
+    OpenAICompatibleLLMProvider,
+    StreamCompletionMode,
+)
 from app.core import CancellationToken
 from app.schemas import (
     ChatMessage,
@@ -45,13 +50,19 @@ class BlockingByteStream(httpx.AsyncByteStream):
         self.closed = True
 
 
-def make_provider(handler: httpx.MockTransport) -> OpenAICompatibleLLMProvider:
-    client = httpx.AsyncClient(base_url="https://provider.invalid", transport=handler)
+def make_provider(
+    handler: httpx.MockTransport,
+    *,
+    completion_mode: StreamCompletionMode = StreamCompletionMode.done,
+    max_stream_event_bytes: int = 64 * 1024,
+) -> OpenAICompatibleLLMProvider:
     return OpenAICompatibleLLMProvider(
         base_url="https://provider.invalid",
         model="test-model",
         api_key="fake-test-key",
-        client=client,
+        stream_completion_mode=completion_mode,
+        max_stream_event_bytes=max_stream_event_bytes,
+        transport=handler,
     )
 
 
@@ -61,6 +72,39 @@ def request() -> ChatRequest:
         temperature=0.2,
         max_tokens=50,
     )
+
+
+def test_constructor_rejects_duplicate_test_transport_and_budget_bypass() -> None:
+    transport = httpx.MockTransport(lambda _request: httpx.Response(200))
+    client = httpx.AsyncClient(transport=transport)
+    try:
+        with pytest.raises(ValueError, match="one owner"):
+            OpenAICompatibleLLMProvider(
+                base_url="https://provider.invalid",
+                model="test-model",
+                api_key="fake-test-key",
+                client=client,
+                transport=transport,
+            )
+        with pytest.raises(ValueError, match="W07 output budget"):
+            OpenAICompatibleLLMProvider(
+                base_url="https://provider.invalid",
+                model="test-model",
+                api_key="fake-test-key",
+                max_stream_event_bytes=0,
+            )
+    finally:
+        asyncio.run(client.aclose())
+
+
+def test_explicit_proxy_is_validated_before_http_client_construction() -> None:
+    with pytest.raises(ValueError, match="provider_proxy_invalid"):
+        OpenAICompatibleLLMProvider(
+            base_url="https://provider.invalid",
+            model="test-model",
+            api_key="fake-test-key",
+            proxy_url="http://user:secret@proxy.invalid:8080",
+        )
 
 
 def test_stream_parses_unicode_sse_and_sends_expected_payload() -> None:
@@ -281,7 +325,7 @@ def test_malformed_stream_and_pre_cancel_are_not_silently_accepted() -> None:
 
 
 def test_invalid_provider_configuration_and_closed_lifecycle() -> None:
-    with pytest.raises(ValueError, match="HTTP"):
+    with pytest.raises(ValueError, match="provider_endpoint_invalid"):
         OpenAICompatibleLLMProvider(base_url="file:///tmp", model="m", api_key="k")
     with pytest.raises(ValueError, match="model"):
         OpenAICompatibleLLMProvider(base_url="https://example.invalid", model=" ", api_key="k")
@@ -324,8 +368,9 @@ def test_multimodal_payload_and_list_stream_content() -> None:
             text="\n".join(
                 [
                     "event: message",
-                    'data: {"choices":[null,{"delta":null},{"delta":{"content":'
+                    'data: {"choices":[{"delta":null},{"delta":{"content":'
                     '[{"text":"图像"},7,{"ignored":true}]}}]}',
+                    'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}',
                     "data: [DONE]",
                 ]
             ),
@@ -379,9 +424,9 @@ def test_multimodal_payload_and_list_stream_content() -> None:
     ("operation", "exception", "expected"),
     [
         ("stream", httpx.ReadTimeout("slow provider"), LLMErrorCode.timeout),
-        ("stream", httpx.ConnectError("offline"), LLMErrorCode.unavailable),
+        ("stream", httpx.ConnectError("offline"), LLMErrorCode.connection),
         ("complete", httpx.ReadTimeout("slow provider"), LLMErrorCode.timeout),
-        ("complete", httpx.ConnectError("offline"), LLMErrorCode.unavailable),
+        ("complete", httpx.ConnectError("offline"), LLMErrorCode.connection),
     ],
 )
 def test_transport_errors_are_mapped(
@@ -440,3 +485,296 @@ def test_non_object_json_is_a_protocol_error() -> None:
         await provider._client.aclose()
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    ("mode", "events"),
+    [
+        (
+            StreamCompletionMode.done_and_finish_reason,
+            [
+                'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":null}]}\n\n',
+                'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n',
+                "data: [DONE]\n\n",
+            ],
+        ),
+        (
+            StreamCompletionMode.done,
+            ['data: {"choices":[{"delta":{"content":"ok"}}]}\n\n', "data: [DONE]\n\n"],
+        ),
+        (
+            StreamCompletionMode.finish_reason,
+            [
+                'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n',
+                'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n',
+            ],
+        ),
+        (
+            StreamCompletionMode.eof,
+            ['data: {"choices":[{"delta":{"content":"ok"}}]}\n\n'],
+        ),
+    ],
+)
+def test_stream_completion_modes_make_done_finish_reason_and_legal_eof_explicit(
+    mode: StreamCompletionMode, events: list[str]
+) -> None:
+    def handler(_incoming: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text="".join(events))
+
+    async def scenario() -> list[str]:
+        provider = make_provider(httpx.MockTransport(handler), completion_mode=mode)
+        try:
+            return [delta async for delta in provider.stream(request(), CancellationToken("turn"))]
+        finally:
+            await provider.close()
+
+    assert asyncio.run(scenario()) == ["ok"]
+
+
+@pytest.mark.parametrize(
+    ("events", "expected"),
+    [
+        (
+            [
+                'data: {"choices":[{"delta":{"content":"partial"}}]}\n\n',
+                'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n',
+            ],
+            LLMErrorCode.truncated,
+        ),
+        (
+            ['data: {"choices":[{"delta":{"content":"partial"}}]}\n\n', "data: [DONE]\n\n"],
+            LLMErrorCode.protocol,
+        ),
+        (
+            [
+                'data: {"choices":[{"delta":{"content":"partial"}}]}\n\n',
+                'data: {"choices":[{"delta":{},"finish_reason":"length"}]}\n\n',
+                "data: [DONE]\n\n",
+            ],
+            LLMErrorCode.truncated,
+        ),
+        (
+            [
+                'data: {"choices":[{"delta":{},"finish_reason":"synthetic_unknown"}]}\n\n',
+                "data: [DONE]\n\n",
+            ],
+            LLMErrorCode.protocol,
+        ),
+    ],
+)
+def test_strict_stream_rejects_truncated_eof_missing_finish_and_bad_finish_reason(
+    events: list[str], expected: LLMErrorCode
+) -> None:
+    def handler(_incoming: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text="".join(events))
+
+    async def scenario() -> None:
+        provider = make_provider(
+            httpx.MockTransport(handler),
+            completion_mode=StreamCompletionMode.done_and_finish_reason,
+        )
+        try:
+            with pytest.raises(LLMProviderError) as captured:
+                _ = [delta async for delta in provider.stream(request(), CancellationToken("turn"))]
+            assert captured.value.code is expected
+            assert "partial" not in str(captured.value)
+        finally:
+            await provider.close()
+
+    asyncio.run(scenario())
+
+
+def test_strict_stream_rejects_conflicting_finish_reasons() -> None:
+    def handler(_incoming: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            text=(
+                'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n'
+                'data: {"choices":[{"delta":{},"finish_reason":"content_filter"}]}\n\n'
+            ),
+        )
+
+    async def scenario() -> None:
+        provider = make_provider(
+            httpx.MockTransport(handler),
+            completion_mode=StreamCompletionMode.finish_reason,
+        )
+        try:
+            with pytest.raises(LLMProviderError, match="llm_request_rejected"):
+                _ = [
+                    delta
+                    async for delta in provider.stream(request(), CancellationToken("conflict"))
+                ]
+        finally:
+            await provider.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("operation", ["stream", "complete"])
+def test_unclassified_http_transport_errors_are_content_free(operation: str) -> None:
+    provider_body_sentinel = "remote-provider-body-secret"
+
+    def handler(_incoming: httpx.Request) -> httpx.Response:
+        raise httpx.HTTPError(provider_body_sentinel)
+
+    async def scenario() -> None:
+        provider = make_provider(httpx.MockTransport(handler))
+        try:
+            with pytest.raises(LLMProviderError) as captured:
+                if operation == "stream":
+                    _ = [
+                        delta
+                        async for delta in provider.stream(
+                            request(), CancellationToken("http-error")
+                        )
+                    ]
+                else:
+                    await provider.complete(request(), CancellationToken("http-error"))
+            assert captured.value.code is LLMErrorCode.unavailable
+            assert provider_body_sentinel not in str(captured.value)
+        finally:
+            await provider.close()
+
+    asyncio.run(scenario())
+
+
+def test_closed_provider_rejects_new_work_and_close_is_idempotent() -> None:
+    async def scenario() -> None:
+        provider = make_provider(httpx.MockTransport(lambda _request: httpx.Response(200)))
+        await provider.close()
+        await provider.close()
+        with pytest.raises(RuntimeError):
+            await provider.complete(request(), CancellationToken("closed"))
+
+    asyncio.run(scenario())
+
+
+def test_duplicate_stream_delta_is_bounded_and_not_silently_retried() -> None:
+    calls = 0
+
+    def handler(_incoming: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(
+            200,
+            text=(
+                'data: {"choices":[{"delta":{"content":"same"}}]}\n\n'
+                'data: {"choices":[{"delta":{"content":"same"}}]}\n\n'
+                "data: [DONE]\n\n"
+            ),
+        )
+
+    async def scenario() -> list[str]:
+        provider = make_provider(httpx.MockTransport(handler))
+        try:
+            return [delta async for delta in provider.stream(request(), CancellationToken("turn"))]
+        finally:
+            await provider.close()
+
+    assert asyncio.run(scenario()) == ["same", "same"]
+    assert calls == 1
+
+
+def test_oversized_stream_event_is_rejected_by_the_existing_w07_byte_budget() -> None:
+    provider_body_sentinel = "provider-body-must-not-escape"
+
+    def handler(_incoming: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=(
+                'data: {"choices":[{"delta":{"content":"'
+                + provider_body_sentinel
+                + '"}}]}\n\ndata: [DONE]\n\n'
+            ),
+        )
+
+    async def scenario() -> None:
+        provider = make_provider(httpx.MockTransport(handler), max_stream_event_bytes=24)
+        try:
+            with pytest.raises(LLMProviderError) as captured:
+                _ = [
+                    delta
+                    async for delta in provider.stream(request(), CancellationToken("bounded"))
+                ]
+            assert captured.value.code is LLMErrorCode.truncated
+            assert provider_body_sentinel not in str(captured.value)
+        finally:
+            await provider.close()
+
+    asyncio.run(scenario())
+
+
+def test_oversized_non_stream_body_is_rejected_before_json_buffering() -> None:
+    provider_body_sentinel = "provider-non-stream-body-must-not-escape"
+    stream = FragmentedByteStream(
+        [
+            b'{"choices":[{"message":{"content":"',
+            provider_body_sentinel.encode() * 32,
+            b'"},"finish_reason":"stop"}]}',
+        ]
+    )
+
+    def handler(_incoming: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, stream=stream)
+
+    async def scenario() -> None:
+        provider = make_provider(httpx.MockTransport(handler), max_stream_event_bytes=128)
+        try:
+            with pytest.raises(LLMProviderError) as captured:
+                await provider.complete(request(), CancellationToken("bounded-complete"))
+            assert captured.value.code is LLMErrorCode.truncated
+            assert provider_body_sentinel not in str(captured.value)
+            assert stream.closed
+        finally:
+            await provider.close()
+
+    asyncio.run(scenario())
+
+
+def test_non_stream_length_finish_is_not_returned_as_success() -> None:
+    def handler(_incoming: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {"message": {"content": "partial-provider-body"}, "finish_reason": "length"}
+                ]
+            },
+        )
+
+    async def scenario() -> None:
+        provider = make_provider(httpx.MockTransport(handler))
+        try:
+            with pytest.raises(LLMProviderError) as captured:
+                await provider.complete(request(), CancellationToken("turn"))
+            assert captured.value.code is LLMErrorCode.truncated
+            assert "partial-provider-body" not in str(captured.value)
+        finally:
+            await provider.close()
+
+    asyncio.run(scenario())
+
+
+def test_https_redirect_is_never_followed_or_downgraded_to_http() -> None:
+    calls: list[str] = []
+
+    def handler(incoming: httpx.Request) -> httpx.Response:
+        calls.append(str(incoming.url))
+        return httpx.Response(302, headers={"location": "http://provider.example/plaintext"})
+
+    async def scenario() -> None:
+        provider = make_provider(httpx.MockTransport(handler))
+        try:
+            with pytest.raises(LLMProviderError) as captured:
+                _ = [
+                    delta
+                    async for delta in provider.stream(request(), CancellationToken("redirect"))
+                ]
+            assert captured.value.code is LLMErrorCode.protocol
+        finally:
+            await provider.close()
+
+    asyncio.run(scenario())
+    assert len(calls) == 1
+    assert all(url.startswith("https://") for url in calls)

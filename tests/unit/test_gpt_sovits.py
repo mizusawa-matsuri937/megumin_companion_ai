@@ -39,6 +39,10 @@ def _job(token: CancellationToken, **changes: object) -> TTSJob:
         "text": "测试语音",
         "style": "bright",
         "speed_factor": 1.1,
+        "connect_timeout_ms": 80,
+        "first_byte_timeout_ms": 80,
+        "timeout_ms": 300,
+        "cancellation_timeout_ms": 50,
         "cancellation_token_id": token.token_id,
     }
     values.update(changes)
@@ -87,7 +91,7 @@ def test_preset_rejects_invalid_voice_parameters(changes: dict[str, object]) -> 
 )
 def test_provider_rejects_unsafe_limits(tmp_path: Path, changes: dict[str, object]) -> None:
     options: dict[str, object] = {
-        "base_url": "http://gpt-sovits.local",
+        "base_url": "http://127.0.0.1:9880",
         "output_directory": tmp_path,
         "presets": _presets(),
     }
@@ -175,13 +179,13 @@ def test_probe_classifies_api_v2_without_synthesizing(
 ) -> None:
     async def scenario() -> None:
         async def handler(request: httpx.Request) -> httpx.Response:
-            assert request.url == httpx.URL("http://gpt-sovits.local/tts")
+            assert request.url == httpx.URL("http://127.0.0.1:9880/tts")
             assert json.loads(request.content) == {}
             return httpx.Response(status, request=request)
 
         client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-        provider = GPTSoVITSProvider("http://gpt-sovits.local", tmp_path, _presets(), client=client)
-        result = await provider.probe()
+        provider = GPTSoVITSProvider("http://127.0.0.1:9880", tmp_path, _presets(), client=client)
+        result = await provider.probe(timeout_ms=50)
 
         assert result.available is available
         assert result.protocol == ("api_v2" if available else None)
@@ -210,10 +214,31 @@ def test_probe_transport_failures_are_safe(
             raise failure
 
         client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-        provider = GPTSoVITSProvider("http://gpt-sovits.local", tmp_path, _presets(), client=client)
-        assert (await provider.probe()).error_code == error_code
+        provider = GPTSoVITSProvider("http://127.0.0.1:9880", tmp_path, _presets(), client=client)
+        assert (await provider.probe(timeout_ms=50)).error_code == error_code
         await provider.close()
-        assert (await provider.probe()).error_code == "tts_closed"
+        assert (await provider.probe(timeout_ms=50)).error_code == "tts_closed"
+        await client.aclose()
+
+    asyncio.run(scenario())
+
+
+def test_probe_requires_and_enforces_an_explicit_deadline(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        started = asyncio.Event()
+
+        async def handler(_request: httpx.Request) -> httpx.Response:
+            started.set()
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable")
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler), timeout=None)
+        provider = GPTSoVITSProvider("http://127.0.0.1:9880", tmp_path, _presets(), client=client)
+        result = await provider.probe(timeout_ms=20)
+
+        assert started.is_set()
+        assert result.error_code == "tts_timeout"
+        await provider.close()
         await client.aclose()
 
     asyncio.run(scenario())
@@ -233,7 +258,7 @@ def test_synthesize_applies_preset_and_atomically_lands_valid_wave(tmp_path: Pat
             )
 
         client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-        provider = GPTSoVITSProvider("http://gpt-sovits.local", tmp_path, _presets(), client=client)
+        provider = GPTSoVITSProvider("http://127.0.0.1:9880", tmp_path, _presets(), client=client)
         token = CancellationToken("turn_test")
         result = await provider.synthesize(_job(token), segment_index=3, token=token)
 
@@ -310,7 +335,7 @@ def test_synthesize_maps_expected_failures_and_leaves_no_files(
             )
 
         client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-        provider = GPTSoVITSProvider("http://gpt-sovits.local", tmp_path, _presets(), client=client)
+        provider = GPTSoVITSProvider("http://127.0.0.1:9880", tmp_path, _presets(), client=client)
         token = CancellationToken("turn_test")
         result = await provider.synthesize(_job(token), segment_index=0, token=token)
 
@@ -346,7 +371,7 @@ def test_declared_size_and_empty_body_are_rejected(
 
         client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
         provider = GPTSoVITSProvider(
-            "http://gpt-sovits.local",
+            "http://127.0.0.1:9880",
             tmp_path,
             _presets(),
             max_audio_bytes=128,
@@ -365,8 +390,8 @@ def test_declared_size_and_empty_body_are_rejected(
 @pytest.mark.parametrize(
     ("failure", "error_code"),
     [
-        (httpx.ReadTimeout("slow"), "tts_timeout"),
-        (httpx.ConnectError("offline"), "tts_unavailable"),
+        (httpx.ReadTimeout("slow"), "tts_total_timeout"),
+        (httpx.ConnectError("offline"), "tts_connection_error"),
     ],
 )
 def test_synthesis_transport_failures_and_closed_state(
@@ -379,7 +404,7 @@ def test_synthesis_transport_failures_and_closed_state(
             raise failure
 
         client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-        provider = GPTSoVITSProvider("http://gpt-sovits.local", tmp_path, _presets(), client=client)
+        provider = GPTSoVITSProvider("http://127.0.0.1:9880", tmp_path, _presets(), client=client)
         token = CancellationToken("turn")
         result = await provider.synthesize(_job(token), segment_index=0, token=token)
         assert result.error_code == error_code
@@ -413,7 +438,7 @@ def test_streaming_size_limit_removes_partial_file(tmp_path: Path) -> None:
 
         client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
         provider = GPTSoVITSProvider(
-            "http://gpt-sovits.local",
+            "http://127.0.0.1:9880",
             tmp_path,
             _presets(),
             max_audio_bytes=64,
@@ -507,7 +532,7 @@ def test_cancellation_interrupts_blocked_stream_and_cleans_partial(tmp_path: Pat
             )
 
         client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-        provider = GPTSoVITSProvider("http://gpt-sovits.local", tmp_path, _presets(), client=client)
+        provider = GPTSoVITSProvider("http://127.0.0.1:9880", tmp_path, _presets(), client=client)
         token = CancellationToken("turn_test")
         task = asyncio.create_task(provider.synthesize(_job(token), segment_index=0, token=token))
         await asyncio.wait_for(started.wait(), timeout=1)
@@ -549,7 +574,7 @@ def test_close_cancels_and_joins_inflight_synthesis_before_returning(tmp_path: P
         output_directory = tmp_path / "ephemeral"
         cache_directory = tmp_path / "persistent"
         provider = GPTSoVITSProvider(
-            "http://gpt-sovits.local",
+            "http://127.0.0.1:9880",
             output_directory,
             _presets(),
             cache_enabled=True,
@@ -609,7 +634,7 @@ def test_repeated_cancellation_waits_for_synthesis_cleanup(tmp_path: Path) -> No
 
         client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
         provider = GPTSoVITSProvider(
-            "http://gpt-sovits.local",
+            "http://127.0.0.1:9880",
             tmp_path,
             _presets(),
             client=client,
@@ -653,7 +678,7 @@ def test_close_during_cache_promotion_removes_wav_and_partial_files(
 
         client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
         provider = GPTSoVITSProvider(
-            "http://gpt-sovits.local",
+            "http://127.0.0.1:9880",
             tmp_path / "ephemeral",
             _presets(),
             cache_enabled=True,
@@ -700,7 +725,7 @@ def test_close_cleans_all_outputs_and_discard_ignores_unowned_path(tmp_path: Pat
 
         client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
         provider = GPTSoVITSProvider(
-            "http://gpt-sovits.local", tmp_path / "audio", _presets(), client=client
+            "http://127.0.0.1:9880", tmp_path / "audio", _presets(), client=client
         )
         token = CancellationToken("turn_test")
         result = await provider.synthesize(_job(token), segment_index=0, token=token)
@@ -742,7 +767,7 @@ def test_persistent_cache_is_disabled_by_default(tmp_path: Path) -> None:
         client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
         cache_dir = tmp_path / "persistent"
         provider = GPTSoVITSProvider(
-            "http://gpt-sovits.local",
+            "http://127.0.0.1:9880",
             tmp_path / "ephemeral",
             _presets(),
             cache_dir=cache_dir,
@@ -780,7 +805,7 @@ def test_concurrent_same_key_uses_one_request_and_persists_hashed_cache(tmp_path
         client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
         cache_dir = tmp_path / "persistent"
         provider = GPTSoVITSProvider(
-            "http://gpt-sovits.local",
+            "http://127.0.0.1:9880",
             tmp_path / "ephemeral",
             _presets(),
             cache_enabled=True,
@@ -845,7 +870,7 @@ def test_sensitive_text_and_policy_failure_never_enter_persistent_cache(tmp_path
         client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
         cache_dir = tmp_path / "persistent"
         sensitive_provider = GPTSoVITSProvider(
-            "http://gpt-sovits.local",
+            "http://127.0.0.1:9880",
             tmp_path / "ephemeral",
             _presets(),
             cache_enabled=True,
@@ -871,7 +896,7 @@ def test_sensitive_text_and_policy_failure_never_enter_persistent_cache(tmp_path
         await sensitive_provider.close()
 
         fail_closed_provider = GPTSoVITSProvider(
-            "http://gpt-sovits.local",
+            "http://127.0.0.1:9880",
             tmp_path / "ephemeral",
             _presets(),
             cache_enabled=True,
@@ -917,7 +942,7 @@ def test_cache_enforces_lru_capacity_and_ttl_without_deleting_leased_audio(
         client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
         cache_dir = tmp_path / "persistent"
         provider = GPTSoVITSProvider(
-            "http://gpt-sovits.local",
+            "http://127.0.0.1:9880",
             tmp_path / "ephemeral",
             _presets(),
             cache_enabled=True,
@@ -988,7 +1013,7 @@ def test_uncached_audio_part_and_final_are_tracked_until_discard(tmp_path: Path)
         )
         client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
         provider = GPTSoVITSProvider(
-            "http://gpt-sovits.local",
+            "http://127.0.0.1:9880",
             paths.temp / "audio" / "tts",
             _presets(),
             client=client,
@@ -1013,3 +1038,125 @@ def test_uncached_audio_part_and_final_are_tracked_until_discard(tmp_path: Path)
         await client.aclose()
 
     asyncio.run(scenario())
+
+
+class _DelayedAudioStream(httpx.AsyncByteStream):
+    def __init__(self, first_delay: float, chunks: list[bytes], *, stall_after_first: bool = False):
+        self._first_delay = first_delay
+        self._chunks = chunks
+        self._stall_after_first = stall_after_first
+        self.closed = False
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        await asyncio.sleep(self._first_delay)
+        for index, chunk in enumerate(self._chunks):
+            yield chunk
+            if index == 0 and self._stall_after_first:
+                await asyncio.Event().wait()
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
+@pytest.mark.parametrize(
+    ("first_delay", "first_byte_ms", "expected"),
+    [
+        (0.05, 81, None),
+        (0.10, 79, "tts_first_byte_timeout"),
+    ],
+)
+def test_first_byte_7_9_and_8_1_boundary_is_owned_by_tts_job(
+    tmp_path: Path,
+    first_delay: float,
+    first_byte_ms: int,
+    expected: str | None,
+) -> None:
+    async def scenario() -> None:
+        stream = _DelayedAudioStream(first_delay, [_wave_bytes()])
+
+        def handler(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, headers={"content-type": "audio/wav"}, stream=stream)
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler), timeout=None)
+        provider = GPTSoVITSProvider("http://127.0.0.1:9880", tmp_path, _presets(), client=client)
+        token = CancellationToken("w08-first-byte")
+        result = await provider.synthesize(
+            _job(token, first_byte_timeout_ms=first_byte_ms),
+            segment_index=0,
+            token=token,
+        )
+        assert result.error_code == expected
+        assert result.success is (expected is None)
+        await provider.discard(result)
+        await provider.close()
+        await client.aclose()
+        assert stream.closed
+        assert not list(tmp_path.rglob("*.part"))
+
+    asyncio.run(scenario())
+
+
+def test_connect_and_total_deadlines_have_distinct_codes_and_cleanup(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        def connect_timeout(request: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectTimeout("synthetic", request=request)
+
+        connect_client = httpx.AsyncClient(
+            transport=httpx.MockTransport(connect_timeout), timeout=None
+        )
+        connect_provider = GPTSoVITSProvider(
+            "http://127.0.0.1:9880", tmp_path / "connect", _presets(), client=connect_client
+        )
+        connect_token = CancellationToken("w08-connect")
+        connect_result = await connect_provider.synthesize(
+            _job(connect_token, connect_timeout_ms=79),
+            segment_index=0,
+            token=connect_token,
+        )
+        assert connect_result.error_code == "tts_connect_timeout"
+        await connect_provider.close()
+        await connect_client.aclose()
+
+        stream = _DelayedAudioStream(0, [_wave_bytes()], stall_after_first=True)
+
+        def stalled(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, headers={"content-type": "audio/wav"}, stream=stream)
+
+        total_client = httpx.AsyncClient(transport=httpx.MockTransport(stalled), timeout=None)
+        total_provider = GPTSoVITSProvider(
+            "http://127.0.0.1:9880", tmp_path / "total", _presets(), client=total_client
+        )
+        total_token = CancellationToken("w08-total")
+        total_result = await total_provider.synthesize(
+            _job(total_token, first_byte_timeout_ms=80, timeout_ms=100),
+            segment_index=0,
+            token=total_token,
+        )
+        assert total_result.error_code == "tts_total_timeout"
+        await total_provider.close()
+        await total_client.aclose()
+        assert stream.closed
+        assert not list(tmp_path.rglob("*.part"))
+
+    asyncio.run(scenario())
+
+
+def test_tts_redirect_is_rejected_without_following_downgrade(tmp_path: Path) -> None:
+    calls = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(302, headers={"location": "http://tts.example/plaintext"})
+
+    async def scenario() -> None:
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler), timeout=None)
+        provider = GPTSoVITSProvider("https://tts.example", tmp_path, _presets(), client=client)
+        token = CancellationToken("w08-redirect")
+        result = await provider.synthesize(_job(token), segment_index=0, token=token)
+        assert result.error_code == "tts_protocol_error"
+        await provider.close()
+        await client.aclose()
+
+    asyncio.run(scenario())
+    assert calls == 1

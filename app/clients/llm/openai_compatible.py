@@ -5,12 +5,21 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import AsyncIterator, Awaitable
+from enum import StrEnum
+from pathlib import Path
 from typing import Any, TypeVar
 
 import httpx
 
 from app.clients.llm.errors import LLMErrorCode, LLMProviderError
 from app.core.cancellation import CancellationToken
+from app.limits import LimitsConfig
+from app.provider_transport import (
+    EndpointKind,
+    build_ssl_context,
+    validate_endpoint,
+    validate_proxy_url,
+)
 from app.schemas import (
     ChatCompletion,
     ChatMessage,
@@ -20,6 +29,15 @@ from app.schemas import (
 )
 
 _ResultT = TypeVar("_ResultT")
+
+
+class StreamCompletionMode(StrEnum):
+    """Provider capability for declaring one streamed text response complete."""
+
+    done_and_finish_reason = "done_and_finish_reason"
+    done = "done"
+    finish_reason = "finish_reason"
+    eof = "eof"
 
 
 class OpenAICompatibleLLMProvider:
@@ -33,10 +51,15 @@ class OpenAICompatibleLLMProvider:
         timeout_seconds: float = 45.0,
         default_temperature: float | None = None,
         default_max_tokens: int | None = None,
+        max_stream_event_bytes: int = LimitsConfig().llm_output_bytes,
+        stream_completion_mode: StreamCompletionMode
+        | str = StreamCompletionMode.done_and_finish_reason,
+        proxy_url: str | None = None,
+        ca_bundle_path: Path | None = None,
+        transport: httpx.AsyncBaseTransport | None = None,
         client: httpx.AsyncClient | None = None,
     ) -> None:
-        if not base_url.startswith(("https://", "http://")):
-            raise ValueError("LLM base_url 必须使用 HTTP(S)")
+        validate_endpoint(base_url, kind=EndpointKind.http)
         if not model.strip():
             raise ValueError("LLM model 不能为空")
         if not api_key.strip():
@@ -45,15 +68,29 @@ class OpenAICompatibleLLMProvider:
             raise ValueError("LLM default_temperature 必须介于 0 和 2 之间")
         if default_max_tokens is not None and not 1 <= default_max_tokens <= 100_000:
             raise ValueError("LLM default_max_tokens 必须介于 1 和 100000 之间")
+        if not 1 <= max_stream_event_bytes <= LimitsConfig().llm_output_bytes:
+            raise ValueError("LLM stream event byte limit exceeds W07 output budget")
+        if client is not None and transport is not None:
+            raise ValueError("LLM test transport must have one owner")
+        if proxy_url is not None:
+            validate_proxy_url(proxy_url)
         self._model = model
         self._endpoint = endpoint if endpoint.startswith("/") else f"/{endpoint}"
         self._default_temperature = default_temperature
         self._default_max_tokens = default_max_tokens
-        self._owns_client = client is None
-        self._client = client or httpx.AsyncClient(
+        self._max_stream_event_bytes = max_stream_event_bytes
+        self._stream_completion_mode = StreamCompletionMode(stream_completion_mode)
+        if client is not None:
+            transport = client._transport
+        self._client = httpx.AsyncClient(
             base_url=base_url.rstrip("/"),
             headers={"Authorization": f"Bearer {api_key}"},
             timeout=httpx.Timeout(timeout_seconds),
+            verify=build_ssl_context(ca_bundle_path),
+            proxy=proxy_url,
+            transport=transport,
+            follow_redirects=False,
+            trust_env=False,
         )
         self._closed = False
 
@@ -71,21 +108,40 @@ class OpenAICompatibleLLMProvider:
             try:
                 token.raise_if_cancelled()
                 self._raise_for_status(response)
-                lines = response.aiter_lines()
+                lines = _bounded_lines(
+                    response,
+                    token,
+                    max_line_bytes=self._max_stream_event_bytes,
+                )
+                saw_event = False
+                finish_reason: str | None = None
                 while True:
                     try:
                         line = await _await_with_token(anext(lines), token)
                     except StopAsyncIteration:
+                        _validate_stream_eof(
+                            self._stream_completion_mode,
+                            saw_event=saw_event,
+                            finish_reason=finish_reason,
+                        )
                         return
                     token.raise_if_cancelled()
                     data = _sse_data(line)
                     if data is None:
                         continue
                     if data == "[DONE]":
+                        _validate_done_marker(self._stream_completion_mode, finish_reason)
                         return
                     body = _parse_json(data)
                     _raise_remote_error(body)
-                    for delta in _extract_stream_text(body):
+                    deltas, event_finish_reason = _extract_stream_event(body)
+                    saw_event = True
+                    if event_finish_reason is not None:
+                        _classify_finish_reason(event_finish_reason)
+                        if finish_reason is not None and finish_reason != event_finish_reason:
+                            raise LLMProviderError(LLMErrorCode.protocol, retryable=False)
+                        finish_reason = event_finish_reason
+                    for delta in deltas:
                         if delta:
                             yield delta
             finally:
@@ -94,29 +150,44 @@ class OpenAICompatibleLLMProvider:
             raise
         except httpx.TimeoutException as exc:
             raise LLMProviderError(LLMErrorCode.timeout, retryable=True) from exc
+        except (httpx.ConnectError, httpx.NetworkError, httpx.RemoteProtocolError) as exc:
+            raise LLMProviderError(LLMErrorCode.connection, retryable=True) from exc
         except httpx.HTTPError as exc:
             raise LLMProviderError(LLMErrorCode.unavailable, retryable=True) from exc
 
     async def complete(self, request: ChatRequest, token: CancellationToken) -> ChatCompletion:
         self._ensure_open()
         token.raise_if_cancelled()
+        response: httpx.Response | None = None
         try:
+            outgoing = self._client.build_request(
+                "POST",
+                self._endpoint,
+                json=self._payload(request, stream=False),
+            )
             response = await _await_with_token(
-                self._client.post(
-                    self._endpoint,
-                    json=self._payload(request, stream=False),
-                ),
+                self._client.send(outgoing, stream=True),
                 token,
             )
-            token.raise_if_cancelled()
-            self._raise_for_status(response)
-            body = _parse_json(response.text)
-            _raise_remote_error(body)
-            return _extract_completion(body)
+            try:
+                token.raise_if_cancelled()
+                self._raise_for_status(response)
+                payload = await _read_bounded_body(
+                    response,
+                    token,
+                    max_body_bytes=self._max_stream_event_bytes,
+                )
+                body = _parse_json(payload)
+                _raise_remote_error(body)
+                return _extract_completion(body)
+            finally:
+                await response.aclose()
         except LLMProviderError:
             raise
         except httpx.TimeoutException as exc:
             raise LLMProviderError(LLMErrorCode.timeout, retryable=True) from exc
+        except (httpx.ConnectError, httpx.NetworkError, httpx.RemoteProtocolError) as exc:
+            raise LLMProviderError(LLMErrorCode.connection, retryable=True) from exc
         except httpx.HTTPError as exc:
             raise LLMProviderError(LLMErrorCode.unavailable, retryable=True) from exc
 
@@ -124,8 +195,7 @@ class OpenAICompatibleLLMProvider:
         if self._closed:
             return
         self._closed = True
-        if self._owns_client:
-            await self._client.aclose()
+        await self._client.aclose()
 
     def _ensure_open(self) -> None:
         if self._closed:
@@ -153,6 +223,8 @@ class OpenAICompatibleLLMProvider:
 
     def _raise_for_status(self, response: httpx.Response) -> None:
         status = response.status_code
+        if 300 <= status < 400:
+            raise LLMProviderError(LLMErrorCode.protocol, retryable=False, status_code=status)
         if status < 400:
             return
         if status in {401, 403}:
@@ -223,6 +295,71 @@ def _sse_data(line: str) -> str | None:
     return stripped[5:].lstrip()
 
 
+async def _bounded_lines(
+    response: httpx.Response,
+    token: CancellationToken,
+    *,
+    max_line_bytes: int,
+) -> AsyncIterator[str]:
+    """Decode SSE lines incrementally without buffering an unbounded provider body."""
+
+    buffer = bytearray()
+    stream = response.aiter_bytes(chunk_size=min(max_line_bytes, 64 * 1024))
+    while True:
+        try:
+            chunk = await _await_with_token(anext(stream), token)
+        except StopAsyncIteration:
+            break
+        buffer.extend(chunk)
+        while True:
+            newline = buffer.find(b"\n")
+            if newline < 0:
+                break
+            raw = bytes(buffer[:newline]).rstrip(b"\r")
+            del buffer[: newline + 1]
+            if len(raw) > max_line_bytes:
+                raise LLMProviderError(LLMErrorCode.truncated, retryable=False)
+            try:
+                yield raw.decode("utf-8")
+            except UnicodeDecodeError as exc:
+                raise LLMProviderError(LLMErrorCode.protocol, retryable=False) from exc
+        if len(buffer) > max_line_bytes:
+            raise LLMProviderError(LLMErrorCode.truncated, retryable=False)
+    if buffer:
+        if len(buffer) > max_line_bytes:
+            raise LLMProviderError(LLMErrorCode.truncated, retryable=False)
+        try:
+            yield bytes(buffer).rstrip(b"\r").decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise LLMProviderError(LLMErrorCode.protocol, retryable=False) from exc
+
+
+async def _read_bounded_body(
+    response: httpx.Response,
+    token: CancellationToken,
+    *,
+    max_body_bytes: int,
+) -> str:
+    """Read one non-stream response without exceeding the shared W07 byte budget."""
+
+    chunks: list[bytes] = []
+    byte_count = 0
+    stream = response.aiter_bytes(chunk_size=min(max_body_bytes, 64 * 1024))
+    while True:
+        try:
+            chunk = await _await_with_token(anext(stream), token)
+        except StopAsyncIteration:
+            break
+        byte_count += len(chunk)
+        if byte_count > max_body_bytes:
+            raise LLMProviderError(LLMErrorCode.truncated, retryable=False)
+        chunks.append(chunk)
+    try:
+        return b"".join(chunks).decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise LLMProviderError(LLMErrorCode.protocol, retryable=False) from exc
+
+
 def _parse_json(data: str) -> dict[str, Any]:
     try:
         value = json.loads(data)
@@ -238,14 +375,20 @@ def _raise_remote_error(body: dict[str, Any]) -> None:
         raise LLMProviderError(LLMErrorCode.rejected, retryable=False)
 
 
-def _extract_stream_text(body: dict[str, Any]) -> list[str]:
+def _extract_stream_event(body: dict[str, Any]) -> tuple[list[str], str | None]:
     choices = body.get("choices")
     if not isinstance(choices, list):
         raise LLMProviderError(LLMErrorCode.protocol, retryable=False)
     output: list[str] = []
+    finish_reasons: set[str] = set()
     for choice in choices:
         if not isinstance(choice, dict):
-            continue
+            raise LLMProviderError(LLMErrorCode.protocol, retryable=False)
+        raw_finish_reason = choice.get("finish_reason")
+        if raw_finish_reason is not None:
+            if not isinstance(raw_finish_reason, str):
+                raise LLMProviderError(LLMErrorCode.protocol, retryable=False)
+            finish_reasons.add(raw_finish_reason)
         delta = choice.get("delta")
         if not isinstance(delta, dict):
             continue
@@ -256,7 +399,42 @@ def _extract_stream_text(body: dict[str, Any]) -> list[str]:
             for part in content:
                 if isinstance(part, dict) and isinstance(part.get("text"), str):
                     output.append(part["text"])
-    return output
+    if len(finish_reasons) > 1:
+        raise LLMProviderError(LLMErrorCode.protocol, retryable=False)
+    return output, next(iter(finish_reasons), None)
+
+
+def _classify_finish_reason(reason: str) -> None:
+    if reason == "stop":
+        return
+    if reason == "length":
+        raise LLMProviderError(LLMErrorCode.truncated, retryable=False)
+    if reason == "content_filter":
+        raise LLMProviderError(LLMErrorCode.rejected, retryable=False)
+    raise LLMProviderError(LLMErrorCode.protocol, retryable=False)
+
+
+def _validate_done_marker(mode: StreamCompletionMode, finish_reason: str | None) -> None:
+    if mode is StreamCompletionMode.done_and_finish_reason and finish_reason is None:
+        raise LLMProviderError(LLMErrorCode.protocol, retryable=False)
+    if finish_reason is not None:
+        _classify_finish_reason(finish_reason)
+
+
+def _validate_stream_eof(
+    mode: StreamCompletionMode,
+    *,
+    saw_event: bool,
+    finish_reason: str | None,
+) -> None:
+    if not saw_event:
+        raise LLMProviderError(LLMErrorCode.protocol, retryable=False)
+    if mode is StreamCompletionMode.eof:
+        return
+    if mode is StreamCompletionMode.finish_reason and finish_reason is not None:
+        _classify_finish_reason(finish_reason)
+        return
+    raise LLMProviderError(LLMErrorCode.truncated, retryable=False)
 
 
 def _extract_completion(body: dict[str, Any]) -> ChatCompletion:
@@ -267,6 +445,10 @@ def _extract_completion(body: dict[str, Any]) -> ChatCompletion:
     message = choice.get("message")
     if not isinstance(message, dict) or not isinstance(message.get("content"), str):
         raise LLMProviderError(LLMErrorCode.protocol, retryable=False)
+    finish_reason = choice.get("finish_reason")
+    if not isinstance(finish_reason, str):
+        raise LLMProviderError(LLMErrorCode.protocol, retryable=False)
+    _classify_finish_reason(finish_reason)
     usage_raw = body.get("usage")
     usage = (
         {key: value for key, value in usage_raw.items() if isinstance(value, int)}
@@ -275,9 +457,7 @@ def _extract_completion(body: dict[str, Any]) -> ChatCompletion:
     )
     return ChatCompletion(
         text=message["content"],
-        finish_reason=choice.get("finish_reason")
-        if isinstance(choice.get("finish_reason"), str)
-        else None,
+        finish_reason=finish_reason,
         model=body.get("model") if isinstance(body.get("model"), str) else None,
         usage=usage,
     )

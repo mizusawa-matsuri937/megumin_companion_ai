@@ -8,7 +8,7 @@ import sqlite3
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict
 
 import httpx
 from app.clients.llm import OpenAICompatibleLLMProvider
@@ -59,6 +59,21 @@ PRIVACY_SENTINEL = "SCREEN_PRIVACY_SENTINEL password=screen-only-secret-937"
 class _WindowSource:
     async def active_window(self) -> WindowInfo:
         return WindowInfo("ordinary-window", "Ordinary Editor", "Code", Rect(0, 0, 64, 32))
+
+
+class _TTSDeadlines(TypedDict):
+    tts_connect_timeout_ms: int
+    tts_first_byte_timeout_ms: int
+    tts_total_timeout_ms: int
+    tts_cancellation_timeout_ms: int
+
+
+_TTS_DEADLINES: _TTSDeadlines = {
+    "tts_connect_timeout_ms": 80,
+    "tts_first_byte_timeout_ms": 80,
+    "tts_total_timeout_ms": 300,
+    "tts_cancellation_timeout_ms": 50,
+}
 
 
 class _Capture:
@@ -344,6 +359,7 @@ def test_privacy_sentinel_never_crosses_persistence_event_network_or_file_bounda
             llm,
             MockTTSProvider(cache_path, duration_ms=0),
             SilentAudioPlayer(),
+            **_TTS_DEADLINES,
         )
         service = TurnService(
             logger,

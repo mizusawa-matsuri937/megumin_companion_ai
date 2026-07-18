@@ -57,6 +57,10 @@ def build_llm_provider(
             settings.llm.max_tokens,
             settings.limits.provider_output_tokens,
         ),
+        max_stream_event_bytes=settings.limits.llm_output_bytes,
+        stream_completion_mode=settings.llm.stream_completion_mode,
+        proxy_url=settings.llm.transport.proxy_url,
+        ca_bundle_path=settings.llm_ca_bundle_path(),
     )
 
 
@@ -133,6 +137,10 @@ def build_dialogue_pipeline(
         segment_max_chars=settings.pipeline.segment_max_chars,
         segment_max_words=settings.pipeline.segment_max_words,
         limits=settings.limits,
+        tts_connect_timeout_ms=round(settings.tts.connect_timeout_seconds * 1000),
+        tts_first_byte_timeout_ms=round(settings.tts.first_byte_timeout_seconds * 1000),
+        tts_total_timeout_ms=round(settings.tts.timeout_seconds * 1000),
+        tts_cancellation_timeout_ms=round(settings.tts.cancellation_timeout_seconds * 1000),
     )
 
 
@@ -163,12 +171,13 @@ def _build_tts(
         settings.tts_output_directory(),
         presets,
         default_preset=settings.tts.default_preset,
-        timeout_seconds=settings.tts.timeout_seconds,
         max_audio_bytes=settings.tts.max_audio_bytes,
         cache_enabled=settings.tts.cache_enabled,
         cache_dir=settings.tts_cache_directory(),
         cache_max_bytes=settings.tts.cache_max_bytes,
         cache_ttl_seconds=settings.tts.cache_ttl_seconds,
+        proxy_url=settings.tts.transport.proxy_url,
+        ca_bundle_path=settings.tts_ca_bundle_path(),
         temp_registry=temp_registry,
     )
 
@@ -189,6 +198,8 @@ def build_vts_event_sink(
         lambda: VTSClient(
             settings.vts.uri,
             request_timeout_seconds=settings.vts.request_timeout_seconds,
+            proxy_url=settings.vts.transport.proxy_url,
+            ca_bundle_path=settings.vts_ca_bundle_path(),
         ),
         token_store
         or DPAPITokenStore(

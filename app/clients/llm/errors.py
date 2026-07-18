@@ -9,8 +9,10 @@ class LLMErrorCode(StrEnum):
     authentication = "llm_authentication_failed"
     rate_limited = "llm_rate_limited"
     timeout = "llm_timeout"
+    connection = "llm_connection_error"
     unavailable = "llm_unavailable"
     protocol = "llm_protocol_error"
+    truncated = "llm_truncated"
     rejected = "llm_request_rejected"
 
 

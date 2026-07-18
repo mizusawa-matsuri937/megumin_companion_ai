@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 from pathlib import Path
+from typing import TypedDict
 
 from app.clients.tts import MockTTSProvider
 from app.core import CancellationToken
@@ -19,6 +20,21 @@ from app.schemas import (
     TurnState,
     UserMessage,
 )
+
+
+class _TTSDeadlines(TypedDict):
+    tts_connect_timeout_ms: int
+    tts_first_byte_timeout_ms: int
+    tts_total_timeout_ms: int
+    tts_cancellation_timeout_ms: int
+
+
+_TTS_DEADLINES: _TTSDeadlines = {
+    "tts_connect_timeout_ms": 80,
+    "tts_first_byte_timeout_ms": 80,
+    "tts_total_timeout_ms": 300,
+    "tts_cancellation_timeout_ms": 50,
+}
 
 
 class _BurstLLM:
@@ -114,6 +130,7 @@ def test_fast_llm_slow_tts_and_blocked_audio_produce_measured_backpressure(
             SilentAudioPlayer(realtime=True),
             limits=limits,
             tts_worker_count=2,
+            **_TTS_DEADLINES,
         )
         result, _events = await _run(pipeline)
         report = pipeline.last_resource_report
@@ -145,6 +162,7 @@ def test_utf8_and_segment_limits_end_in_explainable_truncation(tmp_path: Path) -
             MockTTSProvider(tmp_path, duration_ms=0, synthesis_delay_seconds=0),
             SilentAudioPlayer(),
             limits=LimitsConfig(llm_output_bytes=31, llm_output_segments=2),
+            **_TTS_DEADLINES,
         )
         result, events = await _run(pipeline)
         await pipeline.close()
@@ -182,6 +200,7 @@ def test_cancellation_storm_drains_queues_releases_leases_and_removes_temp(
                     audio_single_result_bytes=128 * 1024,
                     audio_inflight_bytes=256 * 1024,
                 ),
+                **_TTS_DEADLINES,
             )
             result, _events = await _run(pipeline, cancel_after=0.015)
             results.append(result)
@@ -216,6 +235,7 @@ def test_blocked_audio_device_backpressures_then_cancels_to_stable_empty_state(
                 audio_single_result_bytes=128 * 1024,
                 audio_inflight_bytes=256 * 1024,
             ),
+            **_TTS_DEADLINES,
         )
         result, _events = await _run(pipeline, cancel_after=0.05)
         report = pipeline.last_resource_report
@@ -242,6 +262,7 @@ def test_total_audio_duration_limit_degrades_without_leaving_temp(tmp_path: Path
             MockTTSProvider(tmp_path, duration_ms=100, synthesis_delay_seconds=0),
             SilentAudioPlayer(),
             limits=LimitsConfig(audio_total_duration_ms=1),
+            **_TTS_DEADLINES,
         )
         result, events = await _run(pipeline)
         await pipeline.close()
@@ -264,6 +285,7 @@ def test_disk_failure_has_stable_failed_report_and_no_temp_leak(tmp_path: Path) 
             _BurstLLM(["磁盘故障测试完成。"]),
             _DiskFullTTS(tmp_path),
             SilentAudioPlayer(),
+            **_TTS_DEADLINES,
         )
         result, _events = await _run(pipeline)
         report = pipeline.last_resource_report
