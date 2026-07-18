@@ -121,10 +121,26 @@ class ConversationRepository:
                 )
         return deleted
 
-    def clear(self, *, user_id: str, session_id: str | None = None) -> int:
-        return self.clear_logically(user_id=user_id, session_id=session_id).deleted_count
+    def clear(
+        self,
+        *,
+        user_id: str,
+        session_id: str | None = None,
+        now: datetime,
+    ) -> int:
+        return self.clear_logically(
+            user_id=user_id,
+            session_id=session_id,
+            now=now,
+        ).deleted_count
 
-    def clear_logically(self, *, user_id: str, session_id: str | None = None) -> DeletionResult:
+    def clear_logically(
+        self,
+        *,
+        user_id: str,
+        session_id: str | None = None,
+        now: datetime,
+    ) -> DeletionResult:
         with self._database.connect() as connection, transaction(connection):
             if session_id is None:
                 cursor = connection.execute(
@@ -141,7 +157,7 @@ class ConversationRepository:
                     connection,
                     CleanupKind.history_clear,
                     vacuum_required=True,
-                    now=datetime.now(UTC),
+                    now=now,
                 )
                 if deleted
                 else None
@@ -620,10 +636,22 @@ class MemoryRepository:
             assert row is not None
             return _memory_from_row(row)
 
-    def delete(self, memory_id: str, *, user_id: str | None = None) -> bool:
-        return self.delete_logically(memory_id, user_id=user_id).logical_deleted
+    def delete(
+        self,
+        memory_id: str,
+        *,
+        user_id: str | None = None,
+        now: datetime,
+    ) -> bool:
+        return self.delete_logically(memory_id, user_id=user_id, now=now).logical_deleted
 
-    def delete_logically(self, memory_id: str, *, user_id: str | None = None) -> DeletionResult:
+    def delete_logically(
+        self,
+        memory_id: str,
+        *,
+        user_id: str | None = None,
+        now: datetime,
+    ) -> DeletionResult:
         with self._database.connect() as connection, transaction(connection):
             if user_id is None:
                 cursor = connection.execute(
@@ -640,7 +668,7 @@ class MemoryRepository:
                     connection,
                     CleanupKind.memory_delete,
                     vacuum_required=False,
-                    now=datetime.now(UTC),
+                    now=now,
                 )
                 if deleted
                 else None
@@ -651,10 +679,10 @@ class MemoryRepository:
             cleanup_state=CleanupState.pending if cleanup_id is not None else None,
         )
 
-    def clear(self, *, user_id: str) -> int:
-        return self.clear_logically(user_id=user_id).deleted_count
+    def clear(self, *, user_id: str, now: datetime) -> int:
+        return self.clear_logically(user_id=user_id, now=now).deleted_count
 
-    def clear_logically(self, *, user_id: str) -> DeletionResult:
+    def clear_logically(self, *, user_id: str, now: datetime) -> DeletionResult:
         with self._database.connect() as connection, transaction(connection):
             cursor = connection.execute("DELETE FROM memories WHERE user_id = ?", (user_id,))
             deleted = cursor.rowcount
@@ -663,7 +691,7 @@ class MemoryRepository:
                     connection,
                     CleanupKind.memory_clear,
                     vacuum_required=True,
-                    now=datetime.now(UTC),
+                    now=now,
                 )
                 if deleted
                 else None

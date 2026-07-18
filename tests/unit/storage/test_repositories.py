@@ -132,11 +132,11 @@ def test_history_validates_arguments_and_clears_only_selected_session(tmp_path: 
         repository.list_recent(user_id="local_user", session_id="session-1", now=_now(), limit=0)
     with pytest.raises(ValueError, match="positive"):
         repository.cleanup_expired(now=_now(), retention_days=0)
-    assert repository.clear(user_id="local_user", session_id="session-1") == 1
+    assert repository.clear(user_id="local_user", session_id="session-1", now=_now()) == 1
     assert repository.list_recent(user_id="local_user", session_id="session-2", now=_now()) == [
         other
     ]
-    assert repository.clear(user_id="local_user") == 1
+    assert repository.clear(user_id="local_user", now=_now()) == 1
 
 
 def test_feature_flags_have_privacy_safe_defaults_and_persist_updates(tmp_path: Path) -> None:
@@ -270,8 +270,8 @@ def test_hard_delete_cascades_sources_profile_and_fts_then_truncates_wal(tmp_pat
         )
     )
 
-    assert repository.delete(item.memory_id, user_id="local_user")
-    assert not repository.delete(item.memory_id, user_id="local_user")
+    assert repository.delete(item.memory_id, user_id="local_user", now=_now())
+    assert not repository.delete(item.memory_id, user_id="local_user", now=_now())
     assert repository.get(item.memory_id) is None
     assert repository.list_sources(item.memory_id) == []
     assert repository.list_profiles(user_id="local_user") == []
@@ -401,10 +401,10 @@ def test_clear_removes_only_selected_users_memories(tmp_path: Path) -> None:
     ).model_copy(update={"user_id": "other_user"})
     repository.upsert(other)
 
-    assert repository.clear(user_id="local_user") == 1
+    assert repository.clear(user_id="local_user", now=_now()) == 1
     assert repository.list_items(user_id="local_user") == []
     assert [item.memory_id for item in repository.list_items(user_id="other_user")] == ["other"]
-    assert repository.clear(user_id="local_user") == 0
+    assert repository.clear(user_id="local_user", now=_now()) == 0
 
 
 def test_conversation_record_rejects_invalid_role_time_and_blank_content() -> None:

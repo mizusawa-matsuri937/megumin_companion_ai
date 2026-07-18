@@ -717,6 +717,7 @@ async def create_memory_runtime(
     retention_days: int = 7,
     confirmation_ttl_minutes: float = 15.0,
     analyzer: MemoryCandidateAnalyzer | None = None,
+    clock: Clock | None = None,
 ) -> MemoryRuntime | SafeModeMemoryRuntime:
     from datetime import timedelta
 
@@ -732,17 +733,17 @@ async def create_memory_runtime(
             await analyzer.close()
         database.enter_safe_mode("db_migration_failed")
         return SafeModeMemoryRuntime(database)
-    clock = SystemClock()
+    resolved_clock = clock or SystemClock()
     feature_repository = FeatureFlagRepository(database)
     await asyncio.to_thread(
         feature_repository.reconcile_interrupted,
-        updated_at=clock.now(),
+        updated_at=resolved_clock.now(),
     )
     features = await asyncio.to_thread(FeatureFlagManager, feature_repository)
     history = HistoryService(
         ConversationRepository(database),
         features,
-        clock=clock,
+        clock=resolved_clock,
         retention_days=retention_days,
     )
     memory_repository = MemoryRepository(database)
@@ -750,7 +751,7 @@ async def create_memory_runtime(
     memory = MemoryService(
         memory_repository,
         features,
-        clock=clock,
+        clock=resolved_clock,
         confirmation_ttl=timedelta(minutes=confirmation_ttl_minutes),
     )
     resolved_analyzer = analyzer or NoopMemoryCandidateAnalyzer()
@@ -760,7 +761,7 @@ async def create_memory_runtime(
     observer = MemoryTurnObserver(
         history,
         candidates,
-        clock=clock,
+        clock=resolved_clock,
     )
     runtime = MemoryRuntime(
         database,
@@ -773,7 +774,7 @@ async def create_memory_runtime(
         candidates,
         context_source,
         observer,
-        clock=clock,
+        clock=resolved_clock,
     )
     runtime.start()
     return runtime

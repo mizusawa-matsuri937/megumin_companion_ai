@@ -378,23 +378,35 @@ class CountingMemoryStore:
         self.calls.append("update_content")
         raise AssertionError("unexpected management call")
 
-    def delete(self, memory_id: str, *, user_id: str | None = None) -> bool:
-        del memory_id, user_id
+    def delete(
+        self,
+        memory_id: str,
+        *,
+        user_id: str | None = None,
+        now: datetime,
+    ) -> bool:
+        del memory_id, user_id, now
         self.calls.append("delete")
         raise AssertionError("unexpected management call")
 
-    def delete_logically(self, memory_id: str, *, user_id: str | None = None) -> DeletionResult:
-        del memory_id, user_id
+    def delete_logically(
+        self,
+        memory_id: str,
+        *,
+        user_id: str | None = None,
+        now: datetime,
+    ) -> DeletionResult:
+        del memory_id, user_id, now
         self.calls.append("delete_logically")
         raise AssertionError("unexpected management call")
 
-    def clear(self, *, user_id: str) -> int:
-        del user_id
+    def clear(self, *, user_id: str, now: datetime) -> int:
+        del user_id, now
         self.calls.append("clear")
         return 0
 
-    def clear_logically(self, *, user_id: str) -> DeletionResult:
-        del user_id
+    def clear_logically(self, *, user_id: str, now: datetime) -> DeletionResult:
+        del user_id, now
         self.calls.append("clear_logically")
         return DeletionResult(deleted_count=0)
 
@@ -427,13 +439,25 @@ class CountingConversationStore:
         self.calls.append("cleanup_expired")
         return 0
 
-    def clear(self, *, user_id: str, session_id: str | None = None) -> int:
-        del user_id, session_id
+    def clear(
+        self,
+        *,
+        user_id: str,
+        session_id: str | None = None,
+        now: datetime,
+    ) -> int:
+        del user_id, session_id, now
         self.calls.append("clear")
         return 0
 
-    def clear_logically(self, *, user_id: str, session_id: str | None = None) -> DeletionResult:
-        del user_id, session_id
+    def clear_logically(
+        self,
+        *,
+        user_id: str,
+        session_id: str | None = None,
+        now: datetime,
+    ) -> DeletionResult:
+        del user_id, session_id, now
         self.calls.append("clear_logically")
         return DeletionResult(deleted_count=0)
 

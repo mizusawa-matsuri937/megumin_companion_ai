@@ -58,9 +58,21 @@ class ConversationStore(Protocol):
 
     def cleanup_expired(self, *, now: datetime, retention_days: int = 7) -> int: ...
 
-    def clear(self, *, user_id: str, session_id: str | None = None) -> int: ...
+    def clear(
+        self,
+        *,
+        user_id: str,
+        session_id: str | None = None,
+        now: datetime,
+    ) -> int: ...
 
-    def clear_logically(self, *, user_id: str, session_id: str | None = None) -> DeletionResult: ...
+    def clear_logically(
+        self,
+        *,
+        user_id: str,
+        session_id: str | None = None,
+        now: datetime,
+    ) -> DeletionResult: ...
 
 
 class MemoryStore(Protocol):
@@ -82,13 +94,25 @@ class MemoryStore(Protocol):
         updated_at: datetime,
     ) -> MemoryItem | None: ...
 
-    def delete(self, memory_id: str, *, user_id: str | None = None) -> bool: ...
+    def delete(
+        self,
+        memory_id: str,
+        *,
+        user_id: str | None = None,
+        now: datetime,
+    ) -> bool: ...
 
-    def delete_logically(self, memory_id: str, *, user_id: str | None = None) -> DeletionResult: ...
+    def delete_logically(
+        self,
+        memory_id: str,
+        *,
+        user_id: str | None = None,
+        now: datetime,
+    ) -> DeletionResult: ...
 
-    def clear(self, *, user_id: str) -> int: ...
+    def clear(self, *, user_id: str, now: datetime) -> int: ...
 
-    def clear_logically(self, *, user_id: str) -> DeletionResult: ...
+    def clear_logically(self, *, user_id: str, now: datetime) -> DeletionResult: ...
 
 
 class HistoryService:
@@ -152,13 +176,21 @@ class HistoryService:
 
     def clear_for_management(self, *, user_id: str, session_id: str | None = None) -> int:
         with self._lock:
-            return self._store.clear(user_id=user_id, session_id=session_id)
+            return self._store.clear(
+                user_id=user_id,
+                session_id=session_id,
+                now=self._clock.now(),
+            )
 
     def clear_logically_for_management(
         self, *, user_id: str, session_id: str | None = None
     ) -> DeletionResult:
         with self._lock:
-            return self._store.clear_logically(user_id=user_id, session_id=session_id)
+            return self._store.clear_logically(
+                user_id=user_id,
+                session_id=session_id,
+                now=self._clock.now(),
+            )
 
     def _enabled(self) -> bool:
         return self._features.get(FeatureName.recent_history).enabled
@@ -271,10 +303,14 @@ class MemoryService:
         return self._store.list_items(user_id=user_id, include_superseded=include_superseded)
 
     def delete_for_management(self, memory_id: str, *, user_id: str) -> bool:
-        return self._store.delete(memory_id, user_id=user_id)
+        return self._store.delete(memory_id, user_id=user_id, now=self._clock.now())
 
     def delete_logically_for_management(self, memory_id: str, *, user_id: str) -> DeletionResult:
-        return self._store.delete_logically(memory_id, user_id=user_id)
+        return self._store.delete_logically(
+            memory_id,
+            user_id=user_id,
+            now=self._clock.now(),
+        )
 
     def update_for_management(
         self, memory_id: str, *, user_id: str, content: str
@@ -295,12 +331,12 @@ class MemoryService:
     def clear_for_management(self, *, user_id: str) -> int:
         with self._lock:
             self._pending.clear()
-            return self._store.clear(user_id=user_id)
+            return self._store.clear(user_id=user_id, now=self._clock.now())
 
     def clear_logically_for_management(self, *, user_id: str) -> DeletionResult:
         with self._lock:
             self._pending.clear()
-            return self._store.clear_logically(user_id=user_id)
+            return self._store.clear_logically(user_id=user_id, now=self._clock.now())
 
     def set_enabled(self, enabled: bool) -> FeatureState:
         with self._lock:

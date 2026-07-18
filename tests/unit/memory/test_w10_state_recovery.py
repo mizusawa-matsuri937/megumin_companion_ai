@@ -6,6 +6,7 @@ import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import app.storage.repositories as repositories_module
 import pytest
 from app.emotion import FakeClock
 from app.memory import (
@@ -47,15 +48,16 @@ class _CloseRecordingAnalyzer:
 
 
 async def _runtime(path: Path, clock: FakeClock) -> MemoryRuntime:
-    runtime = await create_memory_runtime(str(path))
+    runtime = await create_memory_runtime(str(path), clock=clock)
     assert isinstance(runtime, MemoryRuntime)
-    runtime._clock = clock
-    runtime.history._clock = clock
-    runtime.memory._clock = clock
     return runtime
 
 
-def _save_synthetic_memory(runtime: MemoryRuntime) -> str:
+def _save_synthetic_memory(
+    runtime: MemoryRuntime,
+    *,
+    created_at: datetime = _NOW,
+) -> str:
     source = "synthetic-source-only::我喜欢合成咖啡"
     result = runtime.memory.consider_user_claim(
         MemoryClaim(
@@ -71,7 +73,7 @@ def _save_synthetic_memory(runtime: MemoryRuntime) -> str:
         source_message_id="synthetic-message",
         source_input_mode=SourceInputMode.text,
         source_text=source,
-        created_at=_NOW,
+        created_at=created_at,
     )
     assert result.item is not None
     return result.item.memory_id
@@ -166,6 +168,193 @@ def test_logical_delete_stays_successful_while_physical_cleanup_retries(
         finally:
             monkeypatch.setattr(runtime.database, "secure_cleanup", original_cleanup)
             await runtime.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    "frozen",
+    [
+        datetime(1999, 1, 2, 3, 4, 5, 678901, tzinfo=UTC),
+        datetime(2099, 12, 30, 20, 19, 18, 123456, tzinfo=UTC),
+    ],
+    ids=["past", "future"],
+)
+def test_all_runtime_cleanup_creation_paths_use_only_the_injected_clock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    frozen: datetime,
+) -> None:
+    class WallClockForbidden(datetime):
+        @classmethod
+        def now(cls, tz: object = None) -> WallClockForbidden:
+            del tz
+            raise AssertionError("cleanup creation read the wall clock")
+
+    async def scenario() -> None:
+        clock = FakeClock(frozen)
+        runtime = await _runtime(tmp_path / f"all-paths-{frozen.year}.sqlite3", clock)
+        monkeypatch.setattr(repositories_module, "datetime", WallClockForbidden)
+        try:
+            await runtime.set_feature(FeatureName.long_term_memory, True)
+
+            memory_id = _save_synthetic_memory(runtime, created_at=frozen)
+            deleted = await runtime.delete_memory(memory_id, user_id="synthetic-user")
+            assert deleted.logical_deleted
+
+            _save_synthetic_memory(runtime, created_at=frozen)
+            cleared_memories = await runtime.clear_memories(user_id="synthetic-user")
+            assert cleared_memories.logical_deleted
+
+            current = ConversationRecord(
+                message_id="synthetic-history-clear",
+                session_id="synthetic-session",
+                user_id="synthetic-user",
+                turn_id="synthetic-turn-clear",
+                role=ConversationRole.user,
+                origin=ConversationOrigin.user_text,
+                content="synthetic history clear body",
+                created_at=frozen,
+            )
+            assert runtime.history.record(current)
+            cleared_history = await runtime.clear_history(
+                user_id="synthetic-user",
+                session_id="synthetic-session",
+            )
+            assert cleared_history.logical_deleted
+
+            expired = current.model_copy(
+                update={
+                    "message_id": "synthetic-history-retention",
+                    "turn_id": "synthetic-turn-retention",
+                    "created_at": frozen - timedelta(days=8),
+                }
+            )
+            assert runtime.history.record(expired)
+            assert runtime.history.cleanup() == 1
+
+            expected_timestamp = frozen.isoformat(timespec="microseconds").replace("+00:00", "Z")
+            with runtime.database.connect() as connection:
+                rows = connection.execute(
+                    """
+                    SELECT kind, state, created_at, updated_at, next_attempt_at, completed_at
+                    FROM physical_cleanup_jobs
+                    ORDER BY kind
+                    """
+                ).fetchall()
+            assert [str(row["kind"]) for row in rows] == [
+                "history_clear",
+                "history_retention",
+                "memory_clear",
+                "memory_delete",
+            ]
+            assert all(str(row["state"]) == "pending" for row in rows)
+            assert all(row["completed_at"] is None for row in rows)
+            assert all(
+                (
+                    str(row["created_at"]),
+                    str(row["updated_at"]),
+                    str(row["next_attempt_at"]),
+                )
+                == (expected_timestamp, expected_timestamp, expected_timestamp)
+                for row in rows
+            )
+        finally:
+            await runtime.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    "frozen",
+    [
+        datetime(1998, 6, 7, 8, 9, 10, tzinfo=UTC),
+        datetime(2101, 6, 7, 8, 9, 10, tzinfo=UTC),
+    ],
+    ids=["past", "future"],
+)
+def test_cleanup_retry_due_order_and_completion_survive_restart_with_frozen_clock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    frozen: datetime,
+) -> None:
+    async def scenario() -> None:
+        path = tmp_path / f"restart-{frozen.year}.sqlite3"
+        clock = FakeClock(frozen)
+        runtime = await _runtime(path, clock)
+        await runtime.set_feature(FeatureName.long_term_memory, True)
+        memory_id = _save_synthetic_memory(runtime, created_at=frozen)
+        original_cleanup = runtime.database.secure_cleanup
+
+        def locked_cleanup(*, vacuum: bool = False) -> None:
+            del vacuum
+            raise sqlite3.OperationalError("database is locked")
+
+        monkeypatch.setattr(runtime.database, "secure_cleanup", locked_cleanup)
+        result = await runtime.delete_memory(memory_id, user_id="synthetic-user")
+        assert result.cleanup_id is not None
+        pending = await runtime.cleanup_status(result.cleanup_id)
+        assert pending is not None
+        assert pending.created_at == frozen
+        assert pending.updated_at == frozen
+        assert pending.next_attempt_at == frozen
+
+        failed = await runtime.run_maintenance_cycle()
+        assert failed.error_codes == ("file_locked",)
+        retrying = await runtime.cleanup_status(result.cleanup_id)
+        assert retrying is not None
+        assert retrying.state.value == "retrying"
+        assert retrying.attempt_count == 1
+        assert retrying.updated_at == frozen
+        assert retrying.next_attempt_at == frozen + timedelta(seconds=60)
+
+        monkeypatch.setattr(runtime.database, "secure_cleanup", original_cleanup)
+        await runtime.close()
+
+        restarted = await _runtime(path, clock)
+        restart_cleanup = restarted.database.secure_cleanup
+        cleanup_calls: list[bool] = []
+
+        def recording_cleanup(*, vacuum: bool = False) -> None:
+            cleanup_calls.append(vacuum)
+            restart_cleanup(vacuum=vacuum)
+
+        monkeypatch.setattr(restarted.database, "secure_cleanup", recording_cleanup)
+        try:
+            second_memory_id = _save_synthetic_memory(restarted, created_at=frozen)
+            second = await restarted.delete_memory(
+                second_memory_id,
+                user_id="synthetic-user",
+            )
+            assert second.cleanup_id is not None
+
+            immediate = await restarted.run_maintenance_cycle()
+            assert immediate.error_codes == ()
+            assert cleanup_calls == [False]
+            second_completed = await restarted.cleanup_status(second.cleanup_id)
+            first_waiting = await restarted.cleanup_status(result.cleanup_id)
+            assert second_completed is not None
+            assert second_completed.state.value == "completed"
+            assert second_completed.completed_at == frozen
+            assert first_waiting is not None
+            assert first_waiting.state.value == "retrying"
+
+            clock.advance(timedelta(seconds=59))
+            await restarted.run_maintenance_cycle()
+            assert cleanup_calls == [False]
+            assert (await restarted.cleanup_status(result.cleanup_id)) == first_waiting
+
+            clock.advance(timedelta(seconds=1))
+            recovered = await restarted.run_maintenance_cycle()
+            assert recovered.error_codes == ()
+            assert cleanup_calls == [False, False]
+            first_completed = await restarted.cleanup_status(result.cleanup_id)
+            assert first_completed is not None
+            assert first_completed.state.value == "completed"
+            assert first_completed.completed_at == frozen + timedelta(seconds=60)
+        finally:
+            monkeypatch.setattr(restarted.database, "secure_cleanup", restart_cleanup)
+            await restarted.close()
 
     asyncio.run(scenario())
 
