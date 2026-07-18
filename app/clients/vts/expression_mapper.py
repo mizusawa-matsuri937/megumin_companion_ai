@@ -29,3 +29,6 @@ class ExpressionMapper:
 
     def hotkey_for(self, expression: str) -> str | None:
         return self._hotkeys.get(expression.strip().lower())
+
+    def required_hotkey_ids(self) -> frozenset[str]:
+        return frozenset(self._hotkeys.values())
