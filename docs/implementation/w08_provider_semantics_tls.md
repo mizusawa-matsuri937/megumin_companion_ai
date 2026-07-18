@@ -39,6 +39,18 @@ has no implicit timeout. Mock TTS consumes the same job deadlines. A first-byte
 deadline applies only until the first non-empty audio chunk; a later stalled
 chunk is bounded by the total deadline. Cancellation closes the response and
 owned operation before local settlement; remote compute or billing may continue.
+Mock TTS applies the same absolute total deadline to delay, temp registration,
+WAV generation, and validation. Its local writer runs outside the event loop but
+is always drained before the call returns, so timeout or repeated cancellation
+cannot leave a background writer racing registry/path cleanup.
+
+GPT-SoVITS bounds all provider-owned synthesis workers by the existing W07
+`limits.tts_queue_capacity`. A worker that misses cancellation settlement keeps
+its slot and opens a circuit: new calls return `tts_cancel_timeout` without
+starting another worker until every unresolved cancellation really finishes.
+The completion callback releases the slot; `close()` retains ownership and waits
+for response, `.part`, temp-registry, lease, and final-path cleanup.
+
 The non-synthesis API-v2 probe preserves W09 classification semantics but must
 receive an explicit positive deadline from its caller; it never inherits an
 environment, client, or constructor timeout.
@@ -50,15 +62,17 @@ environment, client, or constructor timeout.
 - `done_and_finish_reason` (default): both an accepted finish reason and
   `[DONE]` are required;
 - `done`: `[DONE]` is sufficient;
-- `finish_reason`: an accepted finish reason is sufficient and natural EOF
-  after it is legal;
-- `eof`: validated natural EOF is an explicit provider capability.
+- `finish_reason`: an accepted finish reason followed by natural EOF is legal;
+  `[DONE]` is a capability mismatch even if a finish reason was already seen;
+- `eof`: one or more validated events followed by natural EOF are legal;
+  `[DONE]` is a capability mismatch.
 
 For text chat, `stop` is the only successful finish reason. `length` is
 `llm_truncated`; `content_filter` is `llm_request_rejected`; an unknown or
 malformed finish reason is `llm_protocol_error`. Under a marker-requiring mode,
 natural EOF before the required marker is `llm_truncated`; `[DONE]` that violates
-the configured capability is a protocol error. Malformed JSON, invalid choice
+the configured capability is a protocol error and never substitutes for the
+configured completion condition. Malformed JSON, invalid choice
 shapes, and provider error envelopes remain protocol/rejection failures. The
 same finish-reason classification applies to non-stream completions.
 Stream events and non-stream response bodies are read incrementally and bounded

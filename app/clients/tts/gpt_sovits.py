@@ -22,6 +22,7 @@ from uuid import uuid4
 import httpx
 
 from app.core.cancellation import CancellationToken
+from app.limits import LimitsConfig
 from app.provider_transport import (
     EndpointKind,
     build_ssl_context,
@@ -124,6 +125,7 @@ class GPTSoVITSProvider:
         transport: httpx.AsyncBaseTransport | None = None,
         client: httpx.AsyncClient | None = None,
         temp_registry: TempAssetRegistry | None = None,
+        max_owned_synthesis_tasks: int = LimitsConfig().tts_queue_capacity,
     ) -> None:
         if timeout_seconds is not None:
             raise ValueError("GPT-SoVITS constructor timeout is forbidden; TTSJob owns deadlines")
@@ -135,6 +137,8 @@ class GPTSoVITSProvider:
             raise ValueError("启用持久缓存时必须配置 cache_dir")
         if cache_max_bytes < 1 or cache_ttl_seconds <= 0.0:
             raise ValueError("cache_max_bytes/cache_ttl_seconds 必须大于 0")
+        if not 1 <= max_owned_synthesis_tasks <= LimitsConfig().tts_queue_capacity:
+            raise ValueError("max owned synthesis tasks exceeds W07 TTS queue budget")
         validate_endpoint(base_url, kind=EndpointKind.http)
         if client is not None and transport is not None:
             raise ValueError("GPT-SoVITS test transport must have one owner")
@@ -171,6 +175,8 @@ class GPTSoVITSProvider:
         self._synthesis_tasks: set[asyncio.Task[AudioResult]] = set()
         self._synthesis_cancellations: set[asyncio.Task[AudioResult]] = set()
         self._synthesis_calls: set[asyncio.Future[None]] = set()
+        self._synthesis_capacity = asyncio.BoundedSemaphore(max_owned_synthesis_tasks)
+        self._max_owned_synthesis_tasks = max_owned_synthesis_tasks
         self._close_task: asyncio.Task[None] | None = None
         self._closed = False
 
@@ -222,24 +228,50 @@ class GPTSoVITSProvider:
         token.raise_if_cancelled()
         if self._closed:
             return self._failure(job, "tts_closed")
+        if self._synthesis_cancellations:
+            return self._failure(job, "tts_cancel_timeout")
 
         # Register the worker and its public call completion without yielding. A
         # concurrently scheduled close therefore either sees this operation or
         # flips ``_closed`` first and makes the call fail closed above.
         call_done: asyncio.Future[None] = asyncio.get_running_loop().create_future()
-        worker = asyncio.create_task(
-            self._synthesize(job, segment_index=segment_index, token=token),
-            name=f"gpt-sovits-synthesis-{job.job_id}",
-        )
         self._synthesis_calls.add(call_done)
-        self._synthesis_tasks.add(worker)
-        worker.add_done_callback(self._synthesis_finished)
+        deadline = asyncio.get_running_loop().time() + job.timeout_ms / 1000
+        slot_acquired = False
+        worker: asyncio.Task[AudioResult] | None = None
         try:
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                return self._failure(job, "tts_total_timeout")
+            if not await _acquire_semaphore_with_token(
+                self._synthesis_capacity,
+                token,
+                timeout_seconds=remaining,
+            ):
+                return self._failure(job, "tts_total_timeout")
+            slot_acquired = True
+            if self._is_closed():
+                return self._failure(job, "tts_closed")
+            if self._synthesis_cancellations:
+                return self._failure(job, "tts_cancel_timeout")
+
+            worker = asyncio.create_task(
+                self._synthesize(job, segment_index=segment_index, token=token),
+                name=f"gpt-sovits-synthesis-{job.job_id}",
+            )
+            self._synthesis_tasks.add(worker)
+            worker.add_done_callback(self._synthesis_finished)
+            slot_acquired = False
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                raise TimeoutError
             return await asyncio.wait_for(
                 asyncio.shield(worker),
-                timeout=job.timeout_ms / 1000,
+                timeout=remaining,
             )
         except TimeoutError:
+            if worker is None:
+                return self._failure(job, "tts_total_timeout")
             self._cancel_synthesis(worker)
             settled = await _join_task(worker, job.cancellation_timeout_ms / 1000)
             return self._failure(
@@ -247,10 +279,13 @@ class GPTSoVITSProvider:
                 "tts_total_timeout" if settled else "tts_cancel_timeout",
             )
         except asyncio.CancelledError:
-            self._cancel_synthesis(worker)
-            await _join_task(worker, job.cancellation_timeout_ms / 1000)
+            if worker is not None:
+                self._cancel_synthesis(worker)
+                await _join_task(worker, job.cancellation_timeout_ms / 1000)
             raise
         finally:
+            if slot_acquired:
+                self._synthesis_capacity.release()
             self._synthesis_calls.discard(call_done)
             if not call_done.done():
                 call_done.set_result(None)
@@ -651,6 +686,11 @@ class GPTSoVITSProvider:
             error_code=error_code,
         )
 
+    def _is_closed(self) -> bool:
+        """Re-read the close state after an awaited capacity handoff."""
+
+        return self._closed
+
     async def discard(self, result: AudioResult) -> None:
         if self._cache_results.pop(result.audio_id, None) is not None:
             await self._cleanup_cache()
@@ -729,6 +769,7 @@ class GPTSoVITSProvider:
     def _synthesis_finished(self, task: asyncio.Task[AudioResult]) -> None:
         self._synthesis_tasks.discard(task)
         self._synthesis_cancellations.discard(task)
+        self._synthesis_capacity.release()
 
 
 async def _await_with_token(awaitable: Awaitable[_T], token: CancellationToken) -> _T:
@@ -799,6 +840,46 @@ async def _join_task(task: asyncio.Task[Any], timeout_seconds: float) -> bool:
     if cancelled:
         raise asyncio.CancelledError
     return task.done()
+
+
+async def _acquire_semaphore_with_token(
+    semaphore: asyncio.Semaphore,
+    token: CancellationToken,
+    *,
+    timeout_seconds: float,
+) -> bool:
+    """Acquire one provider slot without leaking it across timeout/cancel races."""
+
+    token.raise_if_cancelled()
+    acquisition = asyncio.create_task(semaphore.acquire())
+    cancellation = asyncio.create_task(token.wait())
+    acquired = False
+    try:
+        done, _pending = await asyncio.wait(
+            {acquisition, cancellation},
+            timeout=max(0.0, timeout_seconds),
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if cancellation in done:
+            token.raise_if_cancelled()
+        if acquisition in done:
+            acquisition.result()
+            acquired = True
+            return True
+        return False
+    finally:
+        cancellation.cancel()
+        if not acquired:
+            if not acquisition.done():
+                acquisition.cancel()
+            await asyncio.gather(acquisition, return_exceptions=True)
+            if (
+                acquisition.done()
+                and not acquisition.cancelled()
+                and acquisition.exception() is None
+            ):
+                semaphore.release()
+        await asyncio.gather(cancellation, return_exceptions=True)
 
 
 def _has_ssl_error(exc: BaseException) -> bool:

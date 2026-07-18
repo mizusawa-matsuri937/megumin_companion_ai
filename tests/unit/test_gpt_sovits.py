@@ -87,6 +87,8 @@ def test_preset_rejects_invalid_voice_parameters(changes: dict[str, object]) -> 
         {"cache_enabled": True, "cache_dir": None},
         {"cache_max_bytes": 0},
         {"cache_ttl_seconds": 0.0},
+        {"max_owned_synthesis_tasks": 0},
+        {"max_owned_synthesis_tasks": 9},
     ],
 )
 def test_provider_rejects_unsafe_limits(tmp_path: Path, changes: dict[str, object]) -> None:
@@ -658,6 +660,159 @@ def test_repeated_cancellation_waits_for_synthesis_cleanup(tmp_path: Path) -> No
 
         assert list(tmp_path.rglob("*.wav")) == []
         assert list(tmp_path.rglob("*.part")) == []
+        await client.aclose()
+
+    asyncio.run(scenario())
+
+
+def test_cancel_settlement_failure_opens_bounded_circuit_until_owned_worker_settles(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        request_started = asyncio.Event()
+        release_request = asyncio.Event()
+        started = 0
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal started
+            started += 1
+            request_started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                await release_request.wait()
+                return httpx.Response(
+                    200,
+                    headers={"content-type": "audio/wav"},
+                    content=_wave_bytes(),
+                    request=request,
+                )
+            raise AssertionError("blocking request unexpectedly completed")
+
+        paths = AppPaths(root=tmp_path / "private")
+        registry = TempAssetRegistry(
+            paths,
+            minimum_scavenge_age_seconds=0.0,
+            directory_security=PortableDirectorySecurity(),
+        )
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler), timeout=None)
+        provider = GPTSoVITSProvider(
+            "http://127.0.0.1:9880",
+            paths.temp / "audio" / "tts",
+            _presets(),
+            client=client,
+            temp_registry=registry,
+            max_owned_synthesis_tasks=1,
+        )
+
+        results: list[AudioResult] = []
+        for index in range(3):
+            token = CancellationToken(f"turn_cancel_timeout_{index}")
+            results.append(
+                await provider.synthesize(
+                    _job(
+                        token,
+                        job_id=f"job_cancel_timeout_{index}",
+                        turn_id=f"turn_cancel_timeout_{index}",
+                        connect_timeout_ms=80,
+                        first_byte_timeout_ms=80,
+                        timeout_ms=100,
+                        cancellation_timeout_ms=50,
+                    ),
+                    segment_index=index,
+                    token=token,
+                )
+            )
+            if index == 0:
+                await asyncio.wait_for(request_started.wait(), timeout=1)
+
+        assert [result.error_code for result in results] == ["tts_cancel_timeout"] * 3
+        assert started == 1
+        assert len(provider._synthesis_tasks) <= 1
+        assert len(provider._synthesis_cancellations) <= 1
+
+        closing = asyncio.create_task(provider.close())
+        await asyncio.sleep(0)
+        assert not closing.done()
+        release_request.set()
+        await asyncio.wait_for(closing, timeout=1)
+
+        assert provider._synthesis_tasks == set()
+        assert provider._synthesis_cancellations == set()
+        assert registry.entries() == ()
+        assert not list(paths.temp.rglob("*.wav"))
+        assert not list(paths.temp.rglob("*.part"))
+        await client.aclose()
+
+    asyncio.run(scenario())
+
+
+def test_cancel_while_waiting_for_owned_worker_capacity_never_leaks_slot(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        first_started = asyncio.Event()
+        release_first = asyncio.Event()
+        started = 0
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal started
+            started += 1
+            if started == 1:
+                first_started.set()
+                await release_first.wait()
+            return httpx.Response(
+                200,
+                headers={"content-type": "audio/wav"},
+                content=_wave_bytes(),
+                request=request,
+            )
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler), timeout=None)
+        provider = GPTSoVITSProvider(
+            "http://127.0.0.1:9880",
+            tmp_path,
+            _presets(),
+            client=client,
+            max_owned_synthesis_tasks=1,
+        )
+        first_token = CancellationToken("capacity-first")
+        first = asyncio.create_task(
+            provider.synthesize(_job(first_token), segment_index=0, token=first_token)
+        )
+        await asyncio.wait_for(first_started.wait(), timeout=1)
+
+        waiting_token = CancellationToken("capacity-waiting")
+        waiting = asyncio.create_task(
+            provider.synthesize(
+                _job(waiting_token, job_id="capacity-waiting", turn_id="capacity-waiting"),
+                segment_index=1,
+                token=waiting_token,
+            )
+        )
+        await asyncio.sleep(0)
+        waiting_token.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(waiting, timeout=1)
+        assert started == 1
+
+        release_first.set()
+        first_result = await asyncio.wait_for(first, timeout=1)
+        assert first_result.success
+        await provider.discard(first_result)
+
+        final_token = CancellationToken("capacity-final")
+        final_result = await provider.synthesize(
+            _job(final_token, job_id="capacity-final", turn_id="capacity-final"),
+            segment_index=2,
+            token=final_token,
+        )
+        assert final_result.success
+        assert started == 2
+        await provider.discard(final_result)
+        await provider.close()
+        assert provider._synthesis_tasks == set()
+        assert provider._synthesis_cancellations == set()
         await client.aclose()
 
     asyncio.run(scenario())

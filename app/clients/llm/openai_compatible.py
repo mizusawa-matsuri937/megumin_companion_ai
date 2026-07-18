@@ -415,6 +415,8 @@ def _classify_finish_reason(reason: str) -> None:
 
 
 def _validate_done_marker(mode: StreamCompletionMode, finish_reason: str | None) -> None:
+    if mode in {StreamCompletionMode.finish_reason, StreamCompletionMode.eof}:
+        raise LLMProviderError(LLMErrorCode.protocol, retryable=False)
     if mode is StreamCompletionMode.done_and_finish_reason and finish_reason is None:
         raise LLMProviderError(LLMErrorCode.protocol, retryable=False)
     if finish_reason is not None:

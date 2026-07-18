@@ -1,6 +1,7 @@
 """Deterministic mock LLM and legal WAV generation tests."""
 
 import asyncio
+import threading
 import wave
 from pathlib import Path
 
@@ -113,6 +114,189 @@ def test_mock_tts_registers_before_write_and_unregisters_after_discard(
         await provider.discard(result)
         assert registry.entries() == ()
         assert not result.audio_path.exists()
+
+    asyncio.run(scenario())
+
+
+def test_mock_tts_total_deadline_covers_wave_generation_and_registry_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = AppPaths(root=tmp_path / "private")
+    registry = TempAssetRegistry(
+        paths,
+        minimum_scavenge_age_seconds=0.0,
+        directory_security=PortableDirectorySecurity(),
+    )
+    provider = MockTTSProvider(
+        paths.temp / "audio" / "mock",
+        duration_ms=0,
+        synthesis_delay_seconds=0,
+        temp_registry=registry,
+    )
+    original_write = provider._write_wave
+    write_started = threading.Event()
+    release_write = threading.Event()
+
+    def controlled_slow_write(path: Path, frequency_hz: float) -> None:
+        write_started.set()
+        assert release_write.wait(timeout=1)
+        original_write(path, frequency_hz)
+
+    monkeypatch.setattr(provider, "_write_wave", controlled_slow_write)
+
+    async def scenario() -> None:
+        token = CancellationToken("turn_mock_deadline")
+        controller_error: list[BaseException] = []
+
+        def release_after_deadline() -> None:
+            try:
+                assert write_started.wait(timeout=1)
+                assert not release_write.wait(timeout=0.15)
+                release_write.set()
+            except BaseException as exc:
+                controller_error.append(exc)
+                release_write.set()
+
+        controller = threading.Thread(target=release_after_deadline)
+        controller.start()
+        task = asyncio.create_task(
+            provider.synthesize(
+                TTSJob(
+                    turn_id="turn_mock_deadline",
+                    segment_id="segment_mock_deadline",
+                    text="synthetic",
+                    connect_timeout_ms=5,
+                    first_byte_timeout_ms=5,
+                    timeout_ms=100,
+                    cancellation_timeout_ms=200,
+                    cancellation_token_id=token.token_id,
+                ),
+                segment_index=0,
+                token=token,
+            )
+        )
+        try:
+            result = await asyncio.wait_for(task, timeout=1)
+        finally:
+            controller.join(timeout=1)
+
+        assert controller_error == []
+        assert write_started.is_set()
+        assert not result.success
+        assert result.error_code == "tts_total_timeout"
+        assert registry.entries() == ()
+        assert not list(paths.temp.rglob("*.wav"))
+        await provider.close()
+
+    asyncio.run(scenario())
+
+
+def test_mock_tts_cancellation_during_wave_generation_cleans_registry_and_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def scenario() -> None:
+        paths = AppPaths(root=tmp_path / "private-cancel")
+        registry = TempAssetRegistry(
+            paths,
+            minimum_scavenge_age_seconds=0.0,
+            directory_security=PortableDirectorySecurity(),
+        )
+        provider = MockTTSProvider(
+            paths.temp / "audio" / "mock",
+            duration_ms=0,
+            synthesis_delay_seconds=0,
+            temp_registry=registry,
+        )
+        token = CancellationToken("turn_mock_cancel")
+        loop = asyncio.get_running_loop()
+        original_write = provider._write_wave
+
+        def cancel_after_write(path: Path, frequency_hz: float) -> None:
+            original_write(path, frequency_hz)
+            loop.call_soon_threadsafe(token.cancel)
+
+        monkeypatch.setattr(provider, "_write_wave", cancel_after_write)
+        with pytest.raises(asyncio.CancelledError):
+            await provider.synthesize(
+                TTSJob(
+                    turn_id="turn_mock_cancel",
+                    segment_id="segment_mock_cancel",
+                    text="synthetic",
+                    connect_timeout_ms=80,
+                    first_byte_timeout_ms=80,
+                    timeout_ms=300,
+                    cancellation_timeout_ms=50,
+                    cancellation_token_id=token.token_id,
+                ),
+                segment_index=0,
+                token=token,
+            )
+
+        assert registry.entries() == ()
+        assert not list(paths.temp.rglob("*.wav"))
+        await provider.close()
+
+    asyncio.run(scenario())
+
+
+def test_mock_tts_repeated_waiter_cancellation_drains_owned_writer_before_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def scenario() -> None:
+        paths = AppPaths(root=tmp_path / "private-repeated-cancel")
+        registry = TempAssetRegistry(
+            paths,
+            minimum_scavenge_age_seconds=0.0,
+            directory_security=PortableDirectorySecurity(),
+        )
+        provider = MockTTSProvider(
+            paths.temp / "audio" / "mock",
+            duration_ms=0,
+            synthesis_delay_seconds=0,
+            temp_registry=registry,
+        )
+        original_write = provider._write_wave
+        write_started = threading.Event()
+        release_write = threading.Event()
+
+        def controlled_write(path: Path, frequency_hz: float) -> None:
+            write_started.set()
+            assert release_write.wait(timeout=1)
+            original_write(path, frequency_hz)
+
+        monkeypatch.setattr(provider, "_write_wave", controlled_write)
+        token = CancellationToken("turn_mock_repeated_cancel")
+        synthesis = asyncio.create_task(
+            provider.synthesize(
+                TTSJob(
+                    turn_id="turn_mock_repeated_cancel",
+                    segment_id="segment_mock_repeated_cancel",
+                    text="synthetic",
+                    connect_timeout_ms=80,
+                    first_byte_timeout_ms=80,
+                    timeout_ms=500,
+                    cancellation_timeout_ms=100,
+                    cancellation_token_id=token.token_id,
+                ),
+                segment_index=0,
+                token=token,
+            )
+        )
+        assert await asyncio.to_thread(write_started.wait, 1)
+        synthesis.cancel()
+        synthesis.cancel()
+        await asyncio.sleep(0)
+        assert not synthesis.done()
+        release_write.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(synthesis, timeout=1)
+
+        assert registry.entries() == ()
+        assert not list(paths.temp.rglob("*.wav"))
+        await provider.close()
 
     asyncio.run(scenario())
 

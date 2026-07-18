@@ -4,13 +4,20 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import sqlite3
 import zipfile
 from collections.abc import AsyncIterator
 from pathlib import Path
 
+import httpx
 import pytest
-from app.clients.llm import LLMErrorCode, LLMProviderError
+from app.clients.llm import (
+    LLMErrorCode,
+    LLMProviderError,
+    OpenAICompatibleLLMProvider,
+    StreamCompletionMode,
+)
 from app.clients.tts import MockTTSProvider
 from app.config import Settings
 from app.config.logging import close_logging, configure_logging
@@ -69,6 +76,67 @@ class _RecordingAudioPlayer:
 
     async def close(self) -> None:
         return None
+
+
+@pytest.mark.parametrize(
+    "mode",
+    [StreamCompletionMode.finish_reason, StreamCompletionMode.eof],
+)
+def test_incompatible_done_marker_fails_turn_and_never_persists_partial_assistant(
+    tmp_path: Path,
+    mode: StreamCompletionMode,
+) -> None:
+    async def scenario() -> None:
+        def handler(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                text=(
+                    'data: {"choices":[{"delta":{"content":"partial-assistant"}}]}\n\n'
+                    "data: [DONE]\n\n"
+                ),
+            )
+
+        database_path = tmp_path / "state" / "w08-completion.sqlite3"
+        memory = await create_memory_runtime(str(database_path))
+        assert isinstance(memory, MemoryRuntime)
+        llm = OpenAICompatibleLLMProvider(
+            base_url="https://provider.invalid",
+            model="synthetic-model",
+            api_key="synthetic-key",
+            stream_completion_mode=mode,
+            transport=httpx.MockTransport(handler),
+        )
+        pipeline = DialoguePipeline(
+            llm,
+            MockTTSProvider(tmp_path / "audio", synthesis_delay_seconds=0),
+            SilentAudioPlayer(),
+            segment_min_chars=1,
+            tts_worker_count=1,
+            tts_connect_timeout_ms=80,
+            tts_first_byte_timeout_ms=80,
+            tts_total_timeout_ms=300,
+            tts_cancellation_timeout_ms=50,
+        )
+        service = TurnService(
+            logging.getLogger("w08-completion"), pipeline, observers=(memory.observer,)
+        )
+        state = await service.accept(UserMessage(text="synthetic completion request"))
+        await service.wait_idle()
+
+        snapshot = service.snapshot()
+        assert snapshot["turns"][state.turn_id]["status"] == "failed"
+        assert snapshot["turns"][state.turn_id]["error_code"] == "llm_protocol_error"
+
+        await service.shutdown()
+        await memory.close()
+        with sqlite3.connect(database_path) as connection:
+            rows = connection.execute(
+                "SELECT role, content FROM conversation_messages ORDER BY created_at"
+            ).fetchall()
+        assert rows == [("user", "synthetic completion request")]
+        assert all("partial-assistant" not in content for _role, content in rows)
+
+    asyncio.run(scenario())
 
 
 def test_partial_subtitle_failure_keeps_stable_terminal_and_never_retries(

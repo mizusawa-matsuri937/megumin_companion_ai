@@ -178,6 +178,7 @@ def _build_tts(
         cache_ttl_seconds=settings.tts.cache_ttl_seconds,
         proxy_url=settings.tts.transport.proxy_url,
         ca_bundle_path=settings.tts_ca_bundle_path(),
+        max_owned_synthesis_tasks=settings.limits.tts_queue_capacity,
         temp_registry=temp_registry,
     )
 

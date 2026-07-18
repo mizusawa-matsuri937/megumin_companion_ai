@@ -532,6 +532,47 @@ def test_stream_completion_modes_make_done_finish_reason_and_legal_eof_explicit(
 
 
 @pytest.mark.parametrize(
+    ("mode", "finish_event"),
+    [
+        (StreamCompletionMode.finish_reason, ""),
+        (
+            StreamCompletionMode.finish_reason,
+            'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n',
+        ),
+        (StreamCompletionMode.eof, ""),
+    ],
+)
+def test_stream_rejects_done_marker_that_bypasses_declared_completion_capability(
+    mode: StreamCompletionMode,
+    finish_event: str,
+) -> None:
+    def handler(_incoming: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            text=(
+                'data: {"choices":[{"delta":{"content":"partial"}}]}\n\n'
+                + finish_event
+                + "data: [DONE]\n\n"
+            ),
+        )
+
+    async def scenario() -> None:
+        provider = make_provider(httpx.MockTransport(handler), completion_mode=mode)
+        emitted: list[str] = []
+        try:
+            with pytest.raises(LLMProviderError) as captured:
+                async for delta in provider.stream(request(), CancellationToken(f"done-{mode}")):
+                    emitted.append(delta)
+            assert emitted == ["partial"]
+            assert captured.value.code is LLMErrorCode.protocol
+            assert "partial" not in str(captured.value)
+        finally:
+            await provider.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
     ("events", "expected"),
     [
         (
