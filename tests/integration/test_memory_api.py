@@ -1,5 +1,6 @@
 """Private-state API, turn persistence, confirmation, and deletion integration."""
 
+import hashlib
 import time
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
@@ -28,6 +29,8 @@ from app.memory.runtime import MemoryRuntime
 from app.paths import AppPaths
 from app.proactive import ProactiveRuntime
 from app.schemas import ChatCompletion, ChatRequest
+from app.storage import SQLiteDatabase
+from app.storage.database import MIGRATIONS, apply_migrations, transaction
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -136,6 +139,23 @@ def test_feature_memory_and_history_control_plane(tmp_path: Path) -> None:
         by_name = {item["name"]: item["enabled"] for item in features.json()}
         assert by_name["recent_history"] is True
         assert by_name["long_term_memory"] is False
+        storage = client.get("/api/storage/status")
+        assert storage.status_code == 200
+        assert storage.json()["mode"] == "read_write"
+        assert storage.json()["schema_version"] == 3
+        assert storage.json()["reason_code"] is None
+        assert storage.json()["backups"] == []
+        assert (
+            client.post(
+                "/api/storage/recovery/restore",
+                json={"backup_name": "missing.backup", "backup_sha256": "0" * 64},
+            ).json()["detail"]
+            == "database_not_in_safe_mode"
+        )
+        assert (
+            client.post("/api/storage/recovery/retry").json()["detail"]
+            == "database_not_in_safe_mode"
+        )
 
         proactive_enabled = client.patch("/api/features/proactive", json={"enabled": True})
         assert proactive_enabled.status_code == 200
@@ -145,11 +165,12 @@ def test_feature_memory_and_history_control_plane(tmp_path: Path) -> None:
         assert not app.state.proactive_runtime.snapshot().scheduler_active
 
         enabled = client.patch("/api/features/long_term_memory", json={"enabled": True})
-        assert enabled.json() == {
-            "name": "long_term_memory",
-            "enabled": True,
-            "disclosure": None,
-        }
+        enabled_state = enabled.json()
+        assert enabled_state["name"] == "long_term_memory"
+        assert enabled_state["desired_state"] == "enabled"
+        assert enabled_state["actual_state"] == "enabled"
+        assert enabled_state["generation"] == 1
+        assert enabled_state["enabled"] is True
 
         with client.websocket_connect(f"{WS_BASE_URL}/ws/client") as websocket:
             websocket.send_json(command("session.resume", {"last_seq": 0}))
@@ -226,15 +247,26 @@ def test_feature_memory_and_history_control_plane(tmp_path: Path) -> None:
             client.post("/api/memory/confirm/missing", json={"approved": True}).status_code == 404
         )
 
-        assert client.delete(f"/api/memory/{memory_id}").json() == {"deleted": True}
+        deletion = client.delete(f"/api/memory/{memory_id}").json()
+        assert deletion["deleted"] is True
+        assert deletion["logical_deleted"] is True
+        assert deletion["cleanup_pending"] is True
+        assert deletion["cleanup_id"].startswith("cleanup_")
+        cleanup = client.get(f"/api/storage/cleanup/{deletion['cleanup_id']}")
+        assert cleanup.status_code == 200
+        assert cleanup.json()["state"] == "pending"
+        assert cleanup.json()["reason_code"] is None
+        assert client.get("/api/storage/cleanup/missing-cleanup").status_code == 404
         assert client.delete(f"/api/memory/{memory_id}").status_code == 404
-        assert client.delete("/api/memory").json() == {"deleted": 0}
+        assert client.delete("/api/memory").json()["deleted"] == 0
 
         cleared = client.post(
             "/api/history/clear",
             json={"user_id": "local_user", "session_id": "local_session"},
         )
         assert cleared.json()["deleted"] == 3
+        assert cleared.json()["logical_deleted"] is True
+        assert cleared.json()["cleanup_pending"] is True
 
         disabled = client.patch("/api/features/long_term_memory", json={"enabled": False})
         assert disabled.json()["enabled"] is False
@@ -250,6 +282,59 @@ def test_private_state_api_is_explicitly_unavailable_when_storage_is_off(
         response = client.get("/api/features")
     assert response.status_code == 503
     assert response.json()["detail"] == "private_state_runtime_disabled"
+
+
+def test_future_schema_starts_content_free_safe_mode_with_recovery_status(
+    tmp_path: Path,
+) -> None:
+    settings = stateful_settings(tmp_path / "future.sqlite3")
+    database_path = settings.database_path()
+    database = SQLiteDatabase(database_path)
+    with database.connect() as connection:
+        assert apply_migrations(connection, migrations=MIGRATIONS[:2]) == 2
+    assert database.initialize() == 3
+    backup = next(database_path.parent.glob("future.sqlite3.pre-v2-to-v3.backup"))
+    backup_sha256 = hashlib.sha256(backup.read_bytes()).hexdigest()
+    with database.connect() as connection, transaction(connection):
+        connection.execute("INSERT INTO schema_migrations VALUES (99, 'synthetic_future', 'now')")
+
+    app = secured_app(settings)
+    with secured_client(app) as client:
+        status = client.get("/api/storage/status")
+        assert status.status_code == 200
+        payload = status.json()
+        assert payload["mode"] == "safe_read_only"
+        assert payload["schema_version"] == 99
+        assert payload["reason_code"] == "db_future_schema"
+        assert payload["recovery_options"] == ["restore_backup", "keep_read_only"]
+        assert payload["backups"] == [{"name": backup.name, "sha256": backup_sha256}]
+        features = client.get("/api/features")
+        assert features.status_code == 503
+        assert features.json()["detail"] == "database_safe_mode"
+        capabilities = client.get("/health/capabilities")
+        memory = next(
+            item for item in capabilities.json()["capabilities"] if item["name"] == "memory"
+        )
+        assert memory == {
+            "name": "memory",
+            "status": "unavailable",
+            "error_code": "db_future_schema",
+        }
+        retry = client.post("/api/storage/recovery/retry")
+        assert retry.status_code == 409
+        assert retry.json()["detail"] == "database_retry_not_available"
+        invalid_restore = client.post(
+            "/api/storage/recovery/restore",
+            json={"backup_name": backup.name, "backup_sha256": "0" * 64},
+        )
+        assert invalid_restore.status_code == 409
+        assert invalid_restore.json()["detail"] == "database_restore_failed"
+        restored = client.post(
+            "/api/storage/recovery/restore",
+            json={"backup_name": backup.name, "backup_sha256": backup_sha256},
+        )
+        assert restored.status_code == 200
+        assert restored.json() == {"restored_schema_version": 2, "restart_required": True}
 
 
 def test_opt_in_candidate_analysis_uses_owned_provider_and_successful_user_turn_only(

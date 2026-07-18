@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import sqlite3
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
@@ -16,10 +18,24 @@ from app.memory.models import (
     MemoryStatus,
     MemoryType,
     ProfileItem,
+    SourceProvenance,
 )
-from app.schemas.ai import FeatureName, FeatureState
+from app.schemas.ai import (
+    FeatureActualState,
+    FeatureDesiredState,
+    FeatureName,
+    FeatureState,
+)
 from app.storage.database import SQLiteDatabase, StorageConflictError, transaction
-from app.storage.records import ConversationOrigin, ConversationRecord, ConversationRole
+from app.storage.records import (
+    CleanupJob,
+    CleanupKind,
+    CleanupState,
+    ConversationOrigin,
+    ConversationRecord,
+    ConversationRole,
+    DeletionResult,
+)
 
 
 class ConversationRepository:
@@ -96,11 +112,19 @@ class ConversationRepository:
                 "DELETE FROM conversation_messages WHERE created_at < ?", (cutoff,)
             )
             deleted = cursor.rowcount
-        if deleted:
-            self._database.secure_cleanup()
+            if deleted:
+                _queue_cleanup(
+                    connection,
+                    CleanupKind.history_retention,
+                    vacuum_required=False,
+                    now=_aware(now),
+                )
         return deleted
 
     def clear(self, *, user_id: str, session_id: str | None = None) -> int:
+        return self.clear_logically(user_id=user_id, session_id=session_id).deleted_count
+
+    def clear_logically(self, *, user_id: str, session_id: str | None = None) -> DeletionResult:
         with self._database.connect() as connection, transaction(connection):
             if session_id is None:
                 cursor = connection.execute(
@@ -112,9 +136,21 @@ class ConversationRepository:
                     (user_id, session_id),
                 )
             deleted = cursor.rowcount
-        if deleted:
-            self._database.secure_cleanup(vacuum=True)
-        return deleted
+            cleanup_id = (
+                _queue_cleanup(
+                    connection,
+                    CleanupKind.history_clear,
+                    vacuum_required=True,
+                    now=datetime.now(UTC),
+                )
+                if deleted
+                else None
+            )
+        return DeletionResult(
+            deleted_count=deleted,
+            cleanup_id=cleanup_id,
+            cleanup_state=CleanupState.pending if cleanup_id is not None else None,
+        )
 
 
 class FeatureFlagRepository:
@@ -124,31 +160,218 @@ class FeatureFlagRepository:
     def get(self, name: FeatureName) -> FeatureState:
         with self._database.connect() as connection:
             row = connection.execute(
-                "SELECT name, enabled FROM feature_flags WHERE name = ?", (name.value,)
+                "SELECT * FROM feature_flags WHERE name = ?", (name.value,)
             ).fetchone()
         if row is None:
             raise KeyError(name.value)
-        return FeatureState(name=FeatureName(str(row["name"])), enabled=bool(row["enabled"]))
+        return _feature_from_row(row)
 
     def list(self) -> list[FeatureState]:
         with self._database.connect() as connection:
-            rows = connection.execute(
-                "SELECT name, enabled FROM feature_flags ORDER BY name"
-            ).fetchall()
-        return [
-            FeatureState(name=FeatureName(str(row["name"])), enabled=bool(row["enabled"]))
-            for row in rows
-        ]
+            rows = connection.execute("SELECT * FROM feature_flags ORDER BY name").fetchall()
+        return [_feature_from_row(row) for row in rows]
 
     def set(self, name: FeatureName, enabled: bool, *, updated_at: datetime) -> FeatureState:
+        transition = self.request_transition(name, enabled, updated_at=updated_at)
+        if transition.actual_state in {FeatureActualState.enabled, FeatureActualState.disabled}:
+            return transition
+        return self.finish_transition(
+            name,
+            generation=transition.generation,
+            actual_state=(FeatureActualState.enabled if enabled else FeatureActualState.disabled),
+            reason_code=None,
+            updated_at=updated_at,
+        )
+
+    def request_transition(
+        self,
+        name: FeatureName,
+        enabled: bool,
+        *,
+        updated_at: datetime,
+    ) -> FeatureState:
+        desired = FeatureDesiredState.enabled if enabled else FeatureDesiredState.disabled
+        transitional = FeatureActualState.enabling if enabled else FeatureActualState.disabling
+        with self._database.connect() as connection, transaction(connection):
+            existing = connection.execute(
+                "SELECT * FROM feature_flags WHERE name = ?", (name.value,)
+            ).fetchone()
+            if existing is None:
+                raise KeyError(name.value)
+            state = _feature_from_row(existing)
+            stable = state.desired_state is desired and (
+                (enabled and state.actual_state is FeatureActualState.enabled)
+                or (not enabled and state.actual_state is FeatureActualState.disabled)
+            )
+            if stable:
+                return state
+            connection.execute(
+                """
+                UPDATE feature_flags
+                SET desired_state = ?, actual_state = ?, generation = generation + 1,
+                    reason_code = NULL, updated_at = ?
+                WHERE name = ?
+                """,
+                (desired.value, transitional.value, _to_db_time(_aware(updated_at)), name.value),
+            )
+            row = connection.execute(
+                "SELECT * FROM feature_flags WHERE name = ?", (name.value,)
+            ).fetchone()
+            assert row is not None
+            return _feature_from_row(row)
+
+    def finish_transition(
+        self,
+        name: FeatureName,
+        *,
+        generation: int,
+        actual_state: FeatureActualState,
+        reason_code: str | None,
+        updated_at: datetime,
+    ) -> FeatureState:
+        if actual_state not in {
+            FeatureActualState.enabled,
+            FeatureActualState.disabled,
+            FeatureActualState.failed,
+        }:
+            raise ValueError("feature transition must finish in a stable or failed state")
+        desired_guard = (
+            None
+            if actual_state is FeatureActualState.failed
+            else (
+                FeatureDesiredState.enabled
+                if actual_state is FeatureActualState.enabled
+                else FeatureDesiredState.disabled
+            )
+        )
         with self._database.connect() as connection, transaction(connection):
             cursor = connection.execute(
-                "UPDATE feature_flags SET enabled = ?, updated_at = ? WHERE name = ?",
-                (int(enabled), _to_db_time(_aware(updated_at)), name.value),
+                """
+                UPDATE feature_flags SET actual_state = ?, reason_code = ?, updated_at = ?
+                WHERE name = ? AND generation = ?
+                  AND (? IS NULL OR desired_state = ?)
+                """,
+                (
+                    actual_state.value,
+                    reason_code,
+                    _to_db_time(_aware(updated_at)),
+                    name.value,
+                    generation,
+                    desired_guard.value if desired_guard is not None else None,
+                    desired_guard.value if desired_guard is not None else None,
+                ),
             )
             if cursor.rowcount != 1:
-                raise KeyError(name.value)
-        return FeatureState(name=name, enabled=enabled)
+                raise StorageConflictError("stale or inconsistent feature transition")
+            row = connection.execute(
+                "SELECT * FROM feature_flags WHERE name = ?", (name.value,)
+            ).fetchone()
+            assert row is not None
+            return _feature_from_row(row)
+
+    def reconcile_interrupted(self, *, updated_at: datetime) -> Sequence[FeatureState]:
+        with self._database.connect() as connection, transaction(connection):
+            connection.execute(
+                """
+                UPDATE feature_flags
+                SET actual_state = 'failed', reason_code = 'interrupted_transition',
+                    updated_at = ?
+                WHERE actual_state IN ('enabling', 'disabling')
+                """,
+                (_to_db_time(_aware(updated_at)),),
+            )
+            rows = connection.execute("SELECT * FROM feature_flags ORDER BY name").fetchall()
+        return [_feature_from_row(row) for row in rows]
+
+
+class PhysicalCleanupRepository:
+    """Content-free durable queue owned and bounded by MemoryRuntime."""
+
+    def __init__(self, database: SQLiteDatabase) -> None:
+        self._database = database
+
+    def list_due(self, *, now: datetime, limit: int = 16) -> list[CleanupJob]:
+        if limit < 1 or limit > 64:
+            raise ValueError("cleanup batch limit must be within [1, 64]")
+        with self._database.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM physical_cleanup_jobs
+                WHERE state != 'completed' AND next_attempt_at <= ?
+                ORDER BY next_attempt_at, created_at, cleanup_id
+                LIMIT ?
+                """,
+                (_to_db_time(_aware(now)), limit),
+            ).fetchall()
+        return [_cleanup_from_row(row) for row in rows]
+
+    def status(self, cleanup_id: str) -> CleanupJob | None:
+        with self._database.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM physical_cleanup_jobs WHERE cleanup_id = ?", (cleanup_id,)
+            ).fetchone()
+        return _cleanup_from_row(row) if row is not None else None
+
+    def has_pending(self) -> bool:
+        with self._database.connect() as connection:
+            row = connection.execute(
+                "SELECT 1 FROM physical_cleanup_jobs WHERE state != 'completed' LIMIT 1"
+            ).fetchone()
+        return row is not None
+
+    def mark_retry(
+        self,
+        cleanup_ids: tuple[str, ...],
+        *,
+        now: datetime,
+        next_attempt_at: datetime,
+        reason_code: str,
+    ) -> None:
+        if not cleanup_ids:
+            return
+        placeholders = ",".join("?" for _ in cleanup_ids)
+        with self._database.connect() as connection, transaction(connection):
+            connection.execute(
+                f"""
+                UPDATE physical_cleanup_jobs
+                SET state = 'retrying', attempt_count = attempt_count + 1,
+                    reason_code = ?, updated_at = ?, next_attempt_at = ?
+                WHERE cleanup_id IN ({placeholders}) AND state != 'completed'
+                """,
+                (
+                    reason_code,
+                    _to_db_time(_aware(now)),
+                    _to_db_time(_aware(next_attempt_at)),
+                    *cleanup_ids,
+                ),
+            )
+
+    def mark_completed(self, cleanup_ids: tuple[str, ...], *, now: datetime) -> None:
+        if not cleanup_ids:
+            return
+        placeholders = ",".join("?" for _ in cleanup_ids)
+        timestamp = _to_db_time(_aware(now))
+        with self._database.connect() as connection, transaction(connection):
+            connection.execute(
+                f"""
+                UPDATE physical_cleanup_jobs
+                SET state = 'completed', reason_code = NULL, updated_at = ?,
+                    next_attempt_at = ?, completed_at = ?
+                WHERE cleanup_id IN ({placeholders})
+                """,
+                (timestamp, timestamp, timestamp, *cleanup_ids),
+            )
+            connection.execute(
+                """
+                DELETE FROM physical_cleanup_jobs
+                WHERE cleanup_id IN (
+                    SELECT cleanup_id FROM physical_cleanup_jobs
+                    WHERE state = 'completed'
+                    ORDER BY completed_at DESC, cleanup_id DESC
+                    LIMIT -1 OFFSET 256
+                )
+                """
+            )
 
 
 class MemoryRepository:
@@ -180,8 +403,8 @@ class MemoryRepository:
                         memory_id, user_id, memory_type, canonical_key, content,
                         normalized_content, importance_score, confidence_score, sensitivity,
                         status, source_kind, source_message_id, source_excerpt, related_emotion,
-                        created_at, updated_at, last_seen_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?)
+                        created_at, updated_at, last_seen_at, source_sha256, provenance
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         approved.memory_id,
@@ -195,11 +418,13 @@ class MemoryRepository:
                         approved.sensitivity.value,
                         approved.source_kind.value,
                         approved.source_message_id,
-                        approved.source_excerpt,
+                        approved.evidence_quote,
                         approved.related_emotion.value if approved.related_emotion else None,
                         now,
                         now,
                         now,
+                        approved.source_sha256,
+                        approved.provenance.value,
                     ),
                 )
                 memory_id = approved.memory_id
@@ -215,7 +440,8 @@ class MemoryRepository:
                         content = ?, importance_score = MAX(importance_score, ?),
                         confidence_score = MAX(confidence_score, ?), sensitivity = ?,
                         status = 'active', source_kind = ?, source_message_id = ?,
-                        source_excerpt = ?, related_emotion = ?, updated_at = ?, last_seen_at = ?
+                        source_excerpt = ?, source_sha256 = ?, provenance = ?,
+                        related_emotion = ?, updated_at = ?, last_seen_at = ?
                     WHERE memory_id = ?
                     """,
                     (
@@ -225,7 +451,9 @@ class MemoryRepository:
                         approved.sensitivity.value,
                         approved.source_kind.value,
                         approved.source_message_id,
-                        approved.source_excerpt,
+                        approved.evidence_quote,
+                        approved.source_sha256,
+                        approved.provenance.value,
                         approved.related_emotion.value if approved.related_emotion else None,
                         now,
                         now,
@@ -348,7 +576,8 @@ class MemoryRepository:
                     UPDATE memories SET
                         content = ?, normalized_content = ?, confidence_score = 1.0,
                         sensitivity = ?, source_kind = 'manual', source_message_id = ?,
-                        source_excerpt = ?, updated_at = ?, last_seen_at = ?
+                        source_excerpt = ?, source_sha256 = ?, provenance = 'manual',
+                        updated_at = ?, last_seen_at = ?
                     WHERE memory_id = ?
                     """,
                     (
@@ -357,6 +586,7 @@ class MemoryRepository:
                         sensitivity.value,
                         source_message_id,
                         content,
+                        hashlib.sha256(content.encode("utf-8")).hexdigest(),
                         now,
                         now,
                         memory_id,
@@ -372,10 +602,17 @@ class MemoryRepository:
                 """
                 INSERT INTO memory_sources(
                     source_id, memory_id, source_kind, source_message_id,
-                    source_excerpt, observed_at
-                ) VALUES (?, ?, 'manual', ?, ?, ?)
+                    source_excerpt, observed_at, source_sha256, provenance
+                ) VALUES (?, ?, 'manual', ?, ?, ?, ?, 'manual')
                 """,
-                (f"source_{uuid4().hex}", memory_id, source_message_id, content, now),
+                (
+                    f"source_{uuid4().hex}",
+                    memory_id,
+                    source_message_id,
+                    content,
+                    now,
+                    hashlib.sha256(content.encode("utf-8")).hexdigest(),
+                ),
             )
             row = connection.execute(
                 "SELECT * FROM memories WHERE memory_id = ?", (memory_id,)
@@ -384,6 +621,9 @@ class MemoryRepository:
             return _memory_from_row(row)
 
     def delete(self, memory_id: str, *, user_id: str | None = None) -> bool:
+        return self.delete_logically(memory_id, user_id=user_id).logical_deleted
+
+    def delete_logically(self, memory_id: str, *, user_id: str | None = None) -> DeletionResult:
         with self._database.connect() as connection, transaction(connection):
             if user_id is None:
                 cursor = connection.execute(
@@ -394,18 +634,45 @@ class MemoryRepository:
                     "DELETE FROM memories WHERE memory_id = ? AND user_id = ?",
                     (memory_id, user_id),
                 )
-            deleted = cursor.rowcount == 1
-        if deleted:
-            self._database.secure_cleanup()
-        return deleted
+            deleted = cursor.rowcount
+            cleanup_id = (
+                _queue_cleanup(
+                    connection,
+                    CleanupKind.memory_delete,
+                    vacuum_required=False,
+                    now=datetime.now(UTC),
+                )
+                if deleted
+                else None
+            )
+        return DeletionResult(
+            deleted_count=deleted,
+            cleanup_id=cleanup_id,
+            cleanup_state=CleanupState.pending if cleanup_id is not None else None,
+        )
 
     def clear(self, *, user_id: str) -> int:
+        return self.clear_logically(user_id=user_id).deleted_count
+
+    def clear_logically(self, *, user_id: str) -> DeletionResult:
         with self._database.connect() as connection, transaction(connection):
             cursor = connection.execute("DELETE FROM memories WHERE user_id = ?", (user_id,))
             deleted = cursor.rowcount
-        if deleted:
-            self._database.secure_cleanup(vacuum=True)
-        return deleted
+            cleanup_id = (
+                _queue_cleanup(
+                    connection,
+                    CleanupKind.memory_clear,
+                    vacuum_required=True,
+                    now=datetime.now(UTC),
+                )
+                if deleted
+                else None
+            )
+        return DeletionResult(
+            deleted_count=deleted,
+            cleanup_id=cleanup_id,
+            cleanup_state=CleanupState.pending if cleanup_id is not None else None,
+        )
 
     @staticmethod
     def _add_source(
@@ -414,16 +681,19 @@ class MemoryRepository:
         connection.execute(
             """
             INSERT OR IGNORE INTO memory_sources(
-                source_id, memory_id, source_kind, source_message_id, source_excerpt, observed_at
-            ) VALUES (?, ?, ?, ?, ?, ?)
+                source_id, memory_id, source_kind, source_message_id, source_excerpt, observed_at,
+                source_sha256, provenance
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 f"source_{uuid4().hex}",
                 memory_id,
                 approved.source_kind.value,
                 approved.source_message_id,
-                approved.source_excerpt,
+                approved.evidence_quote,
                 _to_db_time(approved.created_at),
+                approved.source_sha256,
+                approved.provenance.value,
             ),
         )
 
@@ -457,6 +727,17 @@ def _conversation_from_row(row: sqlite3.Row) -> ConversationRecord:
     )
 
 
+def _feature_from_row(row: sqlite3.Row) -> FeatureState:
+    return FeatureState(
+        name=FeatureName(str(row["name"])),
+        desired_state=FeatureDesiredState(str(row["desired_state"])),
+        actual_state=FeatureActualState(str(row["actual_state"])),
+        generation=int(row["generation"]),
+        reason_code=str(row["reason_code"]) if row["reason_code"] is not None else None,
+        updated_at=_from_db_time(str(row["updated_at"])),
+    )
+
+
 def _memory_from_row(row: sqlite3.Row) -> MemoryItem:
     related = row["related_emotion"]
     return MemoryItem(
@@ -472,7 +753,9 @@ def _memory_from_row(row: sqlite3.Row) -> MemoryItem:
         status=MemoryStatus(str(row["status"])),
         source_kind=MemorySourceKind(str(row["source_kind"])),
         source_message_id=str(row["source_message_id"]),
-        source_excerpt=str(row["source_excerpt"]),
+        evidence_quote=str(row["source_excerpt"]),
+        source_sha256=str(row["source_sha256"]),
+        provenance=SourceProvenance(str(row["provenance"])),
         related_emotion=EmotionLabel(str(related)) if related is not None else None,
         created_at=_from_db_time(str(row["created_at"])),
         updated_at=_from_db_time(str(row["updated_at"])),
@@ -486,8 +769,27 @@ def _source_from_row(row: sqlite3.Row) -> MemorySource:
         memory_id=str(row["memory_id"]),
         source_kind=MemorySourceKind(str(row["source_kind"])),
         source_message_id=str(row["source_message_id"]),
-        source_excerpt=str(row["source_excerpt"]),
+        evidence_quote=str(row["source_excerpt"]),
+        source_sha256=str(row["source_sha256"]),
+        provenance=SourceProvenance(str(row["provenance"])),
         observed_at=_from_db_time(str(row["observed_at"])),
+    )
+
+
+def _cleanup_from_row(row: sqlite3.Row) -> CleanupJob:
+    return CleanupJob(
+        cleanup_id=str(row["cleanup_id"]),
+        kind=CleanupKind(str(row["kind"])),
+        state=CleanupState(str(row["state"])),
+        vacuum_required=bool(row["vacuum_required"]),
+        attempt_count=int(row["attempt_count"]),
+        reason_code=str(row["reason_code"]) if row["reason_code"] is not None else None,
+        created_at=_from_db_time(str(row["created_at"])),
+        updated_at=_from_db_time(str(row["updated_at"])),
+        next_attempt_at=_from_db_time(str(row["next_attempt_at"])),
+        completed_at=(
+            _from_db_time(str(row["completed_at"])) if row["completed_at"] is not None else None
+        ),
     )
 
 
@@ -524,3 +826,24 @@ def _storable_sensitivity(content: str) -> MemorySensitivity:
     if sensitivity is MemorySensitivity.credential:
         raise ValueError("credential content cannot be persisted")
     return sensitivity
+
+
+def _queue_cleanup(
+    connection: sqlite3.Connection,
+    kind: CleanupKind,
+    *,
+    vacuum_required: bool,
+    now: datetime,
+) -> str:
+    cleanup_id = f"cleanup_{uuid4().hex}"
+    timestamp = _to_db_time(_aware(now))
+    connection.execute(
+        """
+        INSERT INTO physical_cleanup_jobs(
+            cleanup_id, kind, state, vacuum_required, attempt_count, reason_code,
+            created_at, updated_at, next_attempt_at, completed_at
+        ) VALUES (?, ?, 'pending', ?, 0, NULL, ?, ?, ?, NULL)
+        """,
+        (cleanup_id, kind.value, int(vacuum_required), timestamp, timestamp, timestamp),
+    )
+    return cleanup_id

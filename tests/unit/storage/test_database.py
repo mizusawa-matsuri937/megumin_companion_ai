@@ -20,8 +20,8 @@ from app.storage.migrations.v001_initial import Migration
 def test_initial_migration_is_complete_and_idempotent(tmp_path: Path) -> None:
     database = SQLiteDatabase(tmp_path / "companion.sqlite3")
 
-    assert database.initialize() == 2
-    assert database.initialize() == 2
+    assert database.initialize() == 3
+    assert database.initialize() == 3
 
     with database.connect() as connection:
         tables = {
@@ -41,21 +41,23 @@ def test_initial_migration_is_complete_and_idempotent(tmp_path: Path) -> None:
             "idempotency_sessions",
             "idempotency_turns",
             "migration_audit",
+            "physical_cleanup_jobs",
         } <= tables
         versions = connection.execute("SELECT version, name FROM schema_migrations").fetchall()
         assert [tuple(row) for row in versions] == [
             (1, "initial_history_memory_features_fts"),
             (2, "message_idempotency"),
+            (3, "memory_state_recovery"),
         ]
         audits = connection.execute(
             "SELECT from_version, to_version, backup_name, backup_sha256 FROM migration_audit"
         ).fetchall()
-        assert [tuple(row) for row in audits] == [(0, 2, None, None)]
+        assert [tuple(row) for row in audits] == [(0, 3, None, None)]
 
 
-def test_v2_upgrade_checkpoints_and_keeps_a_verified_v1_backup(tmp_path: Path) -> None:
+def test_v3_upgrade_checkpoints_and_keeps_a_verified_v1_backup(tmp_path: Path) -> None:
     database = SQLiteDatabase(tmp_path / "companion.sqlite3")
-    backup_path = tmp_path / "companion.sqlite3.pre-v1-to-v2.backup"
+    backup_path = tmp_path / "companion.sqlite3.pre-v1-to-v3.backup"
     with database.connect() as connection:
         assert apply_migrations(connection, migrations=INITIAL_MIGRATIONS) == 1
         stale_backup = sqlite3.connect(backup_path, isolation_level=None)
@@ -81,7 +83,7 @@ def test_v2_upgrade_checkpoints_and_keeps_a_verified_v1_backup(tmp_path: Path) -
             ),
         )
 
-    assert database.initialize() == 2
+    assert database.initialize() == 3
     assert backup_path.is_file()
     with sqlite3.connect(backup_path) as backup:
         assert backup.execute("PRAGMA quick_check").fetchone()[0] == "ok"
@@ -111,7 +113,7 @@ def test_v2_upgrade_checkpoints_and_keeps_a_verified_v1_backup(tmp_path: Path) -
         ).fetchone()
         assert audit is not None
         assert str(audit["migration_id"]).startswith("migration_")
-        assert (audit["from_version"], audit["to_version"]) == (1, 2)
+        assert (audit["from_version"], audit["to_version"]) == (1, 3)
         assert audit["started_at"] <= audit["completed_at"]
         assert audit["backup_name"] == backup_path.name
         assert audit["backup_sha256"] == expected_hash
@@ -123,7 +125,7 @@ def test_invalid_existing_migration_backup_fails_closed_before_schema_write(
     database = SQLiteDatabase(tmp_path / "companion.sqlite3")
     with database.connect() as connection:
         assert apply_migrations(connection, migrations=INITIAL_MIGRATIONS) == 1
-    (tmp_path / "companion.sqlite3.pre-v1-to-v2.backup").write_bytes(b"not-sqlite")
+    (tmp_path / "companion.sqlite3.pre-v1-to-v3.backup").write_bytes(b"not-sqlite")
 
     with pytest.raises(MigrationError, match="backup"):
         database.initialize()
@@ -229,9 +231,9 @@ def test_concurrent_initialization_serializes_schema_ownership(tmp_path: Path) -
     with ThreadPoolExecutor(max_workers=2) as executor:
         versions = list(executor.map(lambda _index: database.initialize(), range(2)))
 
-    assert versions == [2, 2]
+    assert versions == [3, 3]
     with database.connect() as connection:
-        assert connection.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 2
+        assert connection.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 3
 
 
 def test_database_and_transaction_reject_invalid_state(tmp_path: Path) -> None:

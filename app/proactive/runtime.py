@@ -201,7 +201,7 @@ class ProactiveRuntime:
 
         self._bind_loop()
         if state.name is FeatureName.vision:
-            self._set_vision_epoch_state(state.enabled)
+            self._set_vision_epoch_state(state.desired_enabled)
         await self._apply_feature_transition(state)
 
     async def close(self) -> None:
@@ -221,7 +221,7 @@ class ProactiveRuntime:
 
     def _on_feature_changed(self, state: FeatureState) -> None:
         if state.name is FeatureName.vision:
-            self._set_vision_epoch_state(state.enabled)
+            self._set_vision_epoch_state(state.desired_enabled)
         if state.name not in {FeatureName.proactive, FeatureName.vision} or self._closing:
             return
         loop = self._loop
@@ -237,7 +237,10 @@ class ProactiveRuntime:
             return
         task = asyncio.create_task(
             self._apply_feature_transition(state),
-            name=f"proactive-feature-{state.name.value}-{'enable' if state.enabled else 'disable'}",
+            name=(
+                f"proactive-feature-{state.name.value}-"
+                f"{'enable' if state.desired_enabled else 'disable'}"
+            ),
         )
         self._feature_transition_tasks.add(task)
         task.add_done_callback(self._feature_transition_finished)
@@ -245,8 +248,8 @@ class ProactiveRuntime:
     async def _apply_feature_transition(self, state: FeatureState) -> None:
         async with self._feature_transition_lock:
             if state.name is FeatureName.proactive:
-                if state.enabled:
-                    if not self._closing and self._feature_enabled(FeatureName.proactive):
+                if state.desired_enabled:
+                    if not self._closing:
                         self._ensure_scheduler()
                     return
                 await self._stop_scheduler()
@@ -255,7 +258,7 @@ class ProactiveRuntime:
                 if not self._closing and self._feature_enabled(FeatureName.proactive):
                     self._ensure_scheduler()
                 return
-            if state.name is FeatureName.vision and not state.enabled:
+            if state.name is FeatureName.vision and not state.desired_enabled:
                 self._clear_retired_perception()
                 active = self._lifecycle.snapshot()
                 if active.active_trigger_type == ProactiveTriggerType.visual_change.value:

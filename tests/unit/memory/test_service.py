@@ -30,7 +30,12 @@ from app.memory.service import (
 )
 from app.schemas.ai import FeatureName, FeatureState
 from app.storage.database import SQLiteDatabase
-from app.storage.records import ConversationOrigin, ConversationRecord, ConversationRole
+from app.storage.records import (
+    ConversationOrigin,
+    ConversationRecord,
+    ConversationRole,
+    DeletionResult,
+)
 from app.storage.repositories import (
     ConversationRepository,
     FeatureFlagRepository,
@@ -219,9 +224,9 @@ def test_disabled_history_is_strict_runtime_noop_but_management_clear_remains_av
     assert not service.record(record)
     assert service.recent(user_id="local_user", session_id="session") == []
     assert service.cleanup() == 0
-    assert store.calls == []
+    assert store.calls == ["cleanup_expired"]
     assert service.clear_for_management(user_id="local_user") == 0
-    assert store.calls == ["clear"]
+    assert store.calls == ["cleanup_expired", "clear"]
 
 
 def test_history_service_uses_seven_day_repository_semantics(tmp_path: Path) -> None:
@@ -378,10 +383,20 @@ class CountingMemoryStore:
         self.calls.append("delete")
         raise AssertionError("unexpected management call")
 
+    def delete_logically(self, memory_id: str, *, user_id: str | None = None) -> DeletionResult:
+        del memory_id, user_id
+        self.calls.append("delete_logically")
+        raise AssertionError("unexpected management call")
+
     def clear(self, *, user_id: str) -> int:
         del user_id
         self.calls.append("clear")
         return 0
+
+    def clear_logically(self, *, user_id: str) -> DeletionResult:
+        del user_id
+        self.calls.append("clear_logically")
+        return DeletionResult(deleted_count=0)
 
 
 class CountingConversationStore:
@@ -410,12 +425,17 @@ class CountingConversationStore:
     def cleanup_expired(self, *, now: datetime, retention_days: int = 7) -> int:
         del now, retention_days
         self.calls.append("cleanup_expired")
-        raise AssertionError("disabled service touched history store")
+        return 0
 
     def clear(self, *, user_id: str, session_id: str | None = None) -> int:
         del user_id, session_id
         self.calls.append("clear")
         return 0
+
+    def clear_logically(self, *, user_id: str, session_id: str | None = None) -> DeletionResult:
+        del user_id, session_id
+        self.calls.append("clear_logically")
+        return DeletionResult(deleted_count=0)
 
 
 class BlockingConversationStore(CountingConversationStore):
