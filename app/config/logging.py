@@ -448,7 +448,10 @@ def _process_log_path(logical_path: Path, process_name: str, process_id: int) ->
 
 
 def _windows_process_is_alive(process_id: int) -> bool:
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    loader = getattr(ctypes, "WinDLL", None)
+    if loader is None:
+        return False
+    kernel32 = loader("kernel32", use_last_error=True)
     kernel32.OpenProcess.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32]
     kernel32.OpenProcess.restype = ctypes.c_void_p
     kernel32.GetExitCodeProcess.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32)]

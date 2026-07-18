@@ -102,12 +102,13 @@ retention_days: 14
   malicious diagnostic file/reparse/JSON/secret/body/path、ZIP/manifest/hash、失败清理和自动 crash report。
 - 2026-07-18 本地 Windows 质量门：`ruff check .` 通过、`ruff format --check .` 通过（169 files）、
   strict `mypy` 通过（164 source files）、`pytest` 为 722 passed / 2 optional-dependency skipped，实际总覆盖率
-  90.35%（门槛 90%）。Windows 首次建目录的双进程 race 在修复后额外连续运行 10 次，10/10 通过。
+  90.40%（门槛 90%）。`mypy --platform darwin` 也通过（164 source files）。Windows 首次建目录的双进程
+  race 在修复后额外连续运行 10 次，10/10 通过。
 - 2026-07-18 installed-wheel smoke：从 `megumin_companion_ai-0.1.0-py3-none-any.whl` 创建隔离环境，临时隐藏
   source packages 后仍通过 API help/config、desktop preflight 和 authenticated/locked health；
   `source_tree_imported=false`。wheel SHA-256 为
-  `6d32dd82f649cdc66ec69d9ab310e179c32dbe82061723f6a60c4f344d7324c9`，manifest SHA-256 为
-  `0e985f9fdfa64d56b207fd37a5ba0b630f3974c5e0651d136815fd8e244d223e`。该 wheel 仅为本地验证产物，
+  `74aaf79167e0b24152a73643387a60729ff75e22d1b58433a60ab392614c3445`，manifest SHA-256 为
+  `3f48e2dfcce8920356e3a5dd77255fb860183eff711168dbb2b6719b79f86dda`。该 wheel 仅为本地验证产物，
   不上传为 release artifact。
 - GitHub `quality` 与 `installed-wheel` 的 Windows/macOS 四项证据以 Draft PR 最终 head 的 check URLs 为准，
   避免为回填动态 URL 改写已测试 head；任一项未成功时不得提交人工 Gate。人工 Gate 在全部自动检查通过后仍保持
