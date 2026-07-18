@@ -1,10 +1,16 @@
 # W12：Windows WorkerSupervisor、Job Object 与 helper protocol 基座
 
-> 基线：`2f9df7e30a5927d797d32c1236a152358e24310c`（W11 已合并的
+> 基线：`a8a4fdba2e64919b785393cdc3e0b2fd4ce4146e`（W09 已受控合并后的
 > `agent/windows-development-baseline`）
 > 分支：`codex/w12-worker-supervisor-job-object`
 > 风险：P1-13、P1-14、P1-15
 > Gate：W12 AI 实现审计完成后仍须并发/安全 reviewer 签字；综合 Gate W2 保持未关闭
+
+2026-07-18 增量基线复核：W12 分支以 merge commit 纳入上述 W09 基线。相对先前已审计的 W12 head
+`549b88fb33a0424d6886683b72a0bfe40afa97eb`，worker 实现、测试和探针在合并时均无内容变化；最终 PR diff
+相对新基线仍仅包含 W12 文件。W09 对 settings、bootstrap、GPT-SoVITS 和 VTS 的变更与 W12 文件零重叠，
+W12 worker 不导入这些接口。该结论经共享接口聚焦回归、完整质量门及增量安全反方审查重新验证，不能解释为
+吸收或审计 W09 范围之外的功能。
 
 ## 范围与边界
 
@@ -104,11 +110,11 @@ uv run python tools/w12_windows_probe.py --helper tests/helpers/w12_worker_helpe
 | --- | ---: |
 | Job 内受控进程峰值 | 5（venv launcher 数量属环境实现，不固定为 2） |
 | terminate 后 active process | 0 |
-| child-tree kill latency | 0.0 ms（计时器分辨率内） |
-| hard deadline | 请求 200 ms；观察 187 ms（hard upper bound，提前终止） |
-| orderly shutdown latency | 297 ms；报告 deadline met |
+| child-tree kill latency | 16 ms |
+| hard deadline | 请求 200 ms；观察 188 ms（hard upper bound，提前终止） |
+| orderly shutdown latency | 140 ms；报告 deadline met |
 | stderr 输入/诊断计入 | 2,097,152 / 1,048,576 bytes；truncated=true |
-| parent handle samples | `225 → 225 → 225 → 225 → 225` |
+| parent handle samples | `228 → 228 → 228 → 228 → 228` |
 | 第二次 child-tree handle 增长 | 0 |
 | managed temp 残留文件 | 0 |
 | crash budget | 3；第 4 次窗口内 crash quarantine |
@@ -119,10 +125,11 @@ uv run python tools/w12_windows_probe.py --helper tests/helpers/w12_worker_helpe
 macOS 另用明确标记的 fake-kernel API 合约测试覆盖 ctypes 绑定、参数拒绝和 handle 生命周期，以避免平台专属
 代码压低跨平台 coverage；它只证明 portable 控制流契约，不证明 macOS 具有或执行了 Windows Job Object。
 
-完整本机质量门：`840 passed, 3 skipped`，branch coverage `90.08%`；三项 skip 是缺少可选 PIL/RapidOCR 和
-当前用户不能创建普通 symlink。Ruff lint、Ruff format 与 strict mypy（184 source files）通过；最终提交前
+新基线完整本机质量门：`856 passed, 3 skipped`，branch coverage `90.25%`；三项 skip 是缺少可选 PIL/RapidOCR 和
+当前用户不能创建普通 symlink。共享接口与 W12 聚焦回归另为 `161 passed, 1 skipped`。Ruff lint、Ruff format
+与 strict mypy（185 source files）通过；最终提交前
 Windows wheel/source-quarantine smoke 通过：113 members，manifest SHA-256
-`b3367e6edec56e7db67753098a5d2859b9801fb59cc8b1000eb0c6b35da6eb46`，仓库外安装结果
+`ec6904fc21e87757688348ee3e645dce6e284d5d28d1896709d992b7c68baef5`，仓库外安装结果
 `source_tree_imported=false`。wheel/cache/venv 不上传；本地 provenance 不是 release artifact。
 双平台 CI 只能由 Draft PR 精确 head 的 GitHub Actions 证明，不能由本机 Windows 结果替代。
 
@@ -152,7 +159,8 @@ W12 自身仍需：
 1. 并发/安全 reviewer 对 protocol、owner、handle、shutdown 顺序和残余风险签字；
 2. `CREATE_NO_WINDOW` 和 helper 内 `GetConsoleWindow()==0` 已自动证明，但“绝无肉眼可见瞬时闪窗”仍只能保留
    一次人工观察项；静态截图不能可靠证明短暂事件；
-3. 项目所有者明确回复“W12 审计合格”后才允许请求最终合并。
+3. 项目所有者已回复“W12 审计合格”，只关闭 W12 自身实现审计；只有另行收到明确的
+   “W12 / Gate W2 审计合格”后才允许请求最终合并。
 
 综合 Gate W2 **没有因本 PR 通过而关闭**。必须等待 W07、W08、W09、W10 各自审计合格、合并并进入综合
 baseline，再重跑 10k turn、慢消费者、故障风暴、native hang、shutdown 和资源 owner 矩阵。本 PR 不开始
