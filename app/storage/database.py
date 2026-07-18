@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
 import sqlite3
 import threading
 import time
 from collections.abc import Iterator
 from contextlib import closing, contextmanager
+from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
@@ -16,6 +19,21 @@ from app.storage.migrations.v002_idempotency import MIGRATION as IDEMPOTENCY_MIG
 
 MIGRATIONS = (*INITIAL_MIGRATIONS, IDEMPOTENCY_MIGRATION)
 _INITIALIZE_LOCK = threading.Lock()
+
+
+@dataclass(frozen=True, slots=True)
+class MigrationBackup:
+    name: str
+    sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class MigrationAudit:
+    migration_id: str
+    from_version: int
+    to_version: int
+    started_at: str
+    backup: MigrationBackup | None = None
 
 
 class StorageError(RuntimeError):
@@ -63,13 +81,22 @@ class SQLiteDatabase:
         with _INITIALIZE_LOCK, self.connect() as connection:
             current = _current_version(connection)
             latest = MIGRATIONS[-1].version if MIGRATIONS else 0
+            audit = MigrationAudit(
+                migration_id=f"migration_{uuid4().hex}",
+                from_version=current,
+                to_version=latest,
+                started_at=_utc_timestamp(),
+            )
             if 0 < current < latest:
-                self._ensure_migration_backup(
-                    connection,
-                    from_version=current,
-                    to_version=latest,
+                audit = replace(
+                    audit,
+                    backup=self._ensure_migration_backup(
+                        connection,
+                        from_version=current,
+                        to_version=latest,
+                    ),
                 )
-            return apply_migrations(connection)
+            return apply_migrations(connection, audit=audit)
 
     def _ensure_migration_backup(
         self,
@@ -77,7 +104,7 @@ class SQLiteDatabase:
         *,
         from_version: int,
         to_version: int,
-    ) -> None:
+    ) -> MigrationBackup:
         if connection.in_transaction:
             raise MigrationError("migration backup requires an idle connection")
         backup_path = self.path.with_name(
@@ -102,6 +129,10 @@ class SQLiteDatabase:
                 if destination is not None:
                     destination.close()
                 temporary.unlink(missing_ok=True)
+            return MigrationBackup(
+                name=backup_path.name,
+                sha256=_sha256_file(backup_path),
+            )
         except (OSError, sqlite3.Error) as exc:
             raise MigrationError(
                 f"migration backup v{from_version} to v{to_version} failed"
@@ -142,6 +173,7 @@ def apply_migrations(
     connection: sqlite3.Connection,
     *,
     migrations: tuple[Migration, ...] = MIGRATIONS,
+    audit: MigrationAudit | None = None,
 ) -> int:
     """Apply ordered migrations statement-by-statement in rollback-safe transactions."""
 
@@ -157,6 +189,7 @@ def apply_migrations(
         # attempts therefore cannot both conclude that they own a version-zero database.
         with transaction(connection):
             current = _current_version(connection)
+            from_version = current
             if current > latest:
                 raise MigrationError(
                     f"database schema version {current} is newer than supported version {latest}"
@@ -181,6 +214,34 @@ def apply_migrations(
                     (migration.version, migration.name, migration.applied_at),
                 )
                 current = migration.version
+            if current > from_version and _table_exists(connection, "migration_audit"):
+                record = audit or MigrationAudit(
+                    migration_id=f"migration_{uuid4().hex}",
+                    from_version=from_version,
+                    to_version=current,
+                    started_at=_utc_timestamp(),
+                )
+                if record.from_version != from_version or record.to_version != current:
+                    raise MigrationError(
+                        "migration audit version range does not match schema write"
+                    )
+                connection.execute(
+                    """
+                    INSERT INTO migration_audit(
+                        migration_id, from_version, to_version, started_at, completed_at,
+                        backup_name, backup_sha256
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        record.migration_id,
+                        record.from_version,
+                        record.to_version,
+                        record.started_at,
+                        _utc_timestamp(),
+                        record.backup.name if record.backup is not None else None,
+                        record.backup.sha256 if record.backup is not None else None,
+                    ),
+                )
     except sqlite3.Error as exc:
         label = (
             f"migration {active.version} ({active.name})"
@@ -200,6 +261,16 @@ def _current_version(connection: sqlite3.Connection) -> int:
     row = connection.execute("SELECT COALESCE(MAX(version), 0) FROM schema_migrations").fetchone()
     assert row is not None
     return int(row[0])
+
+
+def _table_exists(connection: sqlite3.Connection, name: str) -> bool:
+    return (
+        connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+            (name,),
+        ).fetchone()
+        is not None
+    )
 
 
 def _user_tables(connection: sqlite3.Connection) -> set[str]:
@@ -238,3 +309,15 @@ def _verify_migration_backup(path: Path, *, expected_version: int) -> None:
                 )
     except sqlite3.Error as exc:
         raise MigrationError("migration backup verification failed") from exc
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _utc_timestamp() -> str:
+    return datetime.now(UTC).isoformat(timespec="microseconds").replace("+00:00", "Z")

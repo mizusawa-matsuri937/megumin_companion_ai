@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -39,12 +40,17 @@ def test_initial_migration_is_complete_and_idempotent(tmp_path: Path) -> None:
             "schema_migrations",
             "idempotency_sessions",
             "idempotency_turns",
+            "migration_audit",
         } <= tables
         versions = connection.execute("SELECT version, name FROM schema_migrations").fetchall()
         assert [tuple(row) for row in versions] == [
             (1, "initial_history_memory_features_fts"),
             (2, "message_idempotency"),
         ]
+        audits = connection.execute(
+            "SELECT from_version, to_version, backup_name, backup_sha256 FROM migration_audit"
+        ).fetchall()
+        assert [tuple(row) for row in audits] == [(0, 2, None, None)]
 
 
 def test_v2_upgrade_checkpoints_and_keeps_a_verified_v1_backup(tmp_path: Path) -> None:
@@ -94,6 +100,21 @@ def test_v2_upgrade_checkpoints_and_keeps_a_verified_v1_backup(tmp_path: Path) -
             ).fetchone()
             is None
         )
+    expected_hash = hashlib.sha256(backup_path.read_bytes()).hexdigest()
+    with database.connect() as connection:
+        audit = connection.execute(
+            """
+            SELECT migration_id, from_version, to_version, started_at, completed_at,
+                   backup_name, backup_sha256
+            FROM migration_audit
+            """
+        ).fetchone()
+        assert audit is not None
+        assert str(audit["migration_id"]).startswith("migration_")
+        assert (audit["from_version"], audit["to_version"]) == (1, 2)
+        assert audit["started_at"] <= audit["completed_at"]
+        assert audit["backup_name"] == backup_path.name
+        assert audit["backup_sha256"] == expected_hash
 
 
 def test_invalid_existing_migration_backup_fails_closed_before_schema_write(

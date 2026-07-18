@@ -256,6 +256,60 @@ def test_restart_marks_nonterminal_failed_without_rerunning_and_terminal_stays_t
     asyncio.run(scenario())
 
 
+def test_list_session_is_body_free_bounded_and_does_not_refresh_lru(tmp_path: Path) -> None:
+    database = SQLiteDatabase(tmp_path / "list-session.sqlite3")
+    database.initialize()
+    store = SQLiteIdempotencyStore(database, terminal_limit=2)
+
+    async def scenario() -> None:
+        for index, message_id in enumerate(("list-a", "list-b"), start=1):
+            state = _state(
+                message_id,
+                turn_id=f"turn-{message_id}",
+                now=NOW + timedelta(seconds=index),
+            )
+            await store.claim(
+                _key(message_id),
+                fingerprint=f"{index:064x}",
+                state=state,
+                now=state.created_at,
+            )
+            await store.update(
+                client_id="client-w06",
+                state=state.model_copy(update={"status": TurnStatus.completed}),
+                now=state.created_at,
+            )
+
+        retained = await store.list_session(
+            client_id="client-w06",
+            session_id="session-w06",
+            now=NOW + timedelta(seconds=3),
+        )
+        assert [item.state.source_message_id for item in retained] == ["list-a", "list-b"]
+        assert [item.terminal_order for item in retained] == [1, 2]
+
+        third = _state("list-c", turn_id="turn-list-c", now=NOW + timedelta(seconds=4))
+        await store.claim(
+            _key("list-c"),
+            fingerprint=f"{3:064x}",
+            state=third,
+            now=third.created_at,
+        )
+        await store.update(
+            client_id="client-w06",
+            state=third.model_copy(update={"status": TurnStatus.completed}),
+            now=third.created_at,
+        )
+        retained = await store.list_session(
+            client_id="client-w06",
+            session_id="session-w06",
+            now=NOW + timedelta(seconds=5),
+        )
+        assert [item.state.source_message_id for item in retained] == ["list-b", "list-c"]
+
+    asyncio.run(scenario())
+
+
 def test_idempotency_database_contains_fingerprint_but_no_message_body_copy(tmp_path: Path) -> None:
     database, store = _store(tmp_path)
     private = "W06-private-body-sentinel@example.invalid"
@@ -283,3 +337,19 @@ def test_idempotency_database_contains_fingerprint_but_no_message_body_copy(tmp_
         }
     assert "message_text" not in columns
     assert "content" not in columns
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"terminal_limit": 201},
+        {"terminal_ttl": timedelta(hours=24, microseconds=1)},
+    ],
+)
+def test_sqlite_retention_hard_limits_cannot_be_relaxed(
+    tmp_path: Path,
+    options: dict[str, object],
+) -> None:
+    database = SQLiteDatabase(tmp_path / "invalid-retention.sqlite3")
+    with pytest.raises(ValueError, match="hard limits"):
+        SQLiteIdempotencyStore(database, **options)  # type: ignore[arg-type]

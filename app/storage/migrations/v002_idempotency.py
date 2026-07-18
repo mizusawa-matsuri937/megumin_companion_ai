@@ -10,6 +10,26 @@ MIGRATION = Migration(
     applied_at="2026-07-18T00:00:00.000000Z",
     statements=(
         """
+        CREATE TABLE migration_audit (
+            migration_id TEXT PRIMARY KEY CHECK (length(migration_id) BETWEEN 1 AND 128),
+            from_version INTEGER NOT NULL CHECK (from_version >= 0),
+            to_version INTEGER NOT NULL CHECK (to_version > from_version),
+            started_at TEXT NOT NULL,
+            completed_at TEXT NOT NULL,
+            backup_name TEXT,
+            backup_sha256 TEXT CHECK (
+                backup_sha256 IS NULL OR (
+                    length(backup_sha256) = 64 AND
+                    backup_sha256 NOT GLOB '*[^0-9a-f]*'
+                )
+            ),
+            CHECK (
+                (backup_name IS NULL AND backup_sha256 IS NULL) OR
+                (backup_name IS NOT NULL AND backup_sha256 IS NOT NULL)
+            )
+        ) STRICT
+        """,
+        """
         CREATE TABLE idempotency_sessions (
             client_id TEXT NOT NULL CHECK (length(client_id) BETWEEN 1 AND 128),
             session_id TEXT NOT NULL UNIQUE CHECK (length(session_id) BETWEEN 1 AND 128),

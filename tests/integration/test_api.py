@@ -135,7 +135,10 @@ def test_text_and_voice_use_the_same_turn_service(tmp_path: Path) -> None:
                         },
                     )
                 )
-                event = websocket.receive_json()
+                while True:
+                    event = websocket.receive_json()
+                    if event["type"] == "turn.accepted":
+                        break
                 assert event["type"] == "turn.accepted"
                 assert event["payload"]["input_mode"] == mode
                 assert event["payload"]["status"] == "accepted"

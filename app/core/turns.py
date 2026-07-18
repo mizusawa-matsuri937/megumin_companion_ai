@@ -19,9 +19,12 @@ from app.core.idempotency import (
     DEFAULT_TERMINAL_TTL,
     TERMINAL_STATUSES,
     IdempotencyAccessError,
+    IdempotencyConflictError,
     IdempotencyKey,
     IdempotencyStore,
+    IdempotencyUnavailableError,
     InMemoryIdempotencyStore,
+    RetainedTurn,
     message_fingerprint,
 )
 from app.schemas import (
@@ -30,6 +33,7 @@ from app.schemas import (
     ProactiveIntent,
     SessionReset,
     SessionSnapshot,
+    SessionSnapshotChunk,
     TurnOutcome,
     TurnState,
     TurnStatus,
@@ -38,12 +42,13 @@ from app.schemas import (
 )
 
 EventEmitter = Callable[[str, dict[str, Any]], Awaitable[None]]
-SubscriptionItem = PipelineEvent | SessionReset
+SubscriptionItem = PipelineEvent | SessionReset | SessionSnapshotChunk
 SessionKey = tuple[str, str]
 DEFAULT_CLIENT_ID = "local_client"
 DEFAULT_REPLAY_LIMIT = 2_000
 DEFAULT_REPLAY_TTL = timedelta(minutes=10)
 DEFAULT_SUBSCRIBER_QUEUE_LIMIT = 512
+SNAPSHOT_CHUNK_SIZE = 50
 
 
 class TurnPipeline(Protocol):
@@ -114,6 +119,7 @@ class EventSubscription:
         self._initial: deque[SubscriptionItem] = deque(initial)
         self._live: deque[PipelineEvent] = deque()
         self._available = asyncio.Event()
+        self._closed = asyncio.Event()
         self._unfinished_tasks = 0
         self.closed_reason: str | None = None
         if self._initial:
@@ -168,7 +174,13 @@ class EventSubscription:
     def close(self, reason: str = "unsubscribed") -> None:
         if self.closed_reason is None:
             self.closed_reason = reason
+            self._closed.set()
             self._available.set()
+
+    async def wait_closed(self) -> str:
+        await self._closed.wait()
+        assert self.closed_reason is not None
+        return self.closed_reason
 
     def _refresh_available(self) -> None:
         if not self._initial and not self._live and self.closed_reason is None:
@@ -214,13 +226,13 @@ class TurnService:
         subscriber_queue_limit: int = DEFAULT_SUBSCRIBER_QUEUE_LIMIT,
     ) -> None:
         if (
-            replay_limit < 1
-            or terminal_limit < 1
-            or subscriber_queue_limit < 1
-            or replay_ttl <= timedelta(0)
-            or terminal_ttl <= timedelta(0)
+            not 1 <= replay_limit <= DEFAULT_REPLAY_LIMIT
+            or not 1 <= terminal_limit <= DEFAULT_TERMINAL_LIMIT
+            or not 1 <= subscriber_queue_limit <= DEFAULT_SUBSCRIBER_QUEUE_LIMIT
+            or not timedelta(0) < replay_ttl <= DEFAULT_REPLAY_TTL
+            or not timedelta(0) < terminal_ttl <= DEFAULT_TERMINAL_TTL
         ):
-            raise ValueError("turn service resource bounds must be positive")
+            raise ValueError("turn service resource bounds must not exceed hard limits")
         self._logger = logger
         self._pipeline = pipeline
         self._observers = tuple(observers)
@@ -380,7 +392,7 @@ class TurnService:
                         await started.wait()
                         priority_owned = False
                         pipeline_started = True
-            if not pipeline_started:
+            if not pipeline_started and self._pipeline is not None:
                 async with self._coordination_lock:
                     self._clear_active_locked(state.turn_id)
 
@@ -647,6 +659,8 @@ class TurnService:
         reason: str = "user_interrupt",
     ) -> TurnState | None:
         async with self._command_lock:
+            now = self._now()
+            await self._hydrate_session(client_id, session_id, now=now)
             session_key = (client_id, session_id)
             target_id = (
                 turn_id
@@ -672,6 +686,24 @@ class TurnService:
             ):
                 raise TurnAccessError
             if state.status in TERMINAL_STATUSES:
+                if state.turn_id in self._idempotent_turns:
+                    stored = await self._idempotency_store.lookup_turn(
+                        client_id=client_id,
+                        session_id=session_id,
+                        turn_id=target_id,
+                        now=self._now(),
+                    )
+                    if stored is None:
+                        self._evict_turn(target_id)
+                        return None
+                    state = self._prefer_memory_state(stored)
+                    if state != stored:
+                        await self._idempotency_store.update(
+                            client_id=client_id,
+                            state=state,
+                            now=self._now(),
+                        )
+                    self._states[target_id] = state
                 self._touch_terminal(state.turn_id)
                 self._prune_terminal(self._now())
             task, immediate = await self._cancel_registered_turn(target_id)
@@ -746,36 +778,47 @@ class TurnService:
     ) -> EventSubscription:
         if session_id == "*" or last_seq < 0:
             raise IdempotencyAccessError
-        now = self._now()
-        await self._idempotency_store.bind_session(client_id, session_id, now=now)
-        key = (client_id, session_id)
-        self._prune_terminal(now)
-        self._prune_replay(key, now)
-        latest = self._session_seq.get(key, 0)
-        replay = self._replay.get(key, deque())
-        initial: tuple[SubscriptionItem, ...]
-        if last_seq == latest:
-            initial = ()
-        elif replay and replay[0].seq - 1 <= last_seq < latest:
-            initial = tuple(event for event in replay if event.seq > last_seq)
-        else:
-            snapshot = self._session_snapshot(client_id, session_id)
-            initial = (
-                SessionReset(
+        async with self._command_lock:
+            now = self._now()
+            await self._idempotency_store.bind_session(client_id, session_id, now=now)
+            retained = await self._hydrate_session(client_id, session_id, now=now)
+            key = (client_id, session_id)
+            self._prune_terminal(now)
+            self._prune_replay(key, now)
+            latest = self._session_seq.get(key, 0)
+            replay = self._replay.get(key, deque())
+            initial: tuple[SubscriptionItem, ...]
+            if last_seq == latest and not (latest == 0 and retained):
+                initial = ()
+            elif replay and replay[0].seq - 1 <= last_seq < latest:
+                initial = tuple(event for event in replay if event.seq > last_seq)
+            else:
+                snapshot, states = self._session_snapshot(client_id, session_id)
+                reset = SessionReset(
                     session_id=session_id,
                     requested_last_seq=last_seq,
                     reset_to_seq=latest,
                     snapshot=snapshot,
-                ),
+                )
+                chunks = tuple(
+                    SessionSnapshotChunk(
+                        reset_id=reset.reset_id,
+                        session_id=session_id,
+                        chunk_index=index,
+                        chunk_count=snapshot.chunk_count,
+                        turns=list(states[offset : offset + SNAPSHOT_CHUNK_SIZE]),
+                    )
+                    for index, offset in enumerate(range(0, len(states), SNAPSHOT_CHUNK_SIZE))
+                )
+                initial = (reset, *chunks)
+            subscription = EventSubscription(
+                client_id,
+                session_id,
+                initial=initial,
+                maxsize=self._subscriber_queue_limit,
             )
-        subscription = EventSubscription(
-            client_id,
-            session_id,
-            initial=initial,
-            maxsize=self._subscriber_queue_limit,
-        )
-        self._subscribers.setdefault(key, set()).add(subscription)
-        return subscription
+            self._subscribers.setdefault(key, set()).add(subscription)
+            return subscription
 
     def unsubscribe(self, subscription: EventSubscription) -> None:
         key = (subscription.client_id, subscription.session_id)
@@ -1086,7 +1129,84 @@ class TurnService:
         if not replay:
             self._replay.pop(key, None)
 
-    def _session_snapshot(self, client_id: str, session_id: str) -> SessionSnapshot:
+    async def _hydrate_session(
+        self,
+        client_id: str,
+        session_id: str,
+        *,
+        now: datetime,
+        _repair_attempt: int = 0,
+    ) -> tuple[RetainedTurn, ...]:
+        retained = await self._idempotency_store.list_session(
+            client_id=client_id,
+            session_id=session_id,
+            now=now,
+        )
+        retained_ids = {item.state.turn_id for item in retained}
+        stale_ids = [
+            turn_id
+            for turn_id in self._idempotent_turns
+            if self._turn_clients.get(turn_id) == client_id
+            and self._states[turn_id].session_id == session_id
+            and turn_id not in retained_ids
+        ]
+        for turn_id in stale_ids:
+            self._evict_turn(turn_id)
+
+        repaired = False
+        resolved_states: list[TurnState] = []
+        for item in retained:
+            stored = item.state
+            state = self._prefer_memory_state(stored)
+            if state != stored:
+                try:
+                    await self._idempotency_store.update(
+                        client_id=client_id,
+                        state=state,
+                        now=now,
+                    )
+                except IdempotencyConflictError:
+                    repaired = True
+                    continue
+                repaired = True
+                continue
+            self._states[state.turn_id] = state
+            self._turn_clients[state.turn_id] = client_id
+            self._idempotent_turns.add(state.turn_id)
+            if state.status in TERMINAL_STATUSES:
+                if item.terminal_order is None:
+                    raise IdempotencyUnavailableError
+                self._terminal_order[state.turn_id] = item.terminal_order
+                self._terminal_sequence = max(self._terminal_sequence, item.terminal_order)
+            resolved_states.append(state)
+
+        if repaired:
+            if _repair_attempt >= 1:
+                raise IdempotencyUnavailableError
+            return await self._hydrate_session(
+                client_id,
+                session_id,
+                now=now,
+                _repair_attempt=_repair_attempt + 1,
+            )
+
+        key = (client_id, session_id)
+        if resolved_states:
+            latest = max(
+                resolved_states,
+                key=lambda state: (state.created_at, state.turn_id),
+            )
+            self._session_latest[key] = latest.turn_id
+        else:
+            self._session_latest.pop(key, None)
+        self._prune_terminal(now)
+        return retained
+
+    def _session_snapshot(
+        self,
+        client_id: str,
+        session_id: str,
+    ) -> tuple[SessionSnapshot, tuple[TurnState, ...]]:
         key = (client_id, session_id)
         states = [
             state
@@ -1102,11 +1222,17 @@ class TurnService:
             and active.session_id == session_id
             else []
         )
-        return SessionSnapshot(
-            session_id=session_id,
-            last_seq=self._session_seq.get(key, 0),
-            active_turn_ids=active_ids,
-            turns=states,
+        state_tuple = tuple(states)
+        chunk_count = (len(state_tuple) + SNAPSHOT_CHUNK_SIZE - 1) // SNAPSHOT_CHUNK_SIZE
+        return (
+            SessionSnapshot(
+                session_id=session_id,
+                last_seq=self._session_seq.get(key, 0),
+                active_turn_ids=active_ids,
+                turn_count=len(state_tuple),
+                chunk_count=chunk_count,
+            ),
+            state_tuple,
         )
 
     def _now(self) -> datetime:
@@ -1276,8 +1402,8 @@ def _consume_task_result(task: asyncio.Task[Any]) -> None:
 def _safe_error_code(exc: Exception) -> str:
     code = getattr(exc, "code", None)
     if isinstance(code, Enum) and isinstance(code.value, str):
-        return code.value
-    if isinstance(code, str) and code:
+        code = code.value
+    if isinstance(code, str) and 1 <= len(code) <= 128:
         return code
     if str(exc) == "idempotency_unavailable":
         return "idempotency_unavailable"

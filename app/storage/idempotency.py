@@ -16,6 +16,7 @@ from app.core.idempotency import (
     IdempotencyConflictError,
     IdempotencyKey,
     IdempotencyUnavailableError,
+    RetainedTurn,
     validate_fingerprint,
     validate_state_transition,
 )
@@ -33,8 +34,11 @@ class SQLiteIdempotencyStore:
         terminal_limit: int = DEFAULT_TERMINAL_LIMIT,
         terminal_ttl: timedelta = DEFAULT_TERMINAL_TTL,
     ) -> None:
-        if terminal_limit < 1 or terminal_ttl <= timedelta(0):
-            raise ValueError("idempotency retention bounds must be positive")
+        if (
+            not 1 <= terminal_limit <= DEFAULT_TERMINAL_LIMIT
+            or not timedelta(0) < terminal_ttl <= DEFAULT_TERMINAL_TTL
+        ):
+            raise ValueError("idempotency retention bounds must not exceed hard limits")
         self._database = database
         self._terminal_limit = terminal_limit
         self._terminal_ttl = terminal_ttl
@@ -73,6 +77,17 @@ class SQLiteIdempotencyStore:
     ) -> TurnState | None:
         result = await self._offload(self._lookup_turn_sync, client_id, session_id, turn_id, now)
         assert result is None or isinstance(result, TurnState)
+        return result
+
+    async def list_session(
+        self,
+        *,
+        client_id: str,
+        session_id: str,
+        now: datetime,
+    ) -> tuple[RetainedTurn, ...]:
+        result = await self._offload(self._list_session_sync, client_id, session_id, now)
+        assert isinstance(result, tuple)
         return result
 
     async def recover_incomplete(self, *, now: datetime) -> int:
@@ -245,6 +260,33 @@ class SQLiteIdempotencyStore:
                     now=now,
                 )
             return len(incomplete)
+
+    def _list_session_sync(
+        self,
+        client_id: str,
+        session_id: str,
+        now: datetime,
+    ) -> tuple[RetainedTurn, ...]:
+        with self._database.connect() as connection, transaction(connection):
+            self._assert_session_access(connection, client_id, session_id)
+            self._prune(connection, client_id, session_id, now=now)
+            rows = connection.execute(
+                """
+                SELECT * FROM idempotency_turns
+                WHERE client_id = ? AND session_id = ?
+                ORDER BY created_at, turn_id
+                """,
+                (client_id, session_id),
+            ).fetchall()
+            return tuple(
+                RetainedTurn(
+                    state=_state_from_row(row),
+                    terminal_order=(
+                        int(row["terminal_order"]) if row["terminal_order"] is not None else None
+                    ),
+                )
+                for row in rows
+            )
 
     def _count_records_sync(self, client_id: str, session_id: str) -> int:
         with self._database.connect() as connection:

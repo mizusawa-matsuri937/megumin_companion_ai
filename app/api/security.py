@@ -265,6 +265,7 @@ class DevAPIPrincipal:
     client_id: str
     session_id: str
     scopes: frozenset[DevAPIScope]
+    legacy_protocol: bool = False
 
     @property
     def session_fingerprint(self) -> str:
@@ -434,14 +435,16 @@ class DevAPISecurity:
                 http_status=403,
             )
 
-        client_id = _single_header(
-            headers,
-            b"x-megumin-client-id",
-            missing_reason="client_identity_missing",
-            duplicate_reason="client_identity_duplicated",
-        )
-        if not secrets.compare_digest(
-            client_id.encode("utf-8"),
+        client_values = _header_values(headers, b"x-megumin-client-id")
+        if len(client_values) > 1:
+            raise DevAPISecurityError(
+                "client_identity_duplicated",
+                reason="client_identity_duplicated",
+                http_status=400,
+            )
+        legacy_protocol = not client_values
+        if client_values and not secrets.compare_digest(
+            client_values[0].encode("utf-8"),
             self.config.client_id.encode("utf-8"),
         ):
             raise DevAPISecurityError(
@@ -469,6 +472,7 @@ class DevAPISecurity:
             client_id=self.config.client_id,
             session_id=self.config.session_id,
             scopes=self.config.scopes,
+            legacy_protocol=legacy_protocol,
         )
 
     def token_seconds_remaining(self) -> float:

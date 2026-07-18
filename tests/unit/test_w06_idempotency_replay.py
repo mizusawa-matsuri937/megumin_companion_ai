@@ -4,6 +4,7 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -11,6 +12,8 @@ from app.core import CancellationToken, TurnService
 from app.core.idempotency import (
     IdempotencyAccessError,
     IdempotencyConflictError,
+    IdempotencyStore,
+    IdempotencyUnavailableError,
     InMemoryIdempotencyStore,
     UnavailableIdempotencyStore,
 )
@@ -18,12 +21,14 @@ from app.core.turns import SlowConsumerError, TurnAccessError
 from app.schemas import (
     PipelineEvent,
     SessionReset,
+    SessionSnapshotChunk,
     TurnMetrics,
     TurnOutcome,
     TurnState,
     TurnStatus,
     UserMessage,
 )
+from app.storage import SQLiteDatabase, SQLiteIdempotencyStore
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
@@ -113,6 +118,26 @@ class CountingVTSSink:
         self.closed = True
 
 
+class FaultInjectingMemoryStore(InMemoryIdempotencyStore):
+    def __init__(self, failures: dict[TurnStatus, int]) -> None:
+        super().__init__()
+        self.failures = failures
+
+    async def update(
+        self,
+        *,
+        client_id: str,
+        state: TurnState,
+        now: datetime,
+    ) -> None:
+        remaining = self.failures.get(state.status, 0)
+        if remaining:
+            if remaining > 0:
+                self.failures[state.status] = remaining - 1
+            raise IdempotencyUnavailableError
+        await super().update(client_id=client_id, state=state, now=now)
+
+
 def _logger() -> logging.Logger:
     instance = logging.getLogger("test.w06")
     instance.handlers = [logging.NullHandler()]
@@ -173,6 +198,48 @@ def test_concurrent_duplicate_has_exactly_one_provider_tts_playback_vts_and_obse
         assert observer.accepted == 1
         assert observer.completed == 1
         await service.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_two_services_share_one_sqlite_claim_without_duplicate_side_effects(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        database = SQLiteDatabase(tmp_path / "multi-service.sqlite3")
+        database.initialize()
+        pipelines = (SideEffectPipeline(), SideEffectPipeline())
+        observers = (CountingObserver(), CountingObserver())
+        sinks = (CountingVTSSink(), CountingVTSSink())
+        services = tuple(
+            TurnService(
+                _logger(),
+                pipelines[index],
+                observers=(observers[index],),
+                event_sinks=(sinks[index],),
+                idempotency_store=SQLiteIdempotencyStore(database),
+            )
+            for index in range(2)
+        )
+        message = _message()
+
+        states = await asyncio.gather(
+            *(services[index % 2].accept(message, client_id="client-w06") for index in range(128))
+        )
+        await asyncio.gather(*(service.wait_idle() for service in services))
+        terminal = await asyncio.gather(
+            *(service.accept(message, client_id="client-w06") for service in services)
+        )
+
+        assert len({state.turn_id for state in (*states, *terminal)}) == 1
+        assert all(state.status is TurnStatus.completed for state in terminal)
+        assert sum(pipeline.provider_calls for pipeline in pipelines) == 1
+        assert sum(pipeline.tts_calls for pipeline in pipelines) == 1
+        assert sum(pipeline.playback_calls for pipeline in pipelines) == 1
+        assert sum(sink.action_calls for sink in sinks) == 1
+        assert sum(observer.accepted for observer in observers) == 1
+        assert sum(observer.completed for observer in observers) == 1
+        await asyncio.gather(*(service.shutdown() for service in services))
 
     asyncio.run(scenario())
 
@@ -384,7 +451,12 @@ def test_replay_count_and_time_eviction_return_reset_with_session_only_snapshot(
         assert isinstance(reset, SessionReset)
         assert reset.reason == "replay_gap"
         assert reset.snapshot.session_id == "session-w06"
-        assert {state.session_id for state in reset.snapshot.turns} == {"session-w06"}
+        reset_states: list[TurnState] = []
+        for _index in range(reset.snapshot.chunk_count):
+            chunk = await reset_subscription.get()
+            assert isinstance(chunk, SessionSnapshotChunk)
+            reset_states.extend(chunk.turns)
+        assert {state.session_id for state in reset_states} == {"session-w06"}
         with pytest.raises(IdempotencyAccessError):
             await service.subscribe("session-w06", client_id="client-other", last_seq=0)
 
@@ -402,7 +474,8 @@ def test_replay_count_and_time_eviction_return_reset_with_session_only_snapshot(
         )
         stale_state = await stale_state_reset.get()
         assert isinstance(stale_state, SessionReset)
-        assert stale_state.snapshot.turns == []
+        assert stale_state.snapshot.turn_count == 0
+        assert stale_state.snapshot.chunk_count == 0
         await service.shutdown()
 
     asyncio.run(scenario())
@@ -505,6 +578,161 @@ def test_10k_turns_terminal_ttl_lru_and_replay_memory_reach_a_stable_bound() -> 
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize("backend", ["memory", "sqlite"])
+def test_terminal_cancel_refreshes_storage_lru_before_capacity_pruning(
+    tmp_path: Path,
+    backend: str,
+) -> None:
+    async def scenario() -> None:
+        clock = MutableClock()
+        pipeline = SideEffectPipeline()
+        store: IdempotencyStore
+        if backend == "memory":
+            store = InMemoryIdempotencyStore(clock=clock, terminal_limit=2)
+        else:
+            database = SQLiteDatabase(tmp_path / "lru-divergence.sqlite3")
+            database.initialize()
+            store = SQLiteIdempotencyStore(database, terminal_limit=2)
+        service = TurnService(
+            _logger(),
+            pipeline,
+            idempotency_store=store,
+            clock=clock,
+            terminal_limit=2,
+        )
+
+        first = await service.accept(_message(1), client_id="client-w06")
+        await service.wait_idle()
+        await service.accept(_message(2), client_id="client-w06")
+        await service.wait_idle()
+        touched = await service.cancel(
+            client_id="client-w06",
+            session_id="session-w06",
+            turn_id=first.turn_id,
+        )
+        assert touched is not None and touched.turn_id == first.turn_id
+
+        await service.accept(_message(3), client_id="client-w06")
+        await service.wait_idle()
+        duplicate = await service.accept(_message(1), client_id="client-w06")
+
+        assert duplicate.turn_id == first.turn_id
+        assert pipeline.provider_calls == 3
+        await service.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_restart_hydrates_cancel_and_chunked_authoritative_snapshot(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        database = SQLiteDatabase(tmp_path / "restart.sqlite3")
+        database.initialize()
+        first_store = SQLiteIdempotencyStore(database)
+        first = TurnService(_logger(), idempotency_store=first_store)
+        state = await first.accept(_message(), client_id="client-w06")
+        terminal = await first.cancel(
+            client_id="client-w06",
+            session_id="session-w06",
+            turn_id=state.turn_id,
+        )
+        assert terminal is not None and terminal.status is TurnStatus.cancelled
+        await first.shutdown()
+
+        restarted = TurnService(
+            _logger(),
+            idempotency_store=SQLiteIdempotencyStore(database),
+        )
+        subscription = await restarted.subscribe(
+            "session-w06",
+            client_id="client-w06",
+            last_seq=999,
+        )
+        reset = await subscription.get()
+        subscription.task_done()
+        chunk = await subscription.get()
+        subscription.task_done()
+
+        assert isinstance(reset, SessionReset)
+        assert reset.snapshot.turn_count == 1
+        assert reset.snapshot.chunk_count == 1
+        assert isinstance(chunk, SessionSnapshotChunk)
+        assert chunk.reset_id == reset.reset_id
+        assert chunk.turns == [terminal]
+        recovered_cancel = await restarted.cancel(
+            client_id="client-w06",
+            session_id="session-w06",
+        )
+        assert recovered_cancel == terminal
+        await restarted.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_no_pipeline_keeps_state_bounded_and_reset_chunks_at_most_50_turns() -> None:
+    async def scenario() -> None:
+        service = TurnService(_logger())
+        for index in range(250):
+            await service.accept(_message(index), client_id="client-w06")
+
+        state = service.snapshot()
+        assert len(state["turns"]) == 201
+        assert len(state["active_turns"]) == 1
+        subscription = await service.subscribe(
+            "session-w06",
+            client_id="client-w06",
+            last_seq=99_999,
+        )
+        reset = await subscription.get()
+        subscription.task_done()
+        assert isinstance(reset, SessionReset)
+        chunks = []
+        for _index in range(reset.snapshot.chunk_count):
+            item = await subscription.get()
+            subscription.task_done()
+            assert isinstance(item, SessionSnapshotChunk)
+            chunks.append(item)
+
+        assert reset.snapshot.turn_count == 201
+        assert sum(len(chunk.turns) for chunk in chunks) == 201
+        assert all(len(chunk.turns) <= 50 for chunk in chunks)
+        assert {chunk.reset_id for chunk in chunks} == {reset.reset_id}
+        await service.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_slow_consumer_close_signal_does_not_wait_for_blocked_sender() -> None:
+    async def scenario() -> None:
+        service = TurnService(_logger(), subscriber_queue_limit=1)
+        slow = await service.subscribe("session-w06", client_id="client-w06", last_seq=0)
+        state = await service.accept(_message(), client_id="client-w06")
+        await service.cancel(
+            client_id="client-w06",
+            session_id="session-w06",
+            turn_id=state.turn_id,
+        )
+
+        assert await asyncio.wait_for(slow.wait_closed(), timeout=0.1) == "slow_consumer"
+        await service.shutdown()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"replay_limit": 2_001},
+        {"replay_ttl": timedelta(minutes=10, microseconds=1)},
+        {"terminal_limit": 201},
+        {"terminal_ttl": timedelta(hours=24, microseconds=1)},
+        {"subscriber_queue_limit": 513},
+    ],
+)
+def test_resource_limits_can_be_tightened_but_not_relaxed(override: dict[str, Any]) -> None:
+    with pytest.raises(ValueError, match="hard limits"):
+        TurnService(_logger(), **override)
+
+
 def test_cross_session_cancel_is_rejected_and_storage_failure_is_fail_closed() -> None:
     async def scenario() -> None:
         service = TurnService(_logger())
@@ -531,5 +759,77 @@ def test_cross_session_cancel_is_rejected_and_storage_failure_is_fail_closed() -
         assert pipeline.provider_calls == 0
         assert observer.accepted == observer.completed == 0
         await failed.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_running_persistence_failure_stops_before_provider_and_duplicate_stays_failed() -> None:
+    async def scenario() -> None:
+        pipeline = SideEffectPipeline()
+        store = FaultInjectingMemoryStore({TurnStatus.streaming: 1})
+        service = TurnService(_logger(), pipeline, idempotency_store=store)
+        message = _message()
+
+        original = await service.accept(message, client_id="client-w06")
+        await service.wait_idle()
+        duplicate = await service.accept(message, client_id="client-w06")
+
+        assert duplicate.turn_id == original.turn_id
+        assert duplicate.status is TurnStatus.failed
+        assert duplicate.error_code == "idempotency_unavailable"
+        assert pipeline.provider_calls == 0
+        assert pipeline.tts_calls == pipeline.playback_calls == 0
+        await service.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_terminal_persistence_failure_repairs_or_recovers_without_reexecution() -> None:
+    async def scenario() -> None:
+        transient_pipeline = SideEffectPipeline()
+        transient_store = FaultInjectingMemoryStore({TurnStatus.completed: 1})
+        transient = TurnService(
+            _logger(),
+            transient_pipeline,
+            idempotency_store=transient_store,
+        )
+        message = _message(1)
+        original = await transient.accept(message, client_id="client-w06")
+        await transient.wait_idle()
+        repaired = await transient.accept(message, client_id="client-w06")
+
+        assert repaired.turn_id == original.turn_id
+        assert repaired.status is TurnStatus.completed
+        assert transient_pipeline.provider_calls == 1
+        await transient.shutdown()
+
+        persistent_pipeline = SideEffectPipeline()
+        persistent_store = FaultInjectingMemoryStore({TurnStatus.completed: -1})
+        persistent = TurnService(
+            _logger(),
+            persistent_pipeline,
+            idempotency_store=persistent_store,
+        )
+        persistent_message = _message(2)
+        persisted = await persistent.accept(persistent_message, client_id="client-w06")
+        await persistent.wait_idle()
+        with pytest.raises(IdempotencyUnavailableError):
+            await persistent.accept(persistent_message, client_id="client-w06")
+        assert persistent_pipeline.provider_calls == 1
+        await persistent.shutdown()
+
+        assert await persistent_store.recover_incomplete(now=datetime.now(UTC)) == 1
+        restarted_pipeline = SideEffectPipeline()
+        restarted = TurnService(
+            _logger(),
+            restarted_pipeline,
+            idempotency_store=persistent_store,
+        )
+        recovered = await restarted.accept(persistent_message, client_id="client-w06")
+        assert recovered.turn_id == persisted.turn_id
+        assert recovered.status is TurnStatus.failed
+        assert recovered.error_code == "service_restarted"
+        assert restarted_pipeline.provider_calls == 0
+        await restarted.shutdown()
 
     asyncio.run(scenario())

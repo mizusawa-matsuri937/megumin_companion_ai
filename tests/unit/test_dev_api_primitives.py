@@ -17,7 +17,7 @@ from app.api.protocol import (
     validate_metadata,
     validate_user_message,
 )
-from app.api.routes import _close_websocket_when_token_expires
+from app.api.routes import _close_websocket_when_token_expires, _coordinate_client_tasks
 from app.api.security import (
     DEV_API_MAX_BODY_BYTES,
     DEV_API_MAX_FRAME_BYTES,
@@ -34,7 +34,8 @@ from app.api.security import (
     json_nesting_exceeds,
     validate_loopback_host,
 )
-from app.schemas import UserMessage
+from app.core.turns import EventSubscription
+from app.schemas import PipelineEvent, UserMessage
 from starlette.types import Message, Receive, Scope, Send
 from starlette.websockets import WebSocket
 
@@ -366,7 +367,7 @@ def test_user_message_requires_authorized_session_fresh_time_and_bounded_metadat
         )
 
 
-def test_websocket_command_parser_requires_final_protocol_v1_identity_envelope() -> None:
+def test_websocket_command_parser_supports_authenticated_w04_transition_shape() -> None:
     valid = parse_websocket_command(
         '{"protocol_version":1,"command_id":"command-1",'
         '"client_id":"client_w04_test","type":"user.message",'
@@ -375,6 +376,21 @@ def test_websocket_command_parser_requires_final_protocol_v1_identity_envelope()
     )
     assert valid.protocol_version == 1
     assert valid.received_at == datetime(2026, 7, 18, 12, tzinfo=UTC)
+
+    legacy_text = (
+        '{"protocol_version":1,"type":"user.message",'
+        '"session_id":"session_w04_test","payload":{"text":"hello"}}'
+    )
+    with pytest.raises(DevAPIProtocolError, match="invalid_command_envelope"):
+        parse_websocket_command(legacy_text)
+    legacy = parse_websocket_command(
+        legacy_text,
+        legacy_client_id="client_w04_test",
+        now=datetime(2026, 7, 18, 12, tzinfo=UTC),
+    )
+    assert legacy.legacy_protocol
+    assert legacy.client_id == "client_w04_test"
+    assert legacy.command_id.startswith("legacy_")
 
     for value in (
         "[]",
@@ -388,11 +404,72 @@ def test_websocket_command_parser_requires_final_protocol_v1_identity_envelope()
         '{"protocol_version":1,"command_id":"duplicate","client_id":"client_w04_test",'
         '"type":"user.message","type":"turn.cancel",'
         '"session_id":"session_w04_test","payload":{}}',
-        '{"protocol_version":1,"command_id":"missing-client","type":"user.message",'
-        '"session_id":"session_w04_test","payload":{}}',
     ):
         with pytest.raises(DevAPIProtocolError, match="invalid_command_envelope"):
             parse_websocket_command(value)
+
+
+def test_slow_subscription_cancels_blocked_sender_before_websocket_close() -> None:
+    async def scenario() -> None:
+        class RecordingWebSocket:
+            def __init__(self) -> None:
+                self.closed: tuple[int, str] | None = None
+
+            async def close(self, *, code: int, reason: str) -> None:
+                self.closed = (code, reason)
+
+        websocket = RecordingWebSocket()
+        subscription = EventSubscription(
+            "client_w04_test",
+            "session_w04_test",
+            maxsize=1,
+        )
+        sender_started = asyncio.Event()
+        sender_cancelled = asyncio.Event()
+
+        async def blocked_sender() -> None:
+            sender_started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                sender_cancelled.set()
+
+        async def blocked_peer() -> None:
+            await asyncio.Event().wait()
+
+        sender = asyncio.create_task(blocked_sender())
+        receiver = asyncio.create_task(blocked_peer())
+        expiry = asyncio.create_task(blocked_peer())
+        coordinating = asyncio.create_task(
+            _coordinate_client_tasks(
+                cast(WebSocket, websocket),
+                subscription,
+                sender,
+                receiver,
+                expiry,
+            )
+        )
+        await sender_started.wait()
+        assert subscription.offer(
+            PipelineEvent(
+                seq=1,
+                type="turn.accepted",
+                session_id="session_w04_test",
+            )
+        )
+        assert not subscription.offer(
+            PipelineEvent(
+                seq=2,
+                type="turn.cancelled",
+                session_id="session_w04_test",
+            )
+        )
+
+        await asyncio.wait_for(coordinating, timeout=0.5)
+        assert sender_cancelled.is_set()
+        assert websocket.closed == (1013, "slow_consumer")
+
+    asyncio.run(scenario())
 
 
 def test_streamed_http_body_is_rejected_before_downstream_json_parser() -> None:

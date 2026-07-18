@@ -56,6 +56,14 @@ class IdempotencyClaim:
     created: bool
 
 
+@dataclass(frozen=True, slots=True)
+class RetainedTurn:
+    """A body-free retained state plus its storage-authoritative LRU order."""
+
+    state: TurnState
+    terminal_order: int | None
+
+
 class IdempotencyStore(Protocol):
     async def bind_session(self, client_id: str, session_id: str, *, now: datetime) -> None: ...
 
@@ -85,6 +93,14 @@ class IdempotencyStore(Protocol):
         now: datetime,
     ) -> TurnState | None: ...
 
+    async def list_session(
+        self,
+        *,
+        client_id: str,
+        session_id: str,
+        now: datetime,
+    ) -> tuple[RetainedTurn, ...]: ...
+
     async def recover_incomplete(self, *, now: datetime) -> int: ...
 
 
@@ -106,8 +122,11 @@ class InMemoryIdempotencyStore:
         terminal_ttl: timedelta = DEFAULT_TERMINAL_TTL,
         clock: Callable[[], datetime] = utc_now,
     ) -> None:
-        if terminal_limit < 1 or terminal_ttl <= timedelta(0):
-            raise ValueError("idempotency retention bounds must be positive")
+        if (
+            not 1 <= terminal_limit <= DEFAULT_TERMINAL_LIMIT
+            or not timedelta(0) < terminal_ttl <= DEFAULT_TERMINAL_TTL
+        ):
+            raise ValueError("idempotency retention bounds must not exceed hard limits")
         self._terminal_limit = terminal_limit
         self._terminal_ttl = terminal_ttl
         self._clock = clock
@@ -196,6 +215,27 @@ class InMemoryIdempotencyStore:
             record = self._records[key]
             self._touch_terminal_locked(record)
             return record.state
+
+    async def list_session(
+        self,
+        *,
+        client_id: str,
+        session_id: str,
+        now: datetime,
+    ) -> tuple[RetainedTurn, ...]:
+        _require_aware(now)
+        async with self._lock:
+            owner = self._session_clients.get(session_id)
+            if owner is not None and owner != client_id:
+                raise IdempotencyAccessError
+            self._prune_locked(client_id, session_id, now=now)
+            retained = [
+                RetainedTurn(record.state, record.terminal_order)
+                for record in self._records.values()
+                if record.key.client_id == client_id and record.key.session_id == session_id
+            ]
+            retained.sort(key=lambda item: (item.state.created_at, item.state.turn_id))
+            return tuple(retained)
 
     async def recover_incomplete(self, *, now: datetime) -> int:
         _require_aware(now)
@@ -295,6 +335,15 @@ class UnavailableIdempotencyStore:
         turn_id: str,
         now: datetime,
     ) -> TurnState | None:
+        raise IdempotencyUnavailableError
+
+    async def list_session(
+        self,
+        *,
+        client_id: str,
+        session_id: str,
+        now: datetime,
+    ) -> tuple[RetainedTurn, ...]:
         raise IdempotencyUnavailableError
 
     async def recover_incomplete(self, *, now: datetime) -> int:
