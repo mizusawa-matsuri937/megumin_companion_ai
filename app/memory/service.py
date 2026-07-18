@@ -21,7 +21,7 @@ from app.memory.models import (
 from app.memory.policy import MemoryPolicy, normalize_memory_text
 from app.memory.privacy import contains_credential
 from app.schemas.ai import FeatureName, FeatureState
-from app.storage.records import ConversationRecord
+from app.storage.records import ConversationRecord, DeletionResult
 
 
 class ConfirmationNotFoundError(KeyError):
@@ -60,6 +60,8 @@ class ConversationStore(Protocol):
 
     def clear(self, *, user_id: str, session_id: str | None = None) -> int: ...
 
+    def clear_logically(self, *, user_id: str, session_id: str | None = None) -> DeletionResult: ...
+
 
 class MemoryStore(Protocol):
     def upsert(self, approved: ApprovedMemory) -> MemoryItem: ...
@@ -82,7 +84,11 @@ class MemoryStore(Protocol):
 
     def delete(self, memory_id: str, *, user_id: str | None = None) -> bool: ...
 
+    def delete_logically(self, memory_id: str, *, user_id: str | None = None) -> DeletionResult: ...
+
     def clear(self, *, user_id: str) -> int: ...
+
+    def clear_logically(self, *, user_id: str) -> DeletionResult: ...
 
 
 class HistoryService:
@@ -132,8 +138,6 @@ class HistoryService:
 
     def cleanup(self) -> int:
         with self._lock:
-            if not self._enabled():
-                return 0
             return self._store.cleanup_expired(
                 now=self._clock.now(), retention_days=self._retention_days
             )
@@ -149,6 +153,12 @@ class HistoryService:
     def clear_for_management(self, *, user_id: str, session_id: str | None = None) -> int:
         with self._lock:
             return self._store.clear(user_id=user_id, session_id=session_id)
+
+    def clear_logically_for_management(
+        self, *, user_id: str, session_id: str | None = None
+    ) -> DeletionResult:
+        with self._lock:
+            return self._store.clear_logically(user_id=user_id, session_id=session_id)
 
     def _enabled(self) -> bool:
         return self._features.get(FeatureName.recent_history).enabled
@@ -263,6 +273,9 @@ class MemoryService:
     def delete_for_management(self, memory_id: str, *, user_id: str) -> bool:
         return self._store.delete(memory_id, user_id=user_id)
 
+    def delete_logically_for_management(self, memory_id: str, *, user_id: str) -> DeletionResult:
+        return self._store.delete_logically(memory_id, user_id=user_id)
+
     def update_for_management(
         self, memory_id: str, *, user_id: str, content: str
     ) -> MemoryItem | None:
@@ -283,6 +296,11 @@ class MemoryService:
         with self._lock:
             self._pending.clear()
             return self._store.clear(user_id=user_id)
+
+    def clear_logically_for_management(self, *, user_id: str) -> DeletionResult:
+        with self._lock:
+            self._pending.clear()
+            return self._store.clear_logically(user_id=user_id)
 
     def set_enabled(self, enabled: bool) -> FeatureState:
         with self._lock:

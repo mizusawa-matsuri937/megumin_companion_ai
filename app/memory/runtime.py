@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
-from datetime import datetime
+from dataclasses import dataclass
+from datetime import datetime, timedelta
 from functools import partial
 from threading import RLock
 from typing import Any
@@ -13,12 +15,14 @@ from typing import Any
 from app.core import FeatureFlagSource, TurnObserver
 from app.core.cancellation import CancellationToken
 from app.emotion import Clock, SystemClock
+from app.health import CapabilityCheck, CapabilityState
 from app.memory.analyzer import MemoryCandidateAnalyzer, NoopMemoryCandidateAnalyzer
 from app.memory.context import MemoryContextAssembler
 from app.memory.models import MemoryItem, PendingConfirmation, SourceInputMode
 from app.memory.service import HistoryService, MemoryService
 from app.prompts import PromptContextSnapshot, PromptContextSource
 from app.schemas import (
+    FeatureActualState,
     FeatureName,
     FeatureState,
     TurnOutcome,
@@ -31,10 +35,16 @@ from app.storage import (
     ConversationRecord,
     ConversationRepository,
     ConversationRole,
+    DatabaseSafeModeError,
     FeatureFlagRepository,
     MemoryRepository,
+    MigrationError,
+    PhysicalCleanupRepository,
     SQLiteDatabase,
 )
+from app.storage.records import CleanupJob, DeletionResult
+
+_CLEANUP_ERROR_CODES = {"db_busy", "db_full", "db_corrupt", "file_locked"}
 
 
 class FeatureFlagManager(FeatureFlagSource):
@@ -59,13 +69,43 @@ class FeatureFlagManager(FeatureFlagSource):
 
     def set(self, name: FeatureName, enabled: bool, *, updated_at: datetime) -> FeatureState:
         state = self._repository.set(name, enabled, updated_at=updated_at)
+        self._publish(state)
+        return state
+
+    def request_transition(
+        self, name: FeatureName, enabled: bool, *, updated_at: datetime
+    ) -> FeatureState:
+        state = self._repository.request_transition(name, enabled, updated_at=updated_at)
         with self._lock:
             self._states[name] = state
+        return state
+
+    def finish_transition(
+        self,
+        name: FeatureName,
+        *,
+        generation: int,
+        actual_state: FeatureActualState,
+        reason_code: str | None,
+        updated_at: datetime,
+    ) -> FeatureState:
+        state = self._repository.finish_transition(
+            name,
+            generation=generation,
+            actual_state=actual_state,
+            reason_code=reason_code,
+            updated_at=updated_at,
+        )
+        self._publish(state)
+        return state
+
+    def _publish(self, state: FeatureState) -> None:
+        with self._lock:
+            self._states[state.name] = state
             listeners = tuple(self._listeners)
         for listener in listeners:
             with suppress(Exception):
                 listener(state)
-        return state
 
     def subscribe(self, listener: Callable[[FeatureState], None]) -> Callable[[], None]:
         with self._lock:
@@ -300,7 +340,62 @@ class MemoryTurnObserver(TurnObserver):
         self._candidates.submit(message, state)
 
 
+@dataclass(frozen=True, slots=True)
+class MaintenanceSnapshot:
+    consecutive_failures: int
+    next_delay_seconds: float
+    error_codes: tuple[str, ...]
+
+
+class _MaintenanceFailure(RuntimeError):
+    def __init__(self, code: str) -> None:
+        self.code = code
+        super().__init__(code)
+
+
+class SafeModeMemoryRuntime:
+    """Content-free application boundary when private SQLite cannot be written safely."""
+
+    name = "memory"
+    required_for_readiness = False
+
+    def __init__(self, database: SQLiteDatabase) -> None:
+        self.database = database
+
+    async def check_health(self) -> CapabilityCheck:
+        return CapabilityCheck(
+            status=CapabilityState.unavailable,
+            error_code=self.database.status.reason_code or "database_safe_mode",
+        )
+
+    async def recovery_status(self) -> dict[str, Any]:
+        status = self.database.status
+        backups = await asyncio.to_thread(self.database.list_verified_backups)
+        options = [item.value for item in status.recovery_options]
+        if backups and "restore_backup" not in options:
+            options.insert(0, "restore_backup")
+        return {
+            "mode": status.mode.value,
+            "schema_version": status.schema_version,
+            "reason_code": status.reason_code,
+            "recovery_options": options,
+            "backups": [{"name": item.name, "sha256": item.sha256} for item in backups],
+        }
+
+    async def restore_backup(self, name: str, sha256: str) -> int:
+        return await asyncio.to_thread(self.database.restore_verified_backup, name, sha256)
+
+    async def retry_migration(self) -> int:
+        return await asyncio.to_thread(self.database.retry_initialize)
+
+    async def close(self) -> None:
+        return None
+
+
 class MemoryRuntime:
+    name = "memory"
+    required_for_readiness = False
+
     def __init__(
         self,
         database: SQLiteDatabase,
@@ -308,18 +403,24 @@ class MemoryRuntime:
         history: HistoryService,
         memory: MemoryService,
         memory_repository: MemoryRepository,
+        cleanup_repository: PhysicalCleanupRepository,
         analyzer: MemoryCandidateAnalyzer,
         candidates: MemoryCandidateSupervisor,
         context_source: MemoryPromptContextSource,
         observer: MemoryTurnObserver,
         *,
         clock: Clock | None = None,
+        maintenance_base_seconds: float = 60.0,
+        maintenance_max_seconds: float = 900.0,
     ) -> None:
+        if maintenance_base_seconds <= 0 or maintenance_max_seconds < maintenance_base_seconds:
+            raise ValueError("maintenance backoff bounds are invalid")
         self.database = database
         self.features = features
         self.history = history
         self.memory = memory
         self.memory_repository = memory_repository
+        self.cleanup_repository = cleanup_repository
         self.analyzer = analyzer
         self.candidates = candidates
         self.context_source = context_source
@@ -331,6 +432,11 @@ class MemoryRuntime:
         self._close_task: asyncio.Task[None] | None = None
         self._feature_update_lock = asyncio.Lock()
         self._feature_transition_handlers: set[Callable[[FeatureState], Awaitable[None]]] = set()
+        self._maintenance_base_seconds = maintenance_base_seconds
+        self._maintenance_max_seconds = maintenance_max_seconds
+        self._maintenance_failures: dict[str, int] = {}
+        self._maintenance_errors: dict[str, str] = {}
+        self._maintenance_next_delay = maintenance_base_seconds
 
     def start(self) -> None:
         self.candidates.start()
@@ -355,25 +461,44 @@ class MemoryRuntime:
 
     async def set_feature(self, name: FeatureName, enabled: bool) -> FeatureState:
         async with self._feature_update_lock:
-            if name is FeatureName.long_term_memory:
-                state = await asyncio.to_thread(self.memory.set_enabled, enabled)
-                if not enabled:
+            transition = await asyncio.to_thread(
+                self.features.request_transition,
+                name,
+                enabled,
+                updated_at=self._clock.now(),
+            )
+            if transition.actual_state in {
+                FeatureActualState.enabled,
+                FeatureActualState.disabled,
+            }:
+                return transition
+            try:
+                if name is FeatureName.long_term_memory and not enabled:
                     await self.candidates.cancel_active()
                     await asyncio.to_thread(self.memory.finalize_disabled_state)
-                await self.context_source.invalidate()
-            elif name is FeatureName.recent_history:
-                state = await asyncio.to_thread(self.history.set_enabled, enabled)
-                await self.context_source.invalidate()
-            else:
-                state = await asyncio.to_thread(
-                    self.features.set,
+                if name in {FeatureName.long_term_memory, FeatureName.recent_history}:
+                    await self.context_source.invalidate()
+                for handler in tuple(self._feature_transition_handlers):
+                    await handler(transition)
+            except Exception:
+                return await asyncio.to_thread(
+                    self.features.finish_transition,
                     name,
-                    enabled,
+                    generation=transition.generation,
+                    actual_state=FeatureActualState.failed,
+                    reason_code="feature_transition_failed",
                     updated_at=self._clock.now(),
                 )
-            for handler in tuple(self._feature_transition_handlers):
-                await handler(state)
-            return state
+            return await asyncio.to_thread(
+                self.features.finish_transition,
+                name,
+                generation=transition.generation,
+                actual_state=(
+                    FeatureActualState.enabled if enabled else FeatureActualState.disabled
+                ),
+                reason_code=None,
+                updated_at=self._clock.now(),
+            )
 
     async def list_memories(
         self, *, user_id: str, include_superseded: bool = False
@@ -408,13 +533,13 @@ class MemoryRuntime:
             await self.context_source.invalidate()
         return item
 
-    async def delete_memory(self, memory_id: str, *, user_id: str) -> bool:
-        deleted = await asyncio.to_thread(
-            self.memory.delete_for_management, memory_id, user_id=user_id
+    async def delete_memory(self, memory_id: str, *, user_id: str) -> DeletionResult:
+        result = await asyncio.to_thread(
+            self.memory.delete_logically_for_management, memory_id, user_id=user_id
         )
-        if deleted:
+        if result.logical_deleted:
             await self.context_source.invalidate()
-        return deleted
+        return result
 
     async def confirm_memory(self, confirmation_id: str, *, approved: bool) -> MemoryItem | None:
         item = await asyncio.to_thread(self.memory.confirm, confirmation_id, approved=approved)
@@ -425,17 +550,24 @@ class MemoryRuntime:
     async def pending_confirmations(self) -> tuple[PendingConfirmation, ...]:
         return await asyncio.to_thread(self.memory.pending_confirmations)
 
-    async def clear_memories(self, *, user_id: str) -> int:
-        deleted = await asyncio.to_thread(self.memory.clear_for_management, user_id=user_id)
-        await self.context_source.invalidate()
-        return deleted
-
-    async def clear_history(self, *, user_id: str, session_id: str | None = None) -> int:
-        deleted = await asyncio.to_thread(
-            self.history.clear_for_management, user_id=user_id, session_id=session_id
+    async def clear_memories(self, *, user_id: str) -> DeletionResult:
+        result = await asyncio.to_thread(
+            self.memory.clear_logically_for_management, user_id=user_id
         )
         await self.context_source.invalidate()
-        return deleted
+        return result
+
+    async def cleanup_status(self, cleanup_id: str) -> CleanupJob | None:
+        return await asyncio.to_thread(self.cleanup_repository.status, cleanup_id)
+
+    async def clear_history(self, *, user_id: str, session_id: str | None = None) -> DeletionResult:
+        result = await asyncio.to_thread(
+            self.history.clear_logically_for_management,
+            user_id=user_id,
+            session_id=session_id,
+        )
+        await self.context_source.invalidate()
+        return result
 
     async def export(self, *, user_id: str) -> dict[str, Any]:
         items = await self.list_memories(user_id=user_id, include_superseded=True)
@@ -459,10 +591,97 @@ class MemoryRuntime:
     async def _maintenance_loop(self) -> None:
         while not self._stop.is_set():
             try:
-                await asyncio.wait_for(self._stop.wait(), timeout=60.0)
+                await asyncio.wait_for(self._stop.wait(), timeout=self._maintenance_next_delay)
             except TimeoutError:
-                await asyncio.to_thread(self.memory.prune_expired_confirmations)
-                await asyncio.to_thread(self.history.cleanup)
+                await self.run_maintenance_cycle()
+
+    async def run_maintenance_cycle(self) -> MaintenanceSnapshot:
+        """Run isolated jobs once; one failure never suppresses its siblings."""
+
+        jobs: tuple[tuple[str, Callable[[], Any]], ...] = (
+            ("confirmations", self.memory.prune_expired_confirmations),
+            ("history", self.history.cleanup),
+            ("physical_cleanup", self._run_physical_cleanup),
+        )
+        for name, operation in jobs:
+            try:
+                await asyncio.to_thread(operation)
+            except Exception as exc:
+                self._maintenance_failures[name] = self._maintenance_failures.get(name, 0) + 1
+                self._maintenance_errors[name] = _maintenance_error_code(exc)
+            else:
+                self._maintenance_failures.pop(name, None)
+                self._maintenance_errors.pop(name, None)
+        failures = max(self._maintenance_failures.values(), default=0)
+        self._maintenance_next_delay = min(
+            self._maintenance_base_seconds * (2 ** max(0, failures - 1)),
+            self._maintenance_max_seconds,
+        )
+        return self.maintenance_snapshot()
+
+    def maintenance_snapshot(self) -> MaintenanceSnapshot:
+        return MaintenanceSnapshot(
+            consecutive_failures=max(self._maintenance_failures.values(), default=0),
+            next_delay_seconds=self._maintenance_next_delay,
+            error_codes=tuple(sorted(set(self._maintenance_errors.values()))),
+        )
+
+    def _run_physical_cleanup(self) -> None:
+        now = self._clock.now()
+        jobs = self.cleanup_repository.list_due(now=now)
+        if not jobs:
+            return
+        cleanup_ids = tuple(job.cleanup_id for job in jobs)
+        try:
+            self.database.secure_cleanup(vacuum=any(job.vacuum_required for job in jobs))
+        except Exception as exc:
+            code = _maintenance_error_code(exc)
+            attempts = max(job.attempt_count for job in jobs) + 1
+            delay = min(
+                self._maintenance_base_seconds * (2 ** max(0, attempts - 1)),
+                self._maintenance_max_seconds,
+            )
+            with suppress(Exception):
+                self.cleanup_repository.mark_retry(
+                    cleanup_ids,
+                    now=now,
+                    next_attempt_at=now + timedelta(seconds=delay),
+                    reason_code=code if code in _CLEANUP_ERROR_CODES else "cleanup_failed",
+                )
+            raise _MaintenanceFailure(code) from exc
+        self.cleanup_repository.mark_completed(cleanup_ids, now=now)
+
+    async def check_health(self) -> CapabilityCheck:
+        database_status = self.database.status
+        if database_status.reason_code is not None:
+            return CapabilityCheck(
+                status=CapabilityState.unavailable,
+                error_code=database_status.reason_code,
+            )
+        snapshot = self.maintenance_snapshot()
+        if snapshot.error_codes:
+            return CapabilityCheck(
+                status=CapabilityState.degraded,
+                error_code=snapshot.error_codes[0],
+            )
+        try:
+            pending = await asyncio.to_thread(self.cleanup_repository.has_pending)
+        except Exception as exc:
+            code = _maintenance_error_code(exc)
+            return CapabilityCheck(
+                status=(
+                    CapabilityState.unavailable
+                    if code == "db_corrupt"
+                    else CapabilityState.degraded
+                ),
+                error_code=code,
+            )
+        if pending:
+            return CapabilityCheck(
+                status=CapabilityState.degraded,
+                error_code="cleanup_pending",
+            )
+        return CapabilityCheck(status=CapabilityState.ready)
 
     async def close(self) -> None:
         task = self._close_task
@@ -498,13 +717,28 @@ async def create_memory_runtime(
     retention_days: int = 7,
     confirmation_ttl_minutes: float = 15.0,
     analyzer: MemoryCandidateAnalyzer | None = None,
-) -> MemoryRuntime:
+) -> MemoryRuntime | SafeModeMemoryRuntime:
     from datetime import timedelta
 
     database = SQLiteDatabase(database_path, busy_timeout_ms=busy_timeout_ms)
-    await asyncio.to_thread(database.initialize)
-    features = await asyncio.to_thread(FeatureFlagManager, FeatureFlagRepository(database))
+    try:
+        await asyncio.to_thread(database.initialize)
+    except DatabaseSafeModeError:
+        if analyzer is not None:
+            await analyzer.close()
+        return SafeModeMemoryRuntime(database)
+    except MigrationError:
+        if analyzer is not None:
+            await analyzer.close()
+        database.enter_safe_mode("db_migration_failed")
+        return SafeModeMemoryRuntime(database)
     clock = SystemClock()
+    feature_repository = FeatureFlagRepository(database)
+    await asyncio.to_thread(
+        feature_repository.reconcile_interrupted,
+        updated_at=clock.now(),
+    )
+    features = await asyncio.to_thread(FeatureFlagManager, feature_repository)
     history = HistoryService(
         ConversationRepository(database),
         features,
@@ -512,6 +746,7 @@ async def create_memory_runtime(
         retention_days=retention_days,
     )
     memory_repository = MemoryRepository(database)
+    cleanup_repository = PhysicalCleanupRepository(database)
     memory = MemoryService(
         memory_repository,
         features,
@@ -533,6 +768,7 @@ async def create_memory_runtime(
         history,
         memory,
         memory_repository,
+        cleanup_repository,
         resolved_analyzer,
         candidates,
         context_source,
@@ -559,3 +795,23 @@ async def _drainable_to_thread(operation: Callable[[], Any]) -> Any:
             if worker.done():
                 await asyncio.gather(worker, return_exceptions=True)
                 raise
+
+
+def _maintenance_error_code(exc: Exception) -> str:
+    if isinstance(exc, _MaintenanceFailure):
+        return exc.code
+    code = getattr(exc, "sqlite_errorcode", None)
+    if code in {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED}:
+        return "db_busy"
+    if code == sqlite3.SQLITE_FULL:
+        return "db_full"
+    if code in {sqlite3.SQLITE_CORRUPT, sqlite3.SQLITE_NOTADB}:
+        return "db_corrupt"
+    text = str(exc).casefold()
+    if "locked" in text or "busy" in text:
+        return "file_locked"
+    if "full" in text:
+        return "db_full"
+    if "corrupt" in text or "not a database" in text or "malformed" in text:
+        return "db_corrupt"
+    return "maintenance_failed"

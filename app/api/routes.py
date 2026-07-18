@@ -53,8 +53,9 @@ from app.memory import (
     CredentialRejectedError,
     FeatureDisabledError,
 )
-from app.memory.runtime import MemoryRuntime
+from app.memory.runtime import MemoryRuntime, SafeModeMemoryRuntime
 from app.schemas import (
+    DatabaseRestoreRequest,
     FeatureName,
     FeaturePatchRequest,
     HistoryClearRequest,
@@ -68,6 +69,7 @@ from app.schemas import (
     TurnState,
     UserMessage,
 )
+from app.storage import MigrationError
 
 router = APIRouter()
 
@@ -81,7 +83,16 @@ def _turn_service(connection: Request | WebSocket) -> TurnService:
 
 def _memory_runtime(request: Request) -> MemoryRuntime:
     runtime = getattr(request.app.state, "memory_runtime", None)
+    if isinstance(runtime, SafeModeMemoryRuntime):
+        raise HTTPException(status_code=503, detail="database_safe_mode")
     if not isinstance(runtime, MemoryRuntime):
+        raise HTTPException(status_code=503, detail="private_state_runtime_disabled")
+    return runtime
+
+
+def _private_state_runtime(request: Request) -> MemoryRuntime | SafeModeMemoryRuntime:
+    runtime = getattr(request.app.state, "memory_runtime", None)
+    if not isinstance(runtime, MemoryRuntime | SafeModeMemoryRuntime):
         raise HTTPException(status_code=503, detail="private_state_runtime_disabled")
     return runtime
 
@@ -303,9 +314,14 @@ async def clear_memories(
     request: Request,
     _principal: AdminPrincipal,
     user_id: str = Query(default="local_user", min_length=1, max_length=128),
-) -> dict[str, int]:
-    deleted = await _memory_runtime(request).clear_memories(user_id=user_id)
-    return {"deleted": deleted}
+) -> dict[str, Any]:
+    result = await _memory_runtime(request).clear_memories(user_id=user_id)
+    return {
+        "deleted": result.deleted_count,
+        "logical_deleted": result.logical_deleted,
+        "cleanup_id": result.cleanup_id,
+        "cleanup_pending": result.cleanup_pending,
+    }
 
 
 @router.patch("/api/memory/{memory_id}")
@@ -335,11 +351,86 @@ async def delete_memory(
     request: Request,
     _principal: AdminPrincipal,
     user_id: str = Query(default="local_user", min_length=1, max_length=128),
-) -> dict[str, bool]:
-    deleted = await _memory_runtime(request).delete_memory(memory_id, user_id=user_id)
-    if not deleted:
+) -> dict[str, Any]:
+    result = await _memory_runtime(request).delete_memory(memory_id, user_id=user_id)
+    if not result.logical_deleted:
         raise HTTPException(status_code=404, detail="memory_not_found")
-    return {"deleted": True}
+    return {
+        "deleted": True,
+        "logical_deleted": True,
+        "cleanup_id": result.cleanup_id,
+        "cleanup_pending": result.cleanup_pending,
+    }
+
+
+@router.get("/api/storage/cleanup/{cleanup_id}")
+async def cleanup_status(
+    cleanup_id: BoundedPathID,
+    request: Request,
+    _principal: AdminPrincipal,
+) -> dict[str, Any]:
+    job = await _memory_runtime(request).cleanup_status(cleanup_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="cleanup_not_found")
+    return {
+        "cleanup_id": job.cleanup_id,
+        "state": job.state,
+        "attempt_count": job.attempt_count,
+        "reason_code": job.reason_code,
+    }
+
+
+@router.get("/api/storage/status")
+async def storage_status(
+    request: Request,
+    _principal: AdminPrincipal,
+) -> dict[str, Any]:
+    runtime = _private_state_runtime(request)
+    if isinstance(runtime, SafeModeMemoryRuntime):
+        return await runtime.recovery_status()
+    status = runtime.database.status
+    backups = await asyncio.to_thread(runtime.database.list_verified_backups)
+    return {
+        "mode": status.mode.value,
+        "schema_version": status.schema_version,
+        "reason_code": status.reason_code,
+        "recovery_options": [item.value for item in status.recovery_options],
+        "backups": [{"name": item.name, "sha256": item.sha256} for item in backups],
+    }
+
+
+@router.post("/api/storage/recovery/restore")
+async def restore_storage_backup(
+    payload: DatabaseRestoreRequest,
+    request: Request,
+    _principal: AdminPrincipal,
+) -> dict[str, Any]:
+    runtime = _private_state_runtime(request)
+    if not isinstance(runtime, SafeModeMemoryRuntime):
+        raise HTTPException(status_code=409, detail="database_not_in_safe_mode")
+    try:
+        version = await runtime.restore_backup(payload.backup_name, payload.backup_sha256)
+    except MigrationError as exc:
+        raise HTTPException(status_code=409, detail="database_restore_failed") from exc
+    return {"restored_schema_version": version, "restart_required": True}
+
+
+@router.post("/api/storage/recovery/retry")
+async def retry_storage_migration(
+    request: Request,
+    _principal: AdminPrincipal,
+) -> dict[str, Any]:
+    runtime = _private_state_runtime(request)
+    if not isinstance(runtime, SafeModeMemoryRuntime):
+        raise HTTPException(status_code=409, detail="database_not_in_safe_mode")
+    if "retry_migration" not in {item.value for item in runtime.database.status.recovery_options}:
+        raise HTTPException(status_code=409, detail="database_retry_not_available")
+    try:
+        version = await runtime.retry_migration()
+    except MigrationError as exc:
+        runtime.database.enter_safe_mode("db_migration_failed")
+        raise HTTPException(status_code=409, detail="database_migration_retry_failed") from exc
+    return {"migrated_schema_version": version, "restart_required": True}
 
 
 @router.post("/api/history/clear")
@@ -347,17 +438,22 @@ async def clear_history(
     payload: HistoryClearRequest,
     request: Request,
     principal: AdminPrincipal,
-) -> dict[str, int]:
+) -> dict[str, Any]:
     if payload.session_id is not None:
         try:
             ensure_authorized_session(principal, payload.session_id)
         except DevAPIProtocolError as exc:
             raise HTTPException(status_code=403, detail=exc.code) from exc
-    deleted = await _memory_runtime(request).clear_history(
+    result = await _memory_runtime(request).clear_history(
         user_id=payload.user_id,
         session_id=payload.session_id,
     )
-    return {"deleted": deleted}
+    return {
+        "deleted": result.deleted_count,
+        "logical_deleted": result.logical_deleted,
+        "cleanup_id": result.cleanup_id,
+        "cleanup_pending": result.cleanup_pending,
+    }
 
 
 async def _admit_websocket(

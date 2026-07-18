@@ -38,7 +38,7 @@ from app.health import (
     HealthProvider,
 )
 from app.memory.analyzer import LLMMemoryCandidateAnalyzer
-from app.memory.runtime import MemoryRuntime, create_memory_runtime
+from app.memory.runtime import MemoryRuntime, SafeModeMemoryRuntime, create_memory_runtime
 from app.proactive import ProactivePolicy, ProactiveRuntime
 from app.runtime_storage import prepare_runtime_storage
 from app.schemas import utc_now
@@ -141,7 +141,7 @@ def create_app(
         app.state.temp_asset_registry = runtime_storage.temp_registry
         standalone_analyzer_provider: LLMProvider | None = None
         try:
-            memory_runtime: MemoryRuntime | None = None
+            memory_runtime: MemoryRuntime | SafeModeMemoryRuntime | None = None
             if resolved_settings.storage.enabled:
                 analyzer = None
                 if resolved_settings.memory.candidate_analysis_enabled:
@@ -164,10 +164,10 @@ def create_app(
             app.state.memory_runtime = memory_runtime
             idempotency_store = (
                 SQLiteIdempotencyStore(memory_runtime.database)
-                if memory_runtime is not None
+                if isinstance(memory_runtime, MemoryRuntime)
                 else UnavailableIdempotencyStore()
             )
-            if memory_runtime is not None:
+            if isinstance(memory_runtime, MemoryRuntime):
                 await idempotency_store.recover_incomplete(now=utc_now())
             app.state.idempotency_store = idempotency_store
             proactive_runtime = (
@@ -188,23 +188,27 @@ def create_app(
                         quiet_end_hour=resolved_settings.proactive.quiet_end_hour,
                     ),
                 )
-                if memory_runtime is not None
+                if isinstance(memory_runtime, MemoryRuntime)
                 else None
             )
             app.state.proactive_runtime = proactive_runtime
-            if memory_runtime is not None and proactive_runtime is not None:
+            if isinstance(memory_runtime, MemoryRuntime) and proactive_runtime is not None:
                 memory_runtime.add_feature_transition_handler(proactive_runtime.apply_feature_state)
             app.state.vts_event_sink = build_vts_event_sink(resolved_settings)
             event_sinks = (
                 (app.state.vts_event_sink,) if app.state.vts_event_sink is not None else ()
             )
-            observers = (memory_runtime.observer,) if memory_runtime is not None else ()
+            observers = (
+                (memory_runtime.observer,) if isinstance(memory_runtime, MemoryRuntime) else ()
+            )
             turn_service = TurnService(
                 logger,
                 build_dialogue_pipeline(
                     resolved_settings,
                     prompt_context_source=(
-                        memory_runtime.context_source if memory_runtime is not None else None
+                        memory_runtime.context_source
+                        if isinstance(memory_runtime, MemoryRuntime)
+                        else None
                     ),
                     temp_registry=runtime_storage.temp_registry,
                 ),
@@ -220,6 +224,7 @@ def create_app(
                 providers=(
                     _CoreHealthProvider(app),
                     _IdempotencyHealthProvider(app),
+                    *((memory_runtime,) if memory_runtime is not None else ()),
                     *health_providers,
                 ),
             )
@@ -262,7 +267,7 @@ def create_app(
                 # TurnService normally owns the sink; the second idempotent close
                 # also covers partial startup and an unexpected service-close error.
                 resources.append(("vts_event_sink", sink.close))
-            if isinstance(runtime, MemoryRuntime):
+            if isinstance(runtime, MemoryRuntime | SafeModeMemoryRuntime):
                 resources.append(("memory", runtime.close))
             elif standalone_analyzer_provider is not None:
                 resources.append(("memory_analyzer_provider", standalone_analyzer_provider.close))
