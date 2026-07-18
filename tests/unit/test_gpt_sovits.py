@@ -13,6 +13,7 @@ from pathlib import Path
 
 import httpx
 import pytest
+from app.clients.tts import gpt_sovits as gpt_sovits_module
 from app.clients.tts.gpt_sovits import GPTSoVITSPreset, GPTSoVITSProvider, _await_with_token
 from app.core import CancellationToken
 from app.paths import AppPaths
@@ -813,6 +814,163 @@ def test_cancel_while_waiting_for_owned_worker_capacity_never_leaks_slot(
         await provider.close()
         assert provider._synthesis_tasks == set()
         assert provider._synthesis_cancellations == set()
+        await client.aclose()
+
+    asyncio.run(scenario())
+
+
+def test_owned_capacity_timeout_cancels_waiter_without_inflating_capacity() -> None:
+    async def scenario() -> None:
+        semaphore = asyncio.Semaphore(0)
+        token = CancellationToken("capacity-timeout")
+
+        assert not await gpt_sovits_module._acquire_semaphore_with_token(
+            semaphore,
+            token,
+            timeout_seconds=0,
+        )
+        assert semaphore.locked()
+
+    asyncio.run(scenario())
+
+
+def test_owned_cleanup_helper_drains_work_across_repeated_waiter_cancellation() -> None:
+    async def scenario() -> None:
+        cleanup_started = asyncio.Event()
+        finish_cleanup = asyncio.Event()
+
+        async def controlled_cleanup() -> str:
+            cleanup_started.set()
+            await finish_cleanup.wait()
+            return "settled"
+
+        waiter = asyncio.create_task(gpt_sovits_module._finish_cleanup(controlled_cleanup()))
+        await cleanup_started.wait()
+        waiter.cancel()
+        waiter.cancel()
+        await asyncio.sleep(0)
+        assert not waiter.done()
+
+        finish_cleanup.set()
+        with pytest.raises(asyncio.CancelledError):
+            await waiter
+
+    asyncio.run(scenario())
+
+
+def test_owned_task_join_preserves_repeated_waiter_cancellation_until_settled() -> None:
+    async def scenario() -> None:
+        worker_started = asyncio.Event()
+        finish_worker = asyncio.Event()
+
+        async def controlled_worker() -> None:
+            worker_started.set()
+            await finish_worker.wait()
+
+        worker = asyncio.create_task(controlled_worker())
+        joiner = asyncio.create_task(gpt_sovits_module._join_task(worker, 1))
+        await worker_started.wait()
+        await asyncio.sleep(0)
+        joiner.cancel()
+        await asyncio.sleep(0)
+        joiner.cancel()
+        await asyncio.sleep(0)
+        assert not joiner.done()
+
+        finish_worker.set()
+        with pytest.raises(asyncio.CancelledError):
+            await joiner
+        assert worker.done()
+
+    asyncio.run(scenario())
+
+
+def test_owned_capacity_state_is_rechecked_after_slot_acquisition(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def scenario() -> None:
+        client = httpx.AsyncClient(
+            transport=httpx.MockTransport(lambda _request: httpx.Response(500))
+        )
+        provider = GPTSoVITSProvider(
+            "http://127.0.0.1:9880",
+            tmp_path,
+            _presets(),
+            client=client,
+            max_owned_synthesis_tasks=1,
+        )
+        token = CancellationToken("capacity-state-recheck")
+
+        async def timeout_slot(
+            _semaphore: asyncio.Semaphore,
+            _token: CancellationToken,
+            *,
+            timeout_seconds: float,
+        ) -> bool:
+            assert timeout_seconds > 0
+            return False
+
+        monkeypatch.setattr(
+            gpt_sovits_module,
+            "_acquire_semaphore_with_token",
+            timeout_slot,
+        )
+        timeout_result = await provider.synthesize(_job(token), segment_index=0, token=token)
+        assert timeout_result.error_code == "tts_total_timeout"
+
+        async def close_after_slot(
+            semaphore: asyncio.Semaphore,
+            _token: CancellationToken,
+            *,
+            timeout_seconds: float,
+        ) -> bool:
+            assert timeout_seconds > 0
+            await semaphore.acquire()
+            provider._closed = True
+            return True
+
+        monkeypatch.setattr(
+            gpt_sovits_module,
+            "_acquire_semaphore_with_token",
+            close_after_slot,
+        )
+        closed_result = await provider.synthesize(_job(token), segment_index=0, token=token)
+        assert closed_result.error_code == "tts_closed"
+        assert provider._synthesis_capacity._value == 1
+
+        provider._closed = False
+
+        async def unsettled_marker() -> AudioResult:
+            await asyncio.Event().wait()
+            raise AssertionError("unsettled marker unexpectedly completed")
+
+        marker = asyncio.create_task(unsettled_marker())
+
+        async def open_circuit_after_slot(
+            semaphore: asyncio.Semaphore,
+            _token: CancellationToken,
+            *,
+            timeout_seconds: float,
+        ) -> bool:
+            assert timeout_seconds > 0
+            await semaphore.acquire()
+            provider._synthesis_cancellations.add(marker)
+            return True
+
+        monkeypatch.setattr(
+            gpt_sovits_module,
+            "_acquire_semaphore_with_token",
+            open_circuit_after_slot,
+        )
+        circuit_result = await provider.synthesize(_job(token), segment_index=0, token=token)
+        assert circuit_result.error_code == "tts_cancel_timeout"
+        assert provider._synthesis_capacity._value == 1
+
+        provider._synthesis_cancellations.remove(marker)
+        marker.cancel()
+        await asyncio.gather(marker, return_exceptions=True)
+        await provider.close()
         await client.aclose()
 
     asyncio.run(scenario())

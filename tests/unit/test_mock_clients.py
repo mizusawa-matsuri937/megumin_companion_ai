@@ -8,12 +8,31 @@ from pathlib import Path
 import pytest
 from app.clients.llm import MockLLMProvider
 from app.clients.tts import MockTTSProvider
+from app.clients.tts import mock_tts as mock_tts_module
 from app.core import CancellationToken
 from app.paths import AppPaths
 from app.pipelines.audio_player import SystemAudioPlayer
 from app.schemas import TTSJob, UserMessage
 from app.temp_assets import TempAssetRegistry
 from app.windows_security import PortableDirectorySecurity
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"sample_rate": 0},
+        {"duration_ms": -1},
+        {"volume": -0.01},
+        {"volume": 1.01},
+        {"synthesis_delay_seconds": -0.01},
+    ],
+)
+def test_mock_tts_rejects_invalid_synthesis_parameters(
+    tmp_path: Path,
+    options: dict[str, int | float],
+) -> None:
+    with pytest.raises(ValueError):
+        MockTTSProvider(tmp_path, **options)  # type: ignore[arg-type]
 
 
 def test_mock_llm_emits_exact_controllable_deltas() -> None:
@@ -188,6 +207,180 @@ def test_mock_tts_total_deadline_covers_wave_generation_and_registry_cleanup(
         assert registry.entries() == ()
         assert not list(paths.temp.rglob("*.wav"))
         await provider.close()
+
+    asyncio.run(scenario())
+
+
+def test_mock_tts_total_deadline_also_covers_configured_delay(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        provider = MockTTSProvider(
+            tmp_path,
+            duration_ms=0,
+            synthesis_delay_seconds=1,
+        )
+        token = CancellationToken("turn_mock_delay_timeout")
+        result = await provider.synthesize(
+            TTSJob(
+                turn_id="turn_mock_delay_timeout",
+                segment_id="segment_mock_delay_timeout",
+                text="synthetic",
+                connect_timeout_ms=5,
+                first_byte_timeout_ms=5,
+                timeout_ms=5,
+                cancellation_timeout_ms=50,
+                cancellation_token_id=token.token_id,
+            ),
+            segment_index=0,
+            token=token,
+        )
+
+        assert not result.success
+        assert result.error_code == "tts_total_timeout"
+        await provider.discard(result)
+        await provider.close()
+
+    asyncio.run(scenario())
+
+
+def test_mock_tts_cancelled_during_configured_delay_never_creates_a_path(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        provider = MockTTSProvider(
+            tmp_path,
+            duration_ms=0,
+            synthesis_delay_seconds=1,
+        )
+        token = CancellationToken("turn_mock_delay_cancel")
+        synthesis = asyncio.create_task(
+            provider.synthesize(
+                TTSJob(
+                    turn_id="turn_mock_delay_cancel",
+                    segment_id="segment_mock_delay_cancel",
+                    text="synthetic",
+                    connect_timeout_ms=80,
+                    first_byte_timeout_ms=80,
+                    timeout_ms=300,
+                    cancellation_timeout_ms=50,
+                    cancellation_token_id=token.token_id,
+                ),
+                segment_index=0,
+                token=token,
+            )
+        )
+        await asyncio.sleep(0)
+        token.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await synthesis
+        assert not list(tmp_path.rglob("*.wav"))
+        await provider.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("invalid_wave", [b"not-a-wave", b""])
+def test_mock_tts_invalid_generated_wave_is_rejected_and_cleaned(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    invalid_wave: bytes,
+) -> None:
+    async def scenario() -> None:
+        provider = MockTTSProvider(
+            tmp_path,
+            duration_ms=0,
+            synthesis_delay_seconds=0,
+        )
+
+        def write_invalid(path: Path, _frequency_hz: float) -> None:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(invalid_wave)
+
+        monkeypatch.setattr(provider, "_write_wave", write_invalid)
+        token = CancellationToken("turn_mock_invalid_wave")
+        with pytest.raises(ValueError, match="mock wav validation failed"):
+            await provider.synthesize(
+                TTSJob(
+                    turn_id="turn_mock_invalid_wave",
+                    segment_id="segment_mock_invalid_wave",
+                    text="synthetic",
+                    connect_timeout_ms=80,
+                    first_byte_timeout_ms=80,
+                    timeout_ms=300,
+                    cancellation_timeout_ms=50,
+                    cancellation_token_id=token.token_id,
+                ),
+                segment_index=0,
+                token=token,
+            )
+
+        assert not list(tmp_path.rglob("*.wav"))
+        await provider.close()
+
+    asyncio.run(scenario())
+
+
+def test_mock_tts_generated_wave_metadata_is_validated_before_success(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def scenario() -> None:
+        provider = MockTTSProvider(
+            tmp_path,
+            duration_ms=0,
+            synthesis_delay_seconds=0,
+        )
+
+        def write_stereo(path: Path, _frequency_hz: float) -> None:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with wave.open(str(path), "wb") as output:
+                output.setnchannels(2)
+                output.setsampwidth(2)
+                output.setframerate(48_000)
+                output.writeframes(b"")
+
+        monkeypatch.setattr(provider, "_write_wave", write_stereo)
+        token = CancellationToken("turn_mock_invalid_metadata")
+        with pytest.raises(ValueError, match="mock wav validation failed"):
+            await provider.synthesize(
+                TTSJob(
+                    turn_id="turn_mock_invalid_metadata",
+                    segment_id="segment_mock_invalid_metadata",
+                    text="synthetic",
+                    connect_timeout_ms=80,
+                    first_byte_timeout_ms=80,
+                    timeout_ms=300,
+                    cancellation_timeout_ms=50,
+                    cancellation_token_id=token.token_id,
+                ),
+                segment_index=0,
+                token=token,
+            )
+
+        assert not list(tmp_path.rglob("*.wav"))
+        await provider.close()
+
+    asyncio.run(scenario())
+
+
+def test_mock_tts_owned_file_operation_rejects_an_expired_deadline() -> None:
+    async def scenario() -> None:
+        called = False
+
+        def operation() -> None:
+            nonlocal called
+            called = True
+
+        loop = asyncio.get_running_loop()
+        with pytest.raises(TimeoutError):
+            await mock_tts_module._run_owned_thread(
+                operation,
+                token=CancellationToken("mock-expired-owned-operation"),
+                deadline=loop.time(),
+            )
+        with pytest.raises(TimeoutError):
+            MockTTSProvider._raise_if_expired(loop.time())
+        assert not called
 
     asyncio.run(scenario())
 
