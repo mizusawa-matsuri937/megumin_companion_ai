@@ -410,7 +410,8 @@ def test_security_logs_use_reason_codes_and_redact_runtime_credentials(tmp_path:
             ),
         )
 
-    content = log_path.read_text(encoding="utf-8")
+    actual_log = next(log_path.parent.glob("security.main.*.jsonl"))
+    content = actual_log.read_text(encoding="utf-8")
     assert "origin_not_allowed" in content
     assert "attacker.example" not in content
     assert BASE_CONFIG.token not in content

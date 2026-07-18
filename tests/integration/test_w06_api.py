@@ -9,6 +9,7 @@ from itertools import count
 from pathlib import Path
 from typing import Any
 
+import pytest
 from app.api.security import DevAPIConfig, DevAPIScope
 from app.config import Settings
 from app.config.settings import LLMConfig, LoggingConfig, PipelineConfig, StorageConfig
@@ -18,6 +19,7 @@ from app.paths import AppPaths
 from app.schemas import InputMode, TurnState, TurnStatus
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
 DEV_API = DevAPIConfig(
     token="w06-integration-token-000000000000000000000000",
@@ -108,6 +110,77 @@ def test_storage_disabled_rejects_before_turn_or_pipeline_creation(tmp_path: Pat
     assert rejected.status_code == 503
     assert rejected.json() == {"detail": "idempotency_unavailable"}
     assert state.json()["turns"] == {}
+
+
+def test_interrupt_checks_session_then_fails_closed_without_idempotency(
+    tmp_path: Path,
+) -> None:
+    application = _app(tmp_path / "disabled", storage_enabled=False)
+
+    with _client(application) as client:
+        forbidden = client.post(
+            "/api/interrupt",
+            json={"turn_id": "turn-private-sentinel", "session_id": "session_other"},
+        )
+        unavailable = client.post(
+            "/api/interrupt",
+            json={
+                "turn_id": "turn-private-sentinel",
+                "session_id": DEV_API.session_id,
+            },
+        )
+
+    assert forbidden.status_code == 403
+    assert forbidden.json() == {"detail": "session_forbidden"}
+    assert unavailable.status_code == 503
+    assert unavailable.json() == {"detail": "idempotency_unavailable"}
+    assert "turn-private-sentinel" not in forbidden.text + unavailable.text
+
+
+def test_websocket_resume_fails_closed_without_idempotency(tmp_path: Path) -> None:
+    application = _app(tmp_path / "disabled", storage_enabled=False)
+
+    with (
+        _client(application) as client,
+        client.websocket_connect(f"{WS_BASE_URL}/ws/client") as websocket,
+    ):
+        websocket.send_json(_command("session.resume", {"last_seq": 0}))
+        error = websocket.receive_json()
+        with pytest.raises(WebSocketDisconnect) as closed:
+            websocket.receive_json()
+
+    legacy_headers = DEV_API.client_headers()
+    legacy_headers.pop("X-Megumin-Client-ID")
+    with (
+        TestClient(
+            application,
+            base_url="http://127.0.0.1:8765",
+            headers=legacy_headers,
+            client=("127.0.0.1", 51007),
+        ) as legacy_client,
+        legacy_client.websocket_connect(f"{WS_BASE_URL}/ws/client") as websocket,
+    ):
+        websocket.send_json(
+            {
+                "protocol_version": 1,
+                "session_id": DEV_API.session_id,
+                "type": "user.message",
+                "payload": {
+                    "message_id": "message-disabled-legacy",
+                    "session_id": DEV_API.session_id,
+                    "text": "private legacy sentinel",
+                },
+            }
+        )
+        legacy_error = websocket.receive_json()
+        with pytest.raises(WebSocketDisconnect) as legacy_closed:
+            websocket.receive_json()
+
+    assert error["error"]["code"] == "idempotency_unavailable"
+    assert closed.value.code == 1013
+    assert legacy_error["error"]["code"] == "idempotency_unavailable"
+    assert "private legacy sentinel" not in json.dumps(legacy_error)
+    assert legacy_closed.value.code == 1013
 
 
 def test_websocket_reconnect_replays_original_event_then_resend_returns_snapshot(

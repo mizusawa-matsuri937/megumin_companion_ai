@@ -73,6 +73,9 @@ class LoggingConfig(StrictModel):
     console_enabled: bool = True
     file_enabled: bool = True
     file_path: Path = Path("data/logs/app.jsonl")
+    max_bytes: int = Field(default=10 * 1024 * 1024, ge=256, le=10 * 1024 * 1024)
+    file_count: int = Field(default=5, ge=1, le=5)
+    retention_days: int = Field(default=14, ge=1, le=14)
 
 
 class LLMConfig(StrictModel):

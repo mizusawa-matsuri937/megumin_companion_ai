@@ -19,6 +19,7 @@ from app.api.security import DevAPIConfig, DevAPIScope
 from app.clients.vts import DPAPITokenStore, read_legacy_plaintext_token
 from app.config import ConfigurationError, Settings, load_settings
 from app.config.user_settings import upgrade_user_settings
+from app.diagnostics import DiagnosticExporter, DiagnosticExportError
 from app.legacy_migration import LegacyMigrationError, migrate_legacy_data
 from app.main import create_app
 from app.paths import AppPathError, AppPaths
@@ -30,6 +31,7 @@ from app.secret_store import (
     llm_api_key_file,
     vts_token_file,
 )
+from app.windows_security import WindowsSecurityError
 
 _ENVIRONMENT_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
 
@@ -106,6 +108,15 @@ def build_parser() -> argparse.ArgumentParser:
         choices=(LLM_API_KEY_ID, VTS_TOKEN_ID),
         metavar="SECRET_ID",
         help="Delete one unreadable encrypted secret so it can be re-entered.",
+    )
+    action.add_argument(
+        "--export-diagnostics",
+        type=Path,
+        metavar="ZIP_FILE",
+        help=(
+            "Explicitly export a manifest-first, privacy-scanned diagnostic ZIP. "
+            "Database, screenshots, WAV files, and user paths are excluded."
+        ),
     )
     parser.add_argument(
         "--delete-import-source",
@@ -322,6 +333,40 @@ def _delete_secret(secret_id: str, *, reset: bool) -> int:
     return 0
 
 
+def _export_diagnostics(destination: Path) -> int:
+    try:
+        settings = _load_production_settings_for_secret_action()
+        result = DiagnosticExporter(
+            settings.paths,
+            logical_log_path=settings.log_file_path(),
+            known_secrets=settings.known_secret_values(),
+        ).export(destination)
+    except (
+        ConfigurationError,
+        AppPathError,
+        DiagnosticExportError,
+        OSError,
+        WindowsSecurityError,
+    ) as exc:
+        code = exc.args[0] if isinstance(exc, DiagnosticExportError) and exc.args else "io_failed"
+        print(f"diagnostic_export_error: {code}", file=sys.stderr)
+        return 2
+    print(
+        json.dumps(
+            {
+                "status": "ok",
+                "archive_created": result.archive_created,
+                "manifest_schema_version": result.manifest_schema_version,
+                "member_count": result.member_count,
+                "archive_fingerprint": result.archive_fingerprint,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
 def _run_server(
     application: FastAPI,
     *,
@@ -409,6 +454,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.config is not None or args.env_file is not None or args.delete_import_source:
             parser.error("--reset-secret cannot use config/env-file/source deletion options")
         return _delete_secret(args.reset_secret, reset=True)
+    if args.export_diagnostics is not None:
+        if args.config is not None or args.env_file is not None or args.delete_import_source:
+            parser.error("--export-diagnostics cannot use development overrides/source deletion")
+        return _export_diagnostics(args.export_diagnostics)
     if args.delete_import_source:
         parser.error("--delete-import-source requires --import-vts-token")
     if not args.dev_api:

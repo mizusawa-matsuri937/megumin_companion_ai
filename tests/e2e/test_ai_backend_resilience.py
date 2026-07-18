@@ -247,6 +247,10 @@ def _logger(log_path: Path) -> logging.Logger:
     return configure_logging(settings)
 
 
+def _actual_log_path(logical_path: Path) -> Path:
+    return next(logical_path.parent.glob(f"{logical_path.stem}.main.*{logical_path.suffix}"))
+
+
 def _policy() -> ProactivePolicy:
     return ProactivePolicy(
         minimum_score=0,
@@ -391,8 +395,10 @@ def test_privacy_sentinel_never_crosses_persistence_event_network_or_file_bounda
         await perception.close()
         await memory.close()
         await http_client.aclose()
-        for handler in logger.handlers:
+        for handler in tuple(logger.handlers):
             handler.flush()
+            handler.close()
+        logger.handlers.clear()
 
         with sqlite3.connect(database_path) as connection:
             assert connection.execute("SELECT COUNT(*) FROM conversation_messages").fetchone() == (
@@ -406,7 +412,7 @@ def test_privacy_sentinel_never_crosses_persistence_event_network_or_file_bounda
             path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()
         )
         sentinel_bytes = PRIVACY_SENTINEL.encode()
-        assert sentinel_bytes not in log_path.read_bytes()
+        assert sentinel_bytes not in _actual_log_path(log_path).read_bytes()
         assert sentinel_bytes not in database_path.read_bytes()
         assert sentinel_bytes not in event_records
         assert sentinel_bytes not in network_payload
@@ -477,9 +483,11 @@ def test_failure_storm_preserves_user_priority_and_all_settled_shutdown(
         assert service.snapshot()["active_turns"] == []
         assert _pending_backend_tasks() == []
 
-        for handler in logger.handlers:
+        for handler in tuple(logger.handlers):
             handler.flush()
-        logs = log_path.read_text(encoding="utf-8")
+            handler.close()
+        logger.handlers.clear()
+        logs = _actual_log_path(log_path).read_text(encoding="utf-8")
         for private_error in (
             "OBSERVER_PRIVATE_SENTINEL",
             "SINK_PRIVATE_SENTINEL",
