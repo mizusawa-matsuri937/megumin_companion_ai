@@ -146,6 +146,7 @@ def test_fake_kernel_contract_covers_portable_windows_handle_lifecycle(
             "msvcrt",
             SimpleNamespace(open_osfhandle=lambda handle, _flags: handle),
         )
+        monkeypatch.setattr(os, "O_BINARY", 0, raising=False)
         adapter = object.__new__(WindowsJobProcessAdapter)
         adapter._kernel32 = kernel32
         adapter._bind()
@@ -178,6 +179,23 @@ def test_fake_kernel_contract_covers_portable_windows_handle_lifecycle(
         with pytest.raises(ProcessAdapterError, match="worker_process_closed"):
             await process.write_stdin(b"synthetic")
         assert {10_001, 10_002, 10_003} <= kernel32.closed_pseudo_handles
+
+        for function_name, failure_value, error_code in (
+            ("CreateProcessW", 0, "worker_process_create_failed_0"),
+            ("ResumeThread", 0xFFFFFFFF, "worker_thread_resume_failed_0"),
+        ):
+            failure_kernel = _FakeKernel32()
+            setattr(
+                failure_kernel,
+                function_name,
+                _FakeWinCall(lambda *_args, value=failure_value: value),
+            )
+            failure_adapter = object.__new__(WindowsJobProcessAdapter)
+            failure_adapter._kernel32 = failure_kernel
+            failure_adapter._bind()
+            with pytest.raises(ProcessAdapterError, match=error_code):
+                await failure_adapter.spawn((sys.executable, "-c", "pass"))
+            assert not failure_kernel._pipe_fds
 
     import asyncio
 
