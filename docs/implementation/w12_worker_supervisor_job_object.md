@@ -116,8 +116,10 @@ uv run python tools/w12_windows_probe.py --helper tests/helpers/w12_worker_helpe
 真实 Windows pytest 另行覆盖：worker 再派生孙进程、Job hard kill、parent `os._exit` 后
 `KILL_ON_JOB_CLOSE`、deadline、额外批准 handle 继承、重复 5 次 close、active process 归零和 helper 内
 `GetConsoleWindow()==0`。mock/fake 测试不计入这组真机证据。
+macOS 另用明确标记的 fake-kernel API 合约测试覆盖 ctypes 绑定、参数拒绝和 handle 生命周期，以避免平台专属
+代码压低跨平台 coverage；它只证明 portable 控制流契约，不证明 macOS 具有或执行了 Windows Job Object。
 
-完整本机质量门：`839 passed, 3 skipped`，branch coverage `90.08%`；三项 skip 是缺少可选 PIL/RapidOCR 和
+完整本机质量门：`840 passed, 3 skipped`，branch coverage `90.08%`；三项 skip 是缺少可选 PIL/RapidOCR 和
 当前用户不能创建普通 symlink。Ruff lint、Ruff format 与 strict mypy（184 source files）通过；最终提交前
 Windows wheel/source-quarantine smoke 通过：113 members，manifest SHA-256
 `b3367e6edec56e7db67753098a5d2859b9801fb59cc8b1000eb0c6b35da6eb46`，仓库外安装结果
