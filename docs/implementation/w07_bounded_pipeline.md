@@ -16,6 +16,9 @@ VTS 重连均不在本 PR 中改变。
   写 sentinel。
 - ready-audio slot 在开始合成前取得，在播放/跳过后释放，因此 ordered-playback 的重排字典、
   queue 内结果和正在合成的结果共享同一容量，不形成隐藏无界容器。
+- queue 只负责传输，不作为资源所有权账本。取得 ready-audio slot 后的每个结果还登记在同一容量
+  约束的 outstanding registry；producer/consumer handoff 或 temp discard 恰逢取消时，最终 settle
+  仍从 registry 释放 slot、音频 lease 和临时文件，然后才生成稳定终态报告。
 - 音频字节 lease 在合成前按 provider 单文件硬上限预留，播放/跳过/取消后释放。无法取得 lease
   时 producer 等待，形成真实背压；单个结果违反 lease 或总音频时长预算时删除临时文件并产生
   `audio.degraded`，不静默保留或播放。
@@ -41,17 +44,20 @@ W07 对 `settings`、`bootstrap`、dev API security/protocol 和 dialogue pipeli
 可降低 worker 数、queue 容量、切换 silent playback 或完全串行 TTS；不得回滚为无界 queue、
 字符数冒充 token/UTF-8 byte 预算，或取消后遗留 temp/lease。
 
-## 自动证据（Windows，本地未提交 revision）
+## 自动证据（Windows，本地修复 revision）
 
 - W07 聚焦 unit/property/integration/fault/WS flood：`24 passed`。覆盖中日英/emoji UTF-8
   property、provider/model estimator、固定 prompt 降级、快 LLM/慢 TTS、阻塞 playback、乱序 TTS、
   queue full、25 轮取消风暴、音频总时长、磁盘失败、metadata 和 WS flood。
-- 最终全仓：`787 passed, 2 skipped`；branch coverage `90.26%`。两个 skip 是既有 optional
+- macOS exact-head CI 首次真实运行在 25 轮取消风暴中捕获一个 handoff/temp-discard 时序竞态：
+  queue 已归零但报告仍有 9,644 bytes lease。修复后本地把同一测试重复 10 次（250 个取消回合），
+  每回合 queue、lease 和 WAV temp 均归零。
+- 修复后全仓：`787 passed, 2 skipped`；branch coverage `90.20%`。两个 skip 是既有 optional
   RapidOCR/Pillow 环境，不属于 W07。
 - Ruff check 通过；Ruff format `179 files already formatted`；strict mypy `174 source files`
   通过。
 - installed-wheel smoke 通过：109 wheel members，manifest SHA-256
-  `576b033e734d235ab377ae9bb48dd7779b4451dcb9351191fd682b8f5b953390`；源码包隔离、任意
+  `2781fb7ccfe0573bcdcd32a8f58f55bec7f8a742ae66b76b7e75911f6b6e5bf4`；源码包隔离、任意
   CWD、CLI/desktop preflight、locked/authenticated ASGI health 和 idempotent chat 全部通过。
 - 背压 stress 使用 TTS queue=2、ready audio=1、audio lease=256 KiB：queue 最大深度分别不超过
   2/1，LLM producer 阻塞计数大于 0，最大音频 lease 不超过 256 KiB；每轮结束两条 queue
@@ -67,14 +73,22 @@ head checks 完成后记录。
 
 - 全仓 `asyncio.Queue` 只剩 VTS bridge 和 dialogue measured queue，两者构造均显式 `maxsize`。
 - dialogue 的 `full_text_parts` 受 64 KiB 限制，segments/metrics list 受 128 限制，TTS jobs 受 8
-  限制，audio queue/reorder/cleanup 共享 ready slot（默认 4），不存在把背压转移到 `pending` 或
-  cleanup dict 的隐藏无界容器。
+  限制，audio queue/reorder/outstanding registry 共享 ready slot（默认 4），不存在把背压转移到
+  `pending` 或 cleanup registry 的隐藏无界容器。
 - 内部 TTS/audio 数据不做 drop-on-full；producer 等待并记录阻塞。W06 subscriber 的不可丢事件/
   snapshot reset 路径没有改动。
 - diff 未修改 LLM provider 完成/EOF/TLS、GPT-SoVITS transport 或 VTS reconnect 文件；W08/W09
   仅在范围说明中作为明确非目标出现。
 
 ## 兼容性、迁移与残余风险
+
+- GitHub 仓库当前由项目所有者决定公开。项目所有者声明已检查没有隐私数据上传；这只记录为
+  owner attestation，不等同于本 PR 独立完成了全 Git 历史安全审计。当前 baseline 无 branch
+  protection，仓库 ruleset 为空，因此公开化不提供合并保护；仍严格依赖 Draft PR、exact-head
+  checks、expected-head guard 和合并后读回。
+- PR 分支、Actions 日志和上传 artifact 可能公开可见。W07 只允许合成 sentinel、无路径 provenance
+  和最小诊断证据进入这些表面；真实 secret/token、用户正文、数据库、日志、截图、WAV、模型/角色
+  资产和用户路径不得进入 commit、PR、CI 日志或 artifact。
 
 - `limits.version=1` 是新增可选配置段；旧用户设置缺少该段时使用内置默认值，不写回或重写用户数据。
 - prompt 从字符池切换为保守 token 估算，长输入可能更早降级；current user 的持久化原文不修改，

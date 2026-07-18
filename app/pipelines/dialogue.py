@@ -263,7 +263,11 @@ class DialoguePipeline:
         audio_queue = _MeasuredQueue[_IndexedAudio](self._limits.ready_audio_queue_capacity)
         ready_slots = asyncio.Semaphore(self._limits.ready_audio_queue_capacity)
         audio_budget = _AudioByteBudget(self._limits.audio_inflight_bytes)
-        cleanup: dict[str, AudioResult] = {}
+        # Registry of every audio item after its queue slot is acquired.  The
+        # queue is only a transport: cancellation may interrupt a producer or
+        # consumer at a hand-off boundary, so final cleanup must not infer
+        # ownership from queue contents alone.
+        outstanding_audio: dict[int, _IndexedAudio] = {}
         terminal = "completed"
         terminal_reason: str | None = None
         total_output_bytes = 0
@@ -419,12 +423,18 @@ class DialoguePipeline:
                                     await audio_budget.shrink(reservation, actual_bytes)
                                     leased_bytes = actual_bytes
                                     reservation = 0
-                                    cleanup[result.audio_id] = result
                                     if metrics.tts_first_audio_ms is None:
                                         metrics.tts_first_audio_ms = _elapsed_ms(started)
                             if not result.success and reservation:
                                 await audio_budget.release(reservation)
                                 reservation = 0
+                            indexed_audio = _IndexedAudio(
+                                index=indexed_job.index,
+                                result=result,
+                                ready_at=ready_at,
+                                leased_bytes=leased_bytes,
+                            )
+                            outstanding_audio[indexed_job.index] = indexed_audio
                             await emit(
                                 "audio.ready",
                                 {
@@ -436,20 +446,22 @@ class DialoguePipeline:
                                     "error_code": result.error_code,
                                 },
                             )
-                            await audio_queue.put(
-                                _IndexedAudio(
-                                    index=indexed_job.index,
-                                    result=result,
-                                    ready_at=ready_at,
-                                    leased_bytes=leased_bytes,
-                                )
-                            )
+                            await audio_queue.put(indexed_audio)
                             transferred = True
                         finally:
                             if not transferred:
-                                await audio_budget.release(reservation + leased_bytes)
-                                if slot_owned:
-                                    ready_slots.release()
+                                owned_audio = outstanding_audio.get(indexed_job.index)
+                                if owned_audio is not None:
+                                    await release_audio(owned_audio)
+                                    reservation = 0
+                                    leased_bytes = 0
+                                    slot_owned = False
+                                else:
+                                    await _finish_cleanup(
+                                        audio_budget.release(reservation + leased_bytes)
+                                    )
+                                    if slot_owned:
+                                        ready_slots.release()
                     finally:
                         tts_queue.task_done()
             finally:
@@ -514,22 +526,25 @@ class DialoguePipeline:
                             await release_audio(current)
                         next_index += 1
             finally:
-                await asyncio.gather(
-                    *(release_audio(item) for item in tuple(pending.values())),
-                    return_exceptions=True,
+                await _finish_cleanup(
+                    _gather_cleanup(*(release_audio(item) for item in tuple(pending.values())))
                 )
 
         async def release_audio(indexed: _IndexedAudio) -> None:
-            try:
-                if indexed.result.success:
-                    await self._tts.discard(indexed.result)
-                    cleanup.pop(indexed.result.audio_id, None)
-            finally:
-                await audio_budget.release(indexed.leased_bytes)
+            async def release_owned() -> None:
+                if outstanding_audio.get(indexed.index) is not indexed:
+                    return
+                leased_bytes = indexed.leased_bytes
                 indexed.leased_bytes = 0
                 if indexed.slot_owned:
                     indexed.slot_owned = False
                     ready_slots.release()
+                await audio_budget.release(leased_bytes)
+                if indexed.result.success:
+                    await self._tts.discard(indexed.result)
+                outstanding_audio.pop(indexed.index, None)
+
+            await _finish_cleanup(release_owned())
 
         succeeded = False
         try:
@@ -551,16 +566,14 @@ class DialoguePipeline:
                 finally:
                     drained = audio_queue.drain()
                     tts_queue.drain()
-                    await asyncio.gather(
-                        *(release_audio(indexed) for indexed in drained),
-                        return_exceptions=True,
-                    )
-                    if cleanup:
-                        await asyncio.gather(
-                            *(self._tts.discard(result) for result in tuple(cleanup.values())),
-                            return_exceptions=True,
+                    await _gather_cleanup(*(release_audio(indexed) for indexed in drained))
+                    if outstanding_audio:
+                        await _gather_cleanup(
+                            *(
+                                release_audio(indexed)
+                                for indexed in tuple(outstanding_audio.values())
+                            )
                         )
-                        cleanup.clear()
 
             await _finish_cleanup(settle_turn())
             cleanup_ms = _elapsed_ms(cleanup_started)
@@ -709,3 +722,9 @@ async def _finish_cleanup(awaitable: Awaitable[None]) -> None:
     task.result()
     if cancelled:
         raise asyncio.CancelledError
+
+
+async def _gather_cleanup(*awaitables: Awaitable[None]) -> None:
+    if not awaitables:
+        return
+    await asyncio.gather(*awaitables, return_exceptions=True)
