@@ -66,7 +66,7 @@ fake server 会校验 `apiName`、`apiVersion`、request correlation、认证、
 
 本地最终证据（2026-07-18）：
 
-- W09 聚焦矩阵：`91 passed`，覆盖 fake clock/random、backoff/jitter/cap、重连风暴、零退避、断线交错、
+- W09 聚焦矩阵：`95 passed`，覆盖 fake clock/random、backoff/jitter/cap、重连风暴、零退避、断线交错、
   generation、cancel/new-turn/disconnect purge、queue overflow、neutral、auth 撤销/超时、model/hotkey、
   protocol、日志 sentinel 和 close race。
 - 全仓：`787 passed, 2 skipped`；branch coverage `90.16%`。
