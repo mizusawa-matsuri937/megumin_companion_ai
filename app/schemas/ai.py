@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import base64
 import binascii
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Annotated, Any, Literal
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import BaseModel, Field, computed_field, field_validator, model_validator
 
 from app.schemas.messages import (
     ContractModel,
@@ -155,10 +155,95 @@ class FeatureName(StrEnum):
     proactive = "proactive"
 
 
+class FeatureDesiredState(StrEnum):
+    disabled = "disabled"
+    enabled = "enabled"
+
+
+class FeatureActualState(StrEnum):
+    disabled = "disabled"
+    enabling = "enabling"
+    enabled = "enabled"
+    disabling = "disabling"
+    failed = "failed"
+
+
 class FeatureState(ContractModel):
     name: FeatureName
-    enabled: bool
+    desired_state: FeatureDesiredState
+    actual_state: FeatureActualState
+    generation: int = Field(default=0, ge=0)
+    reason_code: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9_]{0,63}$")
+    updated_at: datetime = Field(default=datetime(1970, 1, 1, tzinfo=UTC))
     disclosure: str | None = None
+
+    def __init__(
+        self,
+        *,
+        name: FeatureName,
+        desired_state: FeatureDesiredState | None = None,
+        actual_state: FeatureActualState | None = None,
+        generation: int = 0,
+        reason_code: str | None = None,
+        updated_at: datetime = datetime(1970, 1, 1, tzinfo=UTC),
+        disclosure: str | None = None,
+        enabled: bool | None = None,
+    ) -> None:
+        """Accept the v2 stable-state constructor without storing a second truth."""
+
+        if enabled is not None:
+            desired_state = desired_state or (
+                FeatureDesiredState.enabled if enabled else FeatureDesiredState.disabled
+            )
+            actual_state = actual_state or (
+                FeatureActualState.enabled if enabled else FeatureActualState.disabled
+            )
+        BaseModel.__init__(
+            self,
+            name=name,
+            desired_state=desired_state,
+            actual_state=actual_state,
+            generation=generation,
+            reason_code=reason_code,
+            updated_at=updated_at,
+            disclosure=disclosure,
+        )
+
+    @model_validator(mode="before")
+    @classmethod
+    def accept_legacy_stable_enabled(cls, value: Any) -> Any:
+        """Keep test/adaptor construction compatible without persisting two truths."""
+
+        if not isinstance(value, dict) or "enabled" not in value:
+            return value
+        copied = dict(value)
+        enabled = bool(copied.pop("enabled"))
+        desired = FeatureDesiredState.enabled if enabled else FeatureDesiredState.disabled
+        actual = FeatureActualState.enabled if enabled else FeatureActualState.disabled
+        copied.setdefault("desired_state", desired)
+        copied.setdefault("actual_state", actual)
+        return copied
+
+    @field_validator("updated_at")
+    @classmethod
+    def require_feature_utc_time(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("feature updated_at must be timezone-aware")
+        return value
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def enabled(self) -> bool:
+        """Compatibility gate: allow work only when desired and actual are enabled."""
+
+        return (
+            self.desired_state is FeatureDesiredState.enabled
+            and self.actual_state is FeatureActualState.enabled
+        )
+
+    @property
+    def desired_enabled(self) -> bool:
+        return self.desired_state is FeatureDesiredState.enabled
 
 
 class FeaturePatchRequest(ContractModel):
@@ -171,6 +256,15 @@ class MemoryUpdateRequest(ContractModel):
 
 class MemoryConfirmRequest(ContractModel):
     approved: bool
+
+
+class DatabaseRestoreRequest(ContractModel):
+    backup_name: str = Field(
+        min_length=1,
+        max_length=255,
+        pattern=r"^[A-Za-z0-9._-]+$",
+    )
+    backup_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
 class HistoryClearRequest(ContractModel):

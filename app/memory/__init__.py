@@ -17,6 +17,7 @@ from app.memory.models import (
     PendingConfirmation,
     ProfileItem,
     SourceInputMode,
+    SourceProvenance,
 )
 from app.memory.policy import MemoryPolicy
 from app.memory.privacy import classify_sensitivity, contains_credential
@@ -50,6 +51,7 @@ __all__ = [
     "PendingConfirmation",
     "ProfileItem",
     "SourceInputMode",
+    "SourceProvenance",
     "classify_sensitivity",
     "contains_credential",
 ]

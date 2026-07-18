@@ -82,6 +82,7 @@ def test_health_routes_separate_liveness_readiness_and_capabilities(tmp_path: Pa
     assert capabilities.json()["capabilities"] == [
         {"name": "core", "status": "ready"},
         {"name": "idempotency", "status": "ready"},
+        {"name": "memory", "status": "ready"},
         {"name": "vts", "status": "degraded", "error_code": "vts_disconnected"},
     ]
 

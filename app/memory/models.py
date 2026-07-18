@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from datetime import datetime
 from enum import StrEnum
 from uuid import uuid4
@@ -60,6 +61,13 @@ class SourceInputMode(StrEnum):
     manual = "manual"
 
 
+class SourceProvenance(StrEnum):
+    dialogue_text = "dialogue_text"
+    dialogue_voice = "dialogue_voice"
+    manual = "manual"
+    legacy_unverified = "legacy_unverified"
+
+
 class MemoryDecision(StrEnum):
     reject = "reject"
     save = "save"
@@ -72,7 +80,7 @@ class MemoryClaim(MemoryModel):
     memory_type: MemoryType
     canonical_key: str = Field(pattern=r"^[a-z0-9][a-z0-9_.:-]{1,127}$")
     content: str = Field(min_length=1, max_length=5_000)
-    evidence_quote: str = Field(min_length=1, max_length=2_000)
+    evidence_quote: str = Field(min_length=1, max_length=512)
     importance_score: float = Field(ge=0.0, le=1.0)
     confidence_score: float = Field(ge=0.0, le=1.0)
     sensitivity_hint: MemorySensitivity = MemorySensitivity.normal
@@ -141,9 +149,20 @@ class ApprovedMemory(MemoryModel):
     sensitivity: MemorySensitivity
     source_kind: MemorySourceKind
     source_message_id: str
-    source_excerpt: str
+    evidence_quote: str = Field(min_length=1, max_length=512)
+    source_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    provenance: SourceProvenance
     related_emotion: EmotionLabel | None = None
     created_at: datetime
+
+    @model_validator(mode="before")
+    @classmethod
+    def accept_legacy_source_excerpt(cls, value: object) -> object:
+        return _upgrade_legacy_source_fields(value)
+
+    @property
+    def source_excerpt(self) -> str:
+        return self.evidence_quote
 
 
 class MemoryItem(MemoryModel):
@@ -159,11 +178,17 @@ class MemoryItem(MemoryModel):
     status: MemoryStatus
     source_kind: MemorySourceKind
     source_message_id: str
-    source_excerpt: str
+    evidence_quote: str = Field(min_length=1, max_length=512)
+    source_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    provenance: SourceProvenance
     related_emotion: EmotionLabel | None = None
     created_at: datetime
     updated_at: datetime
     last_seen_at: datetime
+
+    @property
+    def source_excerpt(self) -> str:
+        return self.evidence_quote
 
 
 class MemorySource(MemoryModel):
@@ -171,8 +196,14 @@ class MemorySource(MemoryModel):
     memory_id: str
     source_kind: MemorySourceKind
     source_message_id: str
-    source_excerpt: str
+    evidence_quote: str = Field(min_length=1, max_length=512)
+    source_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    provenance: SourceProvenance
     observed_at: datetime
+
+    @property
+    def source_excerpt(self) -> str:
+        return self.evidence_quote
 
 
 class ProfileItem(MemoryModel):
@@ -206,3 +237,20 @@ class MemoryActionResult(MemoryModel):
         if not valid:
             raise ValueError("memory action payload does not match its decision")
         return self
+
+
+def _upgrade_legacy_source_fields(value: object) -> object:
+    if not isinstance(value, dict) or "source_excerpt" not in value:
+        return value
+    copied = dict(value)
+    quote = str(copied.pop("source_excerpt"))
+    copied.setdefault("evidence_quote", quote[:512])
+    copied.setdefault("source_sha256", hashlib.sha256(quote.encode("utf-8")).hexdigest())
+    kind = copied.get("source_kind")
+    copied.setdefault(
+        "provenance",
+        SourceProvenance.manual
+        if kind in {MemorySourceKind.manual, MemorySourceKind.manual.value}
+        else SourceProvenance.legacy_unverified,
+    )
+    return copied

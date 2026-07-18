@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 import unicodedata
 
@@ -12,6 +13,8 @@ from app.memory.models import (
     MemoryProposal,
     MemorySensitivity,
     MemoryType,
+    SourceInputMode,
+    SourceProvenance,
 )
 from app.memory.privacy import classify_sensitivity, contains_credential
 
@@ -128,7 +131,13 @@ class MemoryPolicy:
             sensitivity=evaluation.sensitivity,
             source_kind=proposal.source_kind,
             source_message_id=proposal.source_message_id,
-            source_excerpt=proposal.source_text,
+            evidence_quote=proposal.claim.evidence_quote,
+            source_sha256=hashlib.sha256(proposal.source_text.encode("utf-8")).hexdigest(),
+            provenance={
+                SourceInputMode.text: SourceProvenance.dialogue_text,
+                SourceInputMode.voice: SourceProvenance.dialogue_voice,
+                SourceInputMode.manual: SourceProvenance.manual,
+            }[proposal.source_input_mode],
             related_emotion=proposal.claim.related_emotion,
             created_at=proposal.created_at,
         )

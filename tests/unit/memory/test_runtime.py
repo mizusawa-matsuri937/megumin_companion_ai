@@ -179,6 +179,7 @@ def test_candidate_llm_does_not_block_assistant_completion(tmp_path: Path) -> No
     async def scenario() -> None:
         analyzer = GatedAnalyzer()
         runtime = await create_memory_runtime(str(tmp_path / "memory.sqlite3"), analyzer=analyzer)
+        assert isinstance(runtime, MemoryRuntime)
         await runtime.set_feature(FeatureName.long_term_memory, True)
         pipeline = ImmediatePipeline()
         service = TurnService(_logger(), pipeline, observers=(runtime.observer,))
@@ -210,6 +211,7 @@ def test_disabling_long_term_memory_cancels_and_joins_active_analysis(
     async def scenario() -> None:
         analyzer = GatedAnalyzer()
         runtime = await create_memory_runtime(str(tmp_path / "disabled.sqlite3"), analyzer=analyzer)
+        assert isinstance(runtime, MemoryRuntime)
         await runtime.set_feature(FeatureName.long_term_memory, True)
         service = TurnService(_logger(), ImmediatePipeline(), observers=(runtime.observer,))
         queue = await service.subscribe("local_session")
@@ -259,6 +261,7 @@ def test_repeated_cancellation_cannot_release_an_active_sqlite_worker() -> None:
 def test_memory_update_retries_an_inflight_pre_mutation_snapshot(tmp_path: Path) -> None:
     async def scenario() -> None:
         runtime = await create_memory_runtime(str(tmp_path / "update-context.sqlite3"))
+        assert isinstance(runtime, MemoryRuntime)
         await runtime.set_feature(FeatureName.long_term_memory, True)
         item = _save_memory(runtime)
         blocker = _block_first_snapshot(runtime)
@@ -294,6 +297,7 @@ def test_memory_revocation_retries_an_inflight_snapshot_without_old_blocks(
 ) -> None:
     async def scenario() -> None:
         runtime = await create_memory_runtime(str(tmp_path / f"{operation}-context.sqlite3"))
+        assert isinstance(runtime, MemoryRuntime)
         await runtime.set_feature(FeatureName.long_term_memory, True)
         item = _save_memory(runtime)
         blocker = _block_first_snapshot(runtime)
@@ -301,9 +305,11 @@ def test_memory_revocation_retries_an_inflight_snapshot_without_old_blocks(
         try:
             await _wait_for_thread_event(blocker.entered)
             if operation == "delete":
-                assert await runtime.delete_memory(item.memory_id, user_id="local_user")
+                assert (
+                    await runtime.delete_memory(item.memory_id, user_id="local_user")
+                ).logical_deleted
             elif operation == "clear":
-                assert await runtime.clear_memories(user_id="local_user") == 1
+                assert (await runtime.clear_memories(user_id="local_user")).deleted_count == 1
             else:
                 assert not (await runtime.set_feature(FeatureName.long_term_memory, False)).enabled
             assert not pending.done()
@@ -327,6 +333,7 @@ def test_history_revocation_retries_an_inflight_snapshot_without_old_history(
 ) -> None:
     async def scenario() -> None:
         runtime = await create_memory_runtime(str(tmp_path / f"history-{operation}.sqlite3"))
+        assert isinstance(runtime, MemoryRuntime)
         record = ConversationRecord(
             message_id="old-history",
             session_id="local_session",
@@ -350,8 +357,7 @@ def test_history_revocation_retries_an_inflight_snapshot_without_old_history(
                         user_id="local_user",
                         session_id="local_session",
                     )
-                    == 1
-                )
+                ).deleted_count == 1
             else:
                 assert not (await runtime.set_feature(FeatureName.recent_history, False)).enabled
             assert not pending.done()
@@ -371,23 +377,24 @@ def test_history_revocation_retries_an_inflight_snapshot_without_old_history(
 def test_feature_patch_waits_for_registered_privacy_transition(tmp_path: Path) -> None:
     async def scenario() -> None:
         runtime = await create_memory_runtime(str(tmp_path / "barrier.sqlite3"))
+        assert isinstance(runtime, MemoryRuntime)
         entered = asyncio.Event()
         release = asyncio.Event()
-        observed: list[tuple[FeatureName, bool]] = []
+        observed: list[tuple[FeatureName, bool, str]] = []
 
         async def barrier(state: FeatureState) -> None:
             entered.set()
             await release.wait()
-            observed.append((state.name, state.enabled))
+            observed.append((state.name, state.desired_enabled, state.actual_state.value))
 
         unsubscribe = runtime.add_feature_transition_handler(barrier)
-        patch = asyncio.create_task(runtime.set_feature(FeatureName.vision, False))
+        patch = asyncio.create_task(runtime.set_feature(FeatureName.vision, True))
         await entered.wait()
         assert not patch.done()
         release.set()
         state = await patch
-        assert not state.enabled
-        assert observed == [(FeatureName.vision, False)]
+        assert state.enabled
+        assert observed == [(FeatureName.vision, True, "enabling")]
         unsubscribe()
         await runtime.close()
 
