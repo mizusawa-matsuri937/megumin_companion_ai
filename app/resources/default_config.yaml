@@ -128,3 +128,28 @@ pipeline:
   audio_cache_path: mock
   # 默认静默模拟播放，避免后端启动后意外发声；Gate A 人工工具显式使用系统播放器。
   playback_mode: silent
+
+# W07 集中硬上限；provider/功能配置只允许低于这些值，不能绕过。
+limits:
+  version: 1
+  dev_http_body_bytes: 65536
+  dev_websocket_frame_bytes: 65536
+  metadata_bytes: 8192
+  metadata_keys: 16
+  metadata_depth: 3
+  metadata_nodes: 128
+  provider_output_tokens: 4096
+  prompt_total_tokens: 16384
+  prompt_system_tokens: 4096
+  prompt_current_tokens: 8192
+  prompt_history_tokens: 4096
+  prompt_memory_tokens: 2048
+  prompt_screen_tokens: 1024
+  prompt_block_tokens: 512
+  llm_output_bytes: 65536
+  llm_output_segments: 128
+  tts_queue_capacity: 8
+  ready_audio_queue_capacity: 4
+  audio_single_result_bytes: 33554432
+  audio_inflight_bytes: 67108864
+  audio_total_duration_ms: 120000

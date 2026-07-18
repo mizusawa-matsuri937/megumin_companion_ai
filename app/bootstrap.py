@@ -19,7 +19,13 @@ from app.config import ConfigurationError, Settings
 from app.emotion import EmotionEngine, EmotionSegmentDecorator, ExpressionCooldown, SystemClock
 from app.pipelines import DialoguePipeline
 from app.pipelines.audio_player import AudioPlayer, SilentAudioPlayer, SystemAudioPlayer
-from app.prompts import EmotionPromptContextBuilder, PromptBuilder, PromptContextSource
+from app.prompts import (
+    EmotionPromptContextBuilder,
+    PromptBudget,
+    PromptBuilder,
+    PromptContextSource,
+)
+from app.prompts.tokens import ProviderTokenEstimator
 from app.secret_store import LLM_API_KEY_ID, EncryptedSecretFile, llm_api_key_file, vts_token_file
 from app.temp_assets import TempAssetRegistry
 
@@ -31,6 +37,7 @@ def build_llm_provider(
 ) -> LLMProvider | None:
     """Build the configured provider without a silent fallback to a mock."""
 
+    settings.validate_runtime_limits()
     provider_name = settings.llm.provider.strip().lower()
     if provider_name == "none":
         return None
@@ -46,7 +53,10 @@ def build_llm_provider(
         api_key=api_key,
         timeout_seconds=settings.llm.timeout_seconds,
         default_temperature=settings.llm.temperature,
-        default_max_tokens=settings.llm.max_tokens,
+        default_max_tokens=min(
+            settings.llm.max_tokens,
+            settings.limits.provider_output_tokens,
+        ),
     )
 
 
@@ -57,6 +67,7 @@ def build_dialogue_pipeline(
     llm_provider: LLMProvider | None = None,
     temp_registry: TempAssetRegistry | None = None,
 ) -> DialoguePipeline | None:
+    settings.validate_runtime_limits()
     llm = llm_provider or build_llm_provider(settings)
     if llm is None:
         return None
@@ -76,7 +87,25 @@ def build_dialogue_pipeline(
         explosion_cooldown=timedelta(seconds=settings.emotion.explosion_cooldown_seconds),
     )
     context_builder = EmotionPromptContextBuilder(
-        PromptBuilder(),
+        PromptBuilder(
+            budget=PromptBudget(
+                total_tokens=settings.limits.prompt_total_tokens,
+                system_tokens=settings.limits.prompt_system_tokens,
+                current_user_tokens=settings.limits.prompt_current_tokens,
+                history_tokens=settings.limits.prompt_history_tokens,
+                memory_tokens=settings.limits.prompt_memory_tokens,
+                screen_tokens=settings.limits.prompt_screen_tokens,
+                max_block_tokens=settings.limits.prompt_block_tokens,
+                provider_output_tokens=min(
+                    settings.llm.max_tokens,
+                    settings.limits.provider_output_tokens,
+                ),
+            ),
+            estimator=ProviderTokenEstimator(
+                provider=settings.llm.provider,
+                model=settings.llm.model,
+            ),
+        ),
         emotion_engine,
         clock,
         source=prompt_context_source,
@@ -103,6 +132,7 @@ def build_dialogue_pipeline(
         segment_min_chars=settings.pipeline.segment_min_chars,
         segment_max_chars=settings.pipeline.segment_max_chars,
         segment_max_words=settings.pipeline.segment_max_words,
+        limits=settings.limits,
     )
 
 
