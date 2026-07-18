@@ -125,25 +125,29 @@ DPAPI 密文不是可移植的凭据备份；换账户、换机或丢失原用�
 `uvicorn app.main:create_app --factory` 都不能得到可用 API；中间件还会拒绝真实来源不是
 数字 loopback 的 client peer。
 
-每次启动会在第一行输出新的随机 token、授权 session、精确 Origin allowlist 和一小时
+每次启动会在第一行输出新的随机 token、授权 client/session、精确 Origin allowlist 和一小时
 TTL；退出、过期或重启后旧 token 失效，已建立 WebSocket 也会在到期时关闭。默认 token
 只有 `chat` scope；确需调试状态、feature、memory、export 或 delete 时必须显式增加
 `--dev-admin`。不要把凭据行写入日志、
 issue 或 shell 历史；疑似暴露时直接重启轮换。
 
-HTTP 和 WebSocket 均要求以下五项，且 WebSocket 在 `accept` 前完成校验：
+HTTP 和 WebSocket 均要求以下六项，且 WebSocket 在 `accept` 前完成校验：
 
 - `Authorization: Bearer <本次启动 token>`
 - 精确匹配 allowlist 的 `Origin`
 - 精确匹配当前 loopback listener authority 的 `Host`
 - `X-Megumin-Protocol: 1`
+- `X-Megumin-Client-ID: <本次授权 client>`
 - `X-Megumin-Session-ID: <本次授权 session>`
 
-WebSocket 客户端只可订阅该 session，写入使用 protocol v1 envelope：
+WebSocket 客户端只可订阅该 client/session。连接后先发送 `session.resume`（首次连接的
+`last_seq` 为 0），再发送业务命令；写入使用最终 protocol v1 envelope：
 
 ```json
 {
   "protocol_version": 1,
+  "command_id": "command-unique-id",
+  "client_id": "<本次授权 client>",
   "type": "user.message",
   "session_id": "<本次授权 session>",
   "payload": {
@@ -152,6 +156,12 @@ WebSocket 客户端只可订阅该 session，写入使用 protocol v1 envelope�
   }
 }
 ```
+
+输出 event 带每 session 严格递增的 `seq` 和 `event_id`。服务保留 2,000 events/10 分钟；
+窗口内按 `last_seq` replay，窗口外返回 `session.reset` 与不含正文的权威 snapshot。
+同一 `(client_id, session_id, message_id)` 在终态保留窗口内返回原 turn；同键异文返回 409。
+终态固定保留不超过 24 小时且每 session 最多 200 个，因此客户端不得把超出该窗口的重试当作
+“保证不会重新执行”。
 
 HTTP body 和 WebSocket frame 在 JSON 解析前限制为 64 KiB；metadata 深度/键数、ID、
 客户端时间、请求速率、并发与 WebSocket 连接数也有硬上限。错误只返回稳定 code，

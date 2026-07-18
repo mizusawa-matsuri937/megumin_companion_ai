@@ -3,12 +3,19 @@
 from __future__ import annotations
 
 import sqlite3
+import threading
 import time
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from pathlib import Path
+from uuid import uuid4
 
-from app.storage.migrations.v001_initial import MIGRATIONS, Migration
+from app.storage.migrations.v001_initial import MIGRATIONS as INITIAL_MIGRATIONS
+from app.storage.migrations.v001_initial import Migration
+from app.storage.migrations.v002_idempotency import MIGRATION as IDEMPOTENCY_MIGRATION
+
+MIGRATIONS = (*INITIAL_MIGRATIONS, IDEMPOTENCY_MIGRATION)
+_INITIALIZE_LOCK = threading.Lock()
 
 
 class StorageError(RuntimeError):
@@ -50,8 +57,55 @@ class SQLiteDatabase:
             connection.close()
 
     def initialize(self) -> int:
-        with self.connect() as connection:
+        # The process-local lock covers the pre-migration backup and the schema write as
+        # one startup operation. Cross-process single-instance ownership is introduced
+        # later in W15; SQLite still serializes the schema transaction itself.
+        with _INITIALIZE_LOCK, self.connect() as connection:
+            current = _current_version(connection)
+            latest = MIGRATIONS[-1].version if MIGRATIONS else 0
+            if 0 < current < latest:
+                self._ensure_migration_backup(
+                    connection,
+                    from_version=current,
+                    to_version=latest,
+                )
             return apply_migrations(connection)
+
+    def _ensure_migration_backup(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        from_version: int,
+        to_version: int,
+    ) -> None:
+        if connection.in_transaction:
+            raise MigrationError("migration backup requires an idle connection")
+        backup_path = self.path.with_name(
+            f"{self.path.name}.pre-v{from_version}-to-v{to_version}.backup"
+        )
+        try:
+            connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            if backup_path.exists():
+                _verify_migration_backup(backup_path, expected_version=from_version)
+
+            temporary = backup_path.with_name(f".{backup_path.name}.{uuid4().hex}.tmp")
+            destination: sqlite3.Connection | None = None
+            try:
+                destination = sqlite3.connect(temporary, isolation_level=None)
+                connection.backup(destination)
+                destination.close()
+                destination = None
+                _verify_migration_backup(temporary, expected_version=from_version)
+                temporary.replace(backup_path)
+                _verify_migration_backup(backup_path, expected_version=from_version)
+            finally:
+                if destination is not None:
+                    destination.close()
+                temporary.unlink(missing_ok=True)
+        except (OSError, sqlite3.Error) as exc:
+            raise MigrationError(
+                f"migration backup v{from_version} to v{to_version} failed"
+            ) from exc
 
     def secure_cleanup(self, *, vacuum: bool = False) -> None:
         """Move committed deletes out of the WAL and optionally compact free pages."""
@@ -168,3 +222,19 @@ def _enable_wal(connection: sqlite3.Connection, *, busy_timeout_ms: int) -> None
             if "locked" not in str(exc).casefold() or time.monotonic() >= deadline:
                 raise
             time.sleep(0.01)
+
+
+def _verify_migration_backup(path: Path, *, expected_version: int) -> None:
+    try:
+        uri = f"{path.resolve().as_uri()}?mode=ro"
+        with closing(sqlite3.connect(uri, uri=True)) as connection:
+            integrity = connection.execute("PRAGMA quick_check").fetchone()
+            if integrity is None or str(integrity[0]) != "ok":
+                raise MigrationError("migration backup integrity check failed")
+            version = _current_version(connection)
+            if version != expected_version:
+                raise MigrationError(
+                    "migration backup schema version does not match the upgrade source"
+                )
+    except sqlite3.Error as exc:
+        raise MigrationError("migration backup verification failed") from exc

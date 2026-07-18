@@ -11,7 +11,7 @@ import pytest
 from app.api.security import DevAPIConfig, DevAPIScope
 from app.config import Settings
 from app.config.logging import log_event
-from app.config.settings import LoggingConfig
+from app.config.settings import LoggingConfig, StorageConfig
 from app.main import create_app
 from app.paths import AppPaths
 from fastapi import FastAPI
@@ -22,6 +22,7 @@ BASE_URL = "http://127.0.0.1:8765"
 WS_BASE_URL = "ws://127.0.0.1:8765"
 BASE_CONFIG = DevAPIConfig(
     token="w04-integration-token-00000000000000000000000",
+    client_id="client_w04_integration",
     session_id="session_w04_integration",
     allowed_origins=frozenset({BASE_URL}),
     allowed_hosts=frozenset({"127.0.0.1:8765"}),
@@ -35,7 +36,8 @@ def quiet_settings(root: Path, *, log_path: Path | None = None) -> Settings:
             console_enabled=False,
             file_enabled=log_path is not None,
             file_path=Path(log_path.name) if log_path is not None else Path("unused.jsonl"),
-        )
+        ),
+        storage=StorageConfig(enabled=True, database_path=Path("companion.sqlite3")),
     )
     settings._paths = AppPaths(root=root)
     return settings
@@ -73,6 +75,8 @@ def command(
 ) -> dict[str, object]:
     return {
         "protocol_version": 1,
+        "command_id": f"command-{command_type}-{id(payload)}",
+        "client_id": config.client_id,
         "type": command_type,
         "session_id": session_id or config.session_id,
         "payload": payload,
@@ -98,6 +102,7 @@ def test_factory_without_explicit_dev_api_credentials_is_locked(tmp_path: Path) 
         ({"Origin": "http://attacker.example"}, 403, "origin_forbidden"),
         ({"Host": "attacker.example"}, 403, "host_forbidden"),
         ({"X-Megumin-Protocol": "0"}, 426, "protocol_version_unsupported"),
+        ({"X-Megumin-Client-ID": "client_other"}, 403, "client_identity_forbidden"),
         ({"X-Megumin-Session-ID": "session_other"}, 403, "session_forbidden"),
     ],
 )
@@ -264,6 +269,7 @@ def test_http_rate_limit_is_enforced_with_stable_retry_header(tmp_path: Path) ->
         {"Authorization": "Bearer wrong-websocket-token"},
         {"Origin": "http://attacker.example"},
         {"X-Megumin-Protocol": "0"},
+        {"X-Megumin-Client-ID": "client_other"},
         {"X-Megumin-Session-ID": "session_other"},
     ],
 )
@@ -283,16 +289,15 @@ def test_websocket_handshake_rejects_attacker_before_accept(
         pass
 
 
-def test_websocket_protocol_v1_subscribes_only_authorized_session(tmp_path: Path) -> None:
+def test_websocket_protocol_v1_subscribes_only_authorized_identity(tmp_path: Path) -> None:
     application = secured_app(tmp_path / "app")
 
     with (
         client_for(application) as client,
         client.websocket_connect(f"{WS_BASE_URL}/ws/client") as websocket,
     ):
+        websocket.send_json(command(BASE_CONFIG, "session.resume", {"last_seq": 0}))
         service = application.state.turn_service
-        assert BASE_CONFIG.session_id in service._subscribers
-        assert "*" not in service._subscribers
         websocket.send_json(
             command(
                 BASE_CONFIG,
@@ -301,6 +306,7 @@ def test_websocket_protocol_v1_subscribes_only_authorized_session(tmp_path: Path
             )
         )
         accepted = websocket.receive_json()
+        assert (BASE_CONFIG.client_id, BASE_CONFIG.session_id) in service._subscribers
 
     assert accepted["protocol_version"] == 1
     assert accepted["type"] == "turn.accepted"
@@ -399,12 +405,15 @@ def test_security_logs_use_reason_codes_and_redact_runtime_credentials(tmp_path:
             application.state.logger,
             30,
             "synthetic.credential.redaction",
-            accidental_value=f"{BASE_CONFIG.token}:{BASE_CONFIG.session_id}",
+            accidental_value=(
+                f"{BASE_CONFIG.token}:{BASE_CONFIG.client_id}:{BASE_CONFIG.session_id}"
+            ),
         )
 
     content = log_path.read_text(encoding="utf-8")
     assert "origin_not_allowed" in content
     assert "attacker.example" not in content
     assert BASE_CONFIG.token not in content
+    assert BASE_CONFIG.client_id not in content
     assert BASE_CONFIG.session_id not in content
     assert "[REDACTED]" in content

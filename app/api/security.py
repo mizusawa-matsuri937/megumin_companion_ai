@@ -145,6 +145,7 @@ class DevAPIConfig:
     """Immutable process-local credential and hard transport limits."""
 
     token: str = field(repr=False)
+    client_id: str
     session_id: str
     allowed_origins: frozenset[str]
     allowed_hosts: frozenset[str]
@@ -171,10 +172,11 @@ class DevAPIConfig:
     def __post_init__(self) -> None:
         if len(self.token) < 32 or any(character.isspace() for character in self.token):
             raise ValueError("development API token must contain at least 32 non-space characters")
-        if not 1 <= len(self.session_id) <= 128 or any(
-            character not in _SESSION_ID_PATTERN for character in self.session_id
-        ):
-            raise ValueError("development API session id is invalid")
+        for label, value in (("client", self.client_id), ("session", self.session_id)):
+            if not 1 <= len(value) <= 128 or any(
+                character not in _SESSION_ID_PATTERN for character in value
+            ):
+                raise ValueError(f"development API {label} id is invalid")
         if self.protocol_version != DEV_API_PROTOCOL_VERSION:
             raise ValueError("unsupported development API protocol version")
         if not self.allowed_origins or not self.allowed_hosts or not self.scopes:
@@ -237,6 +239,7 @@ class DevAPIConfig:
             allowed_hosts.add(_format_authority(canonical_host, None))
         return cls(
             token=secrets.token_urlsafe(32),
+            client_id=f"client_{secrets.token_hex(16)}",
             session_id=f"session_{secrets.token_hex(16)}",
             allowed_origins=frozenset(selected_origins),
             allowed_hosts=frozenset(allowed_hosts),
@@ -250,6 +253,7 @@ class DevAPIConfig:
             "Authorization": f"Bearer {self.token}",
             "Origin": sorted(self.allowed_origins)[0],
             "X-Megumin-Protocol": str(self.protocol_version),
+            "X-Megumin-Client-ID": self.client_id,
             "X-Megumin-Session-ID": self.session_id,
         }
 
@@ -258,12 +262,17 @@ class DevAPIConfig:
 class DevAPIPrincipal:
     """Authenticated identity attached to one ASGI request scope."""
 
+    client_id: str
     session_id: str
     scopes: frozenset[DevAPIScope]
 
     @property
     def session_fingerprint(self) -> str:
         return hashlib.sha256(self.session_id.encode("ascii")).hexdigest()[:12]
+
+    @property
+    def client_fingerprint(self) -> str:
+        return hashlib.sha256(self.client_id.encode("ascii")).hexdigest()[:12]
 
 
 def _header_values(headers: Sequence[tuple[bytes, bytes]], name: bytes) -> list[str]:
@@ -340,6 +349,7 @@ class DevAPISecurity:
             "transport": transport,
         }
         if principal is not None:
+            fields["client_fingerprint"] = principal.client_fingerprint
             fields["session_fingerprint"] = principal.session_fingerprint
         log_event(self._logger, logging.WARNING, "dev_api.request_rejected", **fields)
 
@@ -424,6 +434,22 @@ class DevAPISecurity:
                 http_status=403,
             )
 
+        client_id = _single_header(
+            headers,
+            b"x-megumin-client-id",
+            missing_reason="client_identity_missing",
+            duplicate_reason="client_identity_duplicated",
+        )
+        if not secrets.compare_digest(
+            client_id.encode("utf-8"),
+            self.config.client_id.encode("utf-8"),
+        ):
+            raise DevAPISecurityError(
+                "client_identity_forbidden",
+                reason="client_identity_not_allowed",
+                http_status=403,
+            )
+
         session_id = _single_header(
             headers,
             b"x-megumin-session-id",
@@ -439,7 +465,11 @@ class DevAPISecurity:
                 reason="session_not_allowed",
                 http_status=403,
             )
-        return DevAPIPrincipal(session_id=self.config.session_id, scopes=self.config.scopes)
+        return DevAPIPrincipal(
+            client_id=self.config.client_id,
+            session_id=self.config.session_id,
+            scopes=self.config.scopes,
+        )
 
     def token_seconds_remaining(self) -> float:
         """Return the bounded lifetime left for this process-local credential."""
