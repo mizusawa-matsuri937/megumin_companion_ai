@@ -33,6 +33,7 @@ from fastapi.testclient import TestClient
 
 DEV_API = DevAPIConfig(
     token="integration-memory-token-000000000000000000000",
+    client_id="client_integration_memory",
     session_id="local_session",
     allowed_origins=frozenset({"http://127.0.0.1:8765"}),
     allowed_hosts=frozenset({"127.0.0.1:8765"}),
@@ -57,6 +58,8 @@ def secured_client(application: FastAPI) -> TestClient:
 def command(command_type: str, payload: dict[str, object]) -> dict[str, object]:
     return {
         "protocol_version": 1,
+        "command_id": f"command-{command_type}-{id(payload)}",
+        "client_id": DEV_API.client_id,
         "type": command_type,
         "session_id": DEV_API.session_id,
         "payload": payload,
@@ -149,6 +152,7 @@ def test_feature_memory_and_history_control_plane(tmp_path: Path) -> None:
         }
 
         with client.websocket_connect(f"{WS_BASE_URL}/ws/client") as websocket:
+            websocket.send_json(command("session.resume", {"last_seq": 0}))
             websocket.send_json(command("user.message", {"text": "请记住我喜欢红茶"}))
             while websocket.receive_json()["type"] != "assistant.completed":
                 pass
@@ -263,6 +267,7 @@ def test_opt_in_candidate_analysis_uses_owned_provider_and_successful_user_turn_
             == 200
         )
         with client.websocket_connect(f"{WS_BASE_URL}/ws/client") as websocket:
+            websocket.send_json(command("session.resume", {"last_seq": 0}))
             websocket.send_json(command("user.message", {"text": "我喜欢手冲咖啡"}))
             while websocket.receive_json()["type"] != "assistant.completed":
                 pass

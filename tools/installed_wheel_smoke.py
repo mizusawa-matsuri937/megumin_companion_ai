@@ -65,7 +65,7 @@ def _run_entry_point(name: str, *arguments: str, expected_return: int = 0) -> tu
 
 async def _health_payload(
     main_module: Any, dev_api_type: Any, httpx_module: Any
-) -> tuple[int, int, str]:
+) -> tuple[int, int, str, bool]:
     locked = main_module.create_app()
     locked_transport = httpx_module.ASGITransport(app=locked)
     async with httpx_module.AsyncClient(
@@ -76,6 +76,7 @@ async def _health_payload(
 
     dev_api = dev_api_type(
         token="installed-wheel-smoke-token-0000000000000000",
+        client_id="client_installed_wheel_smoke",
         session_id="session_installed_wheel_smoke",
         allowed_origins=frozenset({"http://127.0.0.1:8765"}),
         allowed_hosts=frozenset({"127.0.0.1:8765"}),
@@ -89,8 +90,34 @@ async def _health_payload(
             headers=dev_api.client_headers(),
         ) as client:
             response = await client.get("/health")
+            message = {
+                "message_id": "installed-wheel-idempotency-smoke",
+                "session_id": dev_api.session_id,
+                "text": "installed wheel idempotency smoke",
+            }
+            first = await client.post("/api/chat", json=message)
+            running_duplicate = await client.post("/api/chat", json=message)
+            await application.state.turn_service.wait_idle()
+            terminal_duplicate = await client.post("/api/chat", json=message)
+            conflict = await client.post(
+                "/api/chat",
+                json={**message, "text": "changed installed wheel idempotency smoke"},
+            )
     payload = response.json()
-    return locked_response.status_code, response.status_code, str(payload.get("status", ""))
+    states = (first.json(), running_duplicate.json(), terminal_duplicate.json())
+    idempotency_ok = (
+        first.status_code == running_duplicate.status_code == terminal_duplicate.status_code == 200
+        and len({str(state.get("turn_id", "")) for state in states}) == 1
+        and str(states[-1].get("status", "")) == "completed"
+        and conflict.status_code == 409
+        and conflict.json() == {"detail": "idempotency_conflict"}
+    )
+    return (
+        locked_response.status_code,
+        response.status_code,
+        str(payload.get("status", "")),
+        idempotency_ok,
+    )
 
 
 def main() -> int:
@@ -153,13 +180,15 @@ def main() -> int:
     if "desktop_unavailable" not in desktop_error:
         raise RuntimeError("installed desktop preflight output is unexpected")
 
-    locked_status, health_status, health_state = asyncio.run(
+    locked_status, health_status, health_state, idempotency_ok = asyncio.run(
         _health_payload(main_module, DevAPIConfig, httpx)
     )
     if locked_status != 503:
         raise RuntimeError("installed ASGI factory was not locked without --dev-api credentials")
     if health_status != 200 or health_state != "ready":
         raise RuntimeError("installed ASGI health smoke failed")
+    if not idempotency_ok:
+        raise RuntimeError("installed ASGI idempotency smoke failed")
     after_cwd = _snapshot_directory(current_directory)
     if after_cwd != before_cwd:
         raise RuntimeError("installed runtime wrote to the arbitrary current working directory")
@@ -173,6 +202,7 @@ def main() -> int:
                 "locked_health_status": locked_status,
                 "authenticated_health_status": health_status,
                 "authenticated_health_state": health_state,
+                "idempotent_chat": True,
                 "api_help": True,
                 "api_check_config": True,
                 "desktop_preflight": True,

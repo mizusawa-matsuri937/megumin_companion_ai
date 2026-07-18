@@ -12,11 +12,15 @@ from starlette.websockets import WebSocketDisconnect
 
 from app import __version__
 from app.api.protocol import (
+    CommandEnvelope,
     DevAPIProtocolError,
+    ensure_authorized_identity,
     ensure_authorized_session,
     error_envelope,
     event_envelope,
     parse_websocket_command,
+    reset_envelope,
+    snapshot_chunk_envelope,
     validate_user_message,
 )
 from app.api.security import (
@@ -28,6 +32,17 @@ from app.api.security import (
     security_from_scope,
 )
 from app.core import TurnService
+from app.core.idempotency import (
+    IdempotencyAccessError,
+    IdempotencyConflictError,
+    IdempotencyUnavailableError,
+)
+from app.core.turns import (
+    EventSubscription,
+    SlowConsumerError,
+    SubscriptionClosedError,
+    TurnAccessError,
+)
 from app.memory import (
     ConfirmationNotFoundError,
     CredentialRejectedError,
@@ -41,6 +56,9 @@ from app.schemas import (
     MemoryConfirmRequest,
     MemoryUpdateRequest,
     PipelineEvent,
+    SessionReset,
+    SessionResumeRequest,
+    SessionSnapshotChunk,
     TurnInterruptRequest,
     TurnState,
     UserMessage,
@@ -118,7 +136,14 @@ async def health(request: Request, _principal: ChatPrincipal) -> dict[str, str |
 @router.post("/api/chat", response_model=TurnState)
 async def chat(message: UserMessage, request: Request, principal: ChatPrincipal) -> TurnState:
     _validate_http_message(message, request, principal)
-    return await _turn_service(request).accept(message)
+    try:
+        return await _turn_service(request).accept(message, client_id=principal.client_id)
+    except IdempotencyConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except IdempotencyUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except IdempotencyAccessError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
 
 
 @router.post("/api/interrupt", response_model=TurnState | None)
@@ -131,10 +156,16 @@ async def interrupt(
         ensure_authorized_session(principal, payload.session_id)
     except DevAPIProtocolError as exc:
         raise HTTPException(status_code=403, detail=exc.code) from exc
-    return await _turn_service(request).cancel(
-        session_id=payload.session_id,
-        turn_id=payload.turn_id,
-    )
+    try:
+        return await _turn_service(request).cancel(
+            client_id=principal.client_id,
+            session_id=payload.session_id,
+            turn_id=payload.turn_id,
+        )
+    except (IdempotencyAccessError, TurnAccessError) as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except IdempotencyUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @router.get("/debug/state")
@@ -361,6 +392,39 @@ async def _close_websocket_when_token_expires(
         await websocket.close(code=1008, reason=exc.code)
 
 
+async def _coordinate_client_tasks(
+    websocket: WebSocket,
+    subscription: EventSubscription,
+    sender: asyncio.Task[None],
+    receiver: asyncio.Task[None],
+    expiry: asyncio.Task[None],
+) -> None:
+    """Cancel a blocked sender as soon as its bounded subscription closes."""
+
+    subscription_closed = asyncio.create_task(subscription.wait_closed())
+    done, pending = await asyncio.wait(
+        {sender, receiver, expiry, subscription_closed},
+        return_when=asyncio.FIRST_COMPLETED,
+    )
+    slow_consumer = False
+    if subscription_closed in done and not subscription_closed.cancelled():
+        slow_consumer = subscription_closed.result() == "slow_consumer"
+    if sender in done and not sender.cancelled():
+        exception = sender.exception()
+        slow_consumer = slow_consumer or isinstance(exception, SlowConsumerError)
+    for task in pending:
+        task.cancel()
+    await asyncio.gather(
+        sender,
+        receiver,
+        expiry,
+        subscription_closed,
+        return_exceptions=True,
+    )
+    if slow_consumer:
+        await websocket.close(code=1013, reason="slow_consumer")
+
+
 @router.websocket("/ws/echo")
 async def websocket_echo(websocket: WebSocket) -> None:
     admitted = await _admit_websocket(websocket, DevAPIScope.admin)
@@ -389,7 +453,8 @@ async def websocket_client(websocket: WebSocket) -> None:
         return
     principal, security = admitted
     service = _turn_service(websocket)
-    events = service.subscribe(principal.session_id)
+    events: EventSubscription | None = None
+    first_legacy_command: CommandEnvelope | None = None
     send_lock = asyncio.Lock()
 
     async def send(payload: dict[str, Any]) -> None:
@@ -411,28 +476,53 @@ async def websocket_client(websocket: WebSocket) -> None:
         await send(error_envelope(session_id=principal.session_id, code=code))
 
     async def send_events() -> None:
-        while True:
-            event: PipelineEvent = await events.get()
-            try:
-                await send(event_envelope(event))
-            finally:
-                events.task_done()
+        subscription = events
+        assert subscription is not None
+        try:
+            while True:
+                item = await subscription.get()
+                try:
+                    if isinstance(item, PipelineEvent):
+                        await send(event_envelope(item))
+                    elif isinstance(item, SessionReset):
+                        await send(reset_envelope(item))
+                    else:
+                        assert isinstance(item, SessionSnapshotChunk)
+                        await send(snapshot_chunk_envelope(item))
+                finally:
+                    subscription.task_done()
+        except SubscriptionClosedError:
+            return
 
     async def receive_commands() -> None:
+        nonlocal first_legacy_command
         while True:
-            frame = await _receive_bounded_frame(websocket, principal, security)
-            if frame is None:
-                return
-            if isinstance(frame, bytes):
-                await websocket.close(code=1003, reason="binary_commands_forbidden")
-                return
+            if first_legacy_command is not None:
+                envelope = first_legacy_command
+                first_legacy_command = None
+            else:
+                frame = await _receive_bounded_frame(websocket, principal, security)
+                if frame is None:
+                    return
+                if isinstance(frame, bytes):
+                    await websocket.close(code=1003, reason="binary_commands_forbidden")
+                    return
+                try:
+                    envelope = parse_websocket_command(
+                        frame,
+                        legacy_client_id=(
+                            principal.client_id if principal.legacy_protocol else None
+                        ),
+                    )
+                except DevAPIProtocolError as exc:
+                    await send_error(exc.code)
+                    continue
             try:
-                envelope = parse_websocket_command(frame)
-            except DevAPIProtocolError as exc:
-                await send_error(exc.code)
-                continue
-            try:
-                ensure_authorized_session(principal, envelope.session_id)
+                ensure_authorized_identity(
+                    principal,
+                    client_id=envelope.client_id,
+                    session_id=envelope.session_id,
+                )
             except DevAPIProtocolError as exc:
                 await send_error(exc.code)
                 await websocket.close(code=1008, reason=exc.code)
@@ -448,7 +538,16 @@ async def websocket_client(websocket: WebSocket) -> None:
                     await send_error(exc.code)
                     await websocket.close(code=1008, reason=exc.code)
                     return
-                await service.cancel(session_id=request.session_id, turn_id=request.turn_id)
+                try:
+                    await service.cancel(
+                        client_id=principal.client_id,
+                        session_id=request.session_id,
+                        turn_id=request.turn_id,
+                    )
+                except (IdempotencyAccessError, TurnAccessError) as exc:
+                    await send_error(str(exc))
+                except IdempotencyUnavailableError as exc:
+                    await send_error(str(exc))
                 continue
             if envelope.type != "user.message":
                 await send_error("unsupported_message_type")
@@ -465,23 +564,90 @@ async def websocket_client(websocket: WebSocket) -> None:
                     await websocket.close(code=1008, reason=exc.code)
                     return
                 continue
-            await service.accept(message)
+            try:
+                await service.accept(message, client_id=principal.client_id)
+            except (
+                IdempotencyAccessError,
+                IdempotencyConflictError,
+                IdempotencyUnavailableError,
+            ) as exc:
+                await send_error(str(exc))
 
     try:
+        while events is None:
+            frame = await _receive_bounded_frame(websocket, principal, security)
+            if frame is None:
+                return
+            if isinstance(frame, bytes):
+                await websocket.close(code=1003, reason="binary_commands_forbidden")
+                return
+            try:
+                envelope = parse_websocket_command(
+                    frame,
+                    legacy_client_id=(principal.client_id if principal.legacy_protocol else None),
+                )
+                ensure_authorized_identity(
+                    principal,
+                    client_id=envelope.client_id,
+                    session_id=envelope.session_id,
+                )
+            except DevAPIProtocolError as exc:
+                await send_error(exc.code)
+                if exc.code in {"client_identity_forbidden", "session_forbidden"}:
+                    await websocket.close(code=1008, reason=exc.code)
+                    return
+                continue
+            if envelope.legacy_protocol and envelope.type != "session.resume":
+                try:
+                    events = await service.subscribe(
+                        principal.session_id,
+                        client_id=principal.client_id,
+                        last_seq=0,
+                    )
+                except IdempotencyUnavailableError as exc:
+                    await send_error(str(exc))
+                    await websocket.close(code=1013, reason=str(exc))
+                    return
+                first_legacy_command = envelope
+                continue
+            if envelope.type != "session.resume":
+                await send_error("resume_required")
+                continue
+            try:
+                resume = SessionResumeRequest.model_validate(envelope.payload)
+            except ValidationError:
+                await send_error("invalid_session_resume")
+                continue
+            try:
+                events = await service.subscribe(
+                    principal.session_id,
+                    client_id=principal.client_id,
+                    last_seq=resume.last_seq,
+                )
+            except IdempotencyAccessError as exc:
+                await send_error(str(exc))
+                await websocket.close(code=1008, reason=str(exc))
+                return
+            except IdempotencyUnavailableError as exc:
+                await send_error(str(exc))
+                await websocket.close(code=1013, reason=str(exc))
+                return
+
         sender = asyncio.create_task(send_events())
         receiver = asyncio.create_task(receive_commands())
         expiry = asyncio.create_task(
             _close_websocket_when_token_expires(websocket, principal, security)
         )
-        _done, pending = await asyncio.wait(
-            {sender, receiver, expiry},
-            return_when=asyncio.FIRST_COMPLETED,
-        )
-        for task in pending:
-            task.cancel()
-        await asyncio.gather(sender, receiver, expiry, return_exceptions=True)
+        assert events is not None
+        await _coordinate_client_tasks(websocket, events, sender, receiver, expiry)
+    except SlowConsumerError:
+        await websocket.close(code=1013, reason="slow_consumer")
+        return
+    except SubscriptionClosedError:
+        return
     except (WebSocketDisconnect, asyncio.CancelledError):
         return
     finally:
-        service.unsubscribe(principal.session_id, events)
+        if events is not None:
+            service.unsubscribe(events)
         security.end_websocket()

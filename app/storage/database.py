@@ -2,13 +2,38 @@
 
 from __future__ import annotations
 
+import hashlib
 import sqlite3
+import threading
 import time
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
+from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from pathlib import Path
+from uuid import uuid4
 
-from app.storage.migrations.v001_initial import MIGRATIONS, Migration
+from app.storage.migrations.v001_initial import MIGRATIONS as INITIAL_MIGRATIONS
+from app.storage.migrations.v001_initial import Migration
+from app.storage.migrations.v002_idempotency import MIGRATION as IDEMPOTENCY_MIGRATION
+
+MIGRATIONS = (*INITIAL_MIGRATIONS, IDEMPOTENCY_MIGRATION)
+_INITIALIZE_LOCK = threading.Lock()
+
+
+@dataclass(frozen=True, slots=True)
+class MigrationBackup:
+    name: str
+    sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class MigrationAudit:
+    migration_id: str
+    from_version: int
+    to_version: int
+    started_at: str
+    backup: MigrationBackup | None = None
 
 
 class StorageError(RuntimeError):
@@ -50,8 +75,68 @@ class SQLiteDatabase:
             connection.close()
 
     def initialize(self) -> int:
-        with self.connect() as connection:
-            return apply_migrations(connection)
+        # The process-local lock covers the pre-migration backup and the schema write as
+        # one startup operation. Cross-process single-instance ownership is introduced
+        # later in W15; SQLite still serializes the schema transaction itself.
+        with _INITIALIZE_LOCK, self.connect() as connection:
+            current = _current_version(connection)
+            latest = MIGRATIONS[-1].version if MIGRATIONS else 0
+            audit = MigrationAudit(
+                migration_id=f"migration_{uuid4().hex}",
+                from_version=current,
+                to_version=latest,
+                started_at=_utc_timestamp(),
+            )
+            if 0 < current < latest:
+                audit = replace(
+                    audit,
+                    backup=self._ensure_migration_backup(
+                        connection,
+                        from_version=current,
+                        to_version=latest,
+                    ),
+                )
+            return apply_migrations(connection, audit=audit)
+
+    def _ensure_migration_backup(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        from_version: int,
+        to_version: int,
+    ) -> MigrationBackup:
+        if connection.in_transaction:
+            raise MigrationError("migration backup requires an idle connection")
+        backup_path = self.path.with_name(
+            f"{self.path.name}.pre-v{from_version}-to-v{to_version}.backup"
+        )
+        try:
+            connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            if backup_path.exists():
+                _verify_migration_backup(backup_path, expected_version=from_version)
+
+            temporary = backup_path.with_name(f".{backup_path.name}.{uuid4().hex}.tmp")
+            destination: sqlite3.Connection | None = None
+            try:
+                destination = sqlite3.connect(temporary, isolation_level=None)
+                connection.backup(destination)
+                destination.close()
+                destination = None
+                _verify_migration_backup(temporary, expected_version=from_version)
+                temporary.replace(backup_path)
+                _verify_migration_backup(backup_path, expected_version=from_version)
+            finally:
+                if destination is not None:
+                    destination.close()
+                temporary.unlink(missing_ok=True)
+            return MigrationBackup(
+                name=backup_path.name,
+                sha256=_sha256_file(backup_path),
+            )
+        except (OSError, sqlite3.Error) as exc:
+            raise MigrationError(
+                f"migration backup v{from_version} to v{to_version} failed"
+            ) from exc
 
     def secure_cleanup(self, *, vacuum: bool = False) -> None:
         """Move committed deletes out of the WAL and optionally compact free pages."""
@@ -88,6 +173,7 @@ def apply_migrations(
     connection: sqlite3.Connection,
     *,
     migrations: tuple[Migration, ...] = MIGRATIONS,
+    audit: MigrationAudit | None = None,
 ) -> int:
     """Apply ordered migrations statement-by-statement in rollback-safe transactions."""
 
@@ -103,6 +189,7 @@ def apply_migrations(
         # attempts therefore cannot both conclude that they own a version-zero database.
         with transaction(connection):
             current = _current_version(connection)
+            from_version = current
             if current > latest:
                 raise MigrationError(
                     f"database schema version {current} is newer than supported version {latest}"
@@ -127,6 +214,34 @@ def apply_migrations(
                     (migration.version, migration.name, migration.applied_at),
                 )
                 current = migration.version
+            if current > from_version and _table_exists(connection, "migration_audit"):
+                record = audit or MigrationAudit(
+                    migration_id=f"migration_{uuid4().hex}",
+                    from_version=from_version,
+                    to_version=current,
+                    started_at=_utc_timestamp(),
+                )
+                if record.from_version != from_version or record.to_version != current:
+                    raise MigrationError(
+                        "migration audit version range does not match schema write"
+                    )
+                connection.execute(
+                    """
+                    INSERT INTO migration_audit(
+                        migration_id, from_version, to_version, started_at, completed_at,
+                        backup_name, backup_sha256
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        record.migration_id,
+                        record.from_version,
+                        record.to_version,
+                        record.started_at,
+                        _utc_timestamp(),
+                        record.backup.name if record.backup is not None else None,
+                        record.backup.sha256 if record.backup is not None else None,
+                    ),
+                )
     except sqlite3.Error as exc:
         label = (
             f"migration {active.version} ({active.name})"
@@ -146,6 +261,16 @@ def _current_version(connection: sqlite3.Connection) -> int:
     row = connection.execute("SELECT COALESCE(MAX(version), 0) FROM schema_migrations").fetchone()
     assert row is not None
     return int(row[0])
+
+
+def _table_exists(connection: sqlite3.Connection, name: str) -> bool:
+    return (
+        connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+            (name,),
+        ).fetchone()
+        is not None
+    )
 
 
 def _user_tables(connection: sqlite3.Connection) -> set[str]:
@@ -168,3 +293,31 @@ def _enable_wal(connection: sqlite3.Connection, *, busy_timeout_ms: int) -> None
             if "locked" not in str(exc).casefold() or time.monotonic() >= deadline:
                 raise
             time.sleep(0.01)
+
+
+def _verify_migration_backup(path: Path, *, expected_version: int) -> None:
+    try:
+        uri = f"{path.resolve().as_uri()}?mode=ro"
+        with closing(sqlite3.connect(uri, uri=True)) as connection:
+            integrity = connection.execute("PRAGMA quick_check").fetchone()
+            if integrity is None or str(integrity[0]) != "ok":
+                raise MigrationError("migration backup integrity check failed")
+            version = _current_version(connection)
+            if version != expected_version:
+                raise MigrationError(
+                    "migration backup schema version does not match the upgrade source"
+                )
+    except sqlite3.Error as exc:
+        raise MigrationError("migration backup verification failed") from exc
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _utc_timestamp() -> str:
+    return datetime.now(UTC).isoformat(timespec="microseconds").replace("+00:00", "Z")

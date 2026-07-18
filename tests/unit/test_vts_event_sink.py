@@ -36,6 +36,7 @@ class FakeBridge:
 
 def event(event_type: str, payload: dict[str, object]) -> PipelineEvent:
     return PipelineEvent(
+        seq=1,
         type=event_type,
         turn_id="turn_test",
         session_id="session_test",

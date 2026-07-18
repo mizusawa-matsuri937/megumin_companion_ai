@@ -24,10 +24,13 @@ from app.clients.llm.base import LLMProvider
 from app.config import Settings, load_settings
 from app.config.logging import configure_logging, log_event
 from app.core import TurnService
+from app.core.idempotency import UnavailableIdempotencyStore
 from app.memory.analyzer import LLMMemoryCandidateAnalyzer
 from app.memory.runtime import MemoryRuntime, create_memory_runtime
 from app.proactive import ProactivePolicy, ProactiveRuntime
 from app.runtime_storage import prepare_runtime_storage
+from app.schemas import utc_now
+from app.storage import SQLiteIdempotencyStore
 
 
 async def _settle_resource_close(
@@ -71,7 +74,9 @@ def create_app(
         runtime_storage = prepare_runtime_storage(resolved_settings.paths)
         logger = configure_logging(
             resolved_settings,
-            additional_secrets=(dev_api.token, dev_api.session_id) if dev_api is not None else (),
+            additional_secrets=(dev_api.token, dev_api.client_id, dev_api.session_id)
+            if dev_api is not None
+            else (),
         )
         if dev_api_security is not None:
             dev_api_security.set_logger(logger)
@@ -80,6 +85,7 @@ def create_app(
         app.state.memory_runtime = None
         app.state.proactive_runtime = None
         app.state.turn_service = None
+        app.state.idempotency_store = None
         app.state.temp_asset_registry = runtime_storage.temp_registry
         standalone_analyzer_provider: LLMProvider | None = None
         try:
@@ -104,6 +110,14 @@ def create_app(
                 )
                 standalone_analyzer_provider = None
             app.state.memory_runtime = memory_runtime
+            idempotency_store = (
+                SQLiteIdempotencyStore(memory_runtime.database)
+                if memory_runtime is not None
+                else UnavailableIdempotencyStore()
+            )
+            if memory_runtime is not None:
+                await idempotency_store.recover_incomplete(now=utc_now())
+            app.state.idempotency_store = idempotency_store
             proactive_runtime = (
                 ProactiveRuntime(
                     memory_runtime.features,
@@ -145,6 +159,7 @@ def create_app(
                 observers=observers,
                 event_sinks=event_sinks,
                 priority_controller=proactive_runtime,
+                idempotency_store=idempotency_store,
             )
             app.state.turn_service = turn_service
             if proactive_runtime is not None:

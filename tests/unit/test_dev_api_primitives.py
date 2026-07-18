@@ -11,12 +11,13 @@ from typing import cast
 import pytest
 from app.api.protocol import (
     DevAPIProtocolError,
+    ensure_authorized_identity,
     ensure_authorized_session,
     parse_websocket_command,
     validate_metadata,
     validate_user_message,
 )
-from app.api.routes import _close_websocket_when_token_expires
+from app.api.routes import _close_websocket_when_token_expires, _coordinate_client_tasks
 from app.api.security import (
     DEV_API_MAX_BODY_BYTES,
     DEV_API_MAX_FRAME_BYTES,
@@ -33,7 +34,8 @@ from app.api.security import (
     json_nesting_exceeds,
     validate_loopback_host,
 )
-from app.schemas import UserMessage
+from app.core.turns import EventSubscription
+from app.schemas import PipelineEvent, UserMessage
 from starlette.types import Message, Receive, Scope, Send
 from starlette.websockets import WebSocket
 
@@ -43,6 +45,7 @@ TOKEN = "w04-test-token-00000000000000000000000000000000"
 def security_config(**updates: object) -> DevAPIConfig:
     base = DevAPIConfig(
         token=TOKEN,
+        client_id="client_w04_test",
         session_id="session_w04_test",
         allowed_origins=frozenset({"http://127.0.0.1:8765"}),
         allowed_hosts=frozenset({"127.0.0.1:8765"}),
@@ -57,6 +60,7 @@ def raw_headers(config: DevAPIConfig, **updates: str | None) -> list[tuple[bytes
         "origin": sorted(config.allowed_origins)[0],
         "host": sorted(config.allowed_hosts)[0],
         "x-megumin-protocol": str(config.protocol_version),
+        "x-megumin-client-id": config.client_id,
         "x-megumin-session-id": config.session_id,
     }
     for key, value in updates.items():
@@ -72,6 +76,7 @@ def test_generated_credentials_are_random_loopback_bound_and_repr_safe() -> None
     second = DevAPIConfig.generate(host="127.0.0.2", port=9011)
 
     assert first.token != second.token
+    assert first.client_id != second.client_id
     assert first.session_id != second.session_id
     assert first.allowed_hosts == frozenset({"127.0.0.2:9011"})
     assert first.allowed_origins == frozenset({"http://127.0.0.2:9011"})
@@ -140,6 +145,7 @@ def test_authorize_accepts_only_the_bound_credential() -> None:
     principal = security.authorize(raw_headers(config))
 
     assert principal.session_id == config.session_id
+    assert principal.client_id == config.client_id
     assert principal.scopes == frozenset({DevAPIScope.chat})
     assert config.session_id not in principal.session_fingerprint
 
@@ -153,6 +159,7 @@ def test_authorize_accepts_only_the_bound_credential() -> None:
         ({"origin": "http://attacker.example"}, 403, "origin_forbidden"),
         ({"host": "attacker.example"}, 403, "host_forbidden"),
         ({"x-megumin-protocol": "0"}, 426, "protocol_version_unsupported"),
+        ({"x-megumin-client-id": "client_other"}, 403, "client_identity_forbidden"),
         ({"x-megumin-session-id": "session_other"}, 403, "session_forbidden"),
         ({"x-megumin-session-id": "é"}, 403, "session_forbidden"),
     ],
@@ -222,7 +229,7 @@ def test_idle_websocket_is_closed_when_token_expires() -> None:
 
     config = security_config()
     security = DevAPISecurity(config, clock=lambda: 3700.0)
-    principal = DevAPIPrincipal(config.session_id, config.scopes)
+    principal = DevAPIPrincipal(config.client_id, config.session_id, config.scopes)
     websocket = RecordingWebSocket()
 
     asyncio.run(
@@ -337,7 +344,7 @@ def test_metadata_limits_cover_depth_aggregate_keys_and_nodes() -> None:
 
 def test_user_message_requires_authorized_session_fresh_time_and_bounded_metadata() -> None:
     config = security_config()
-    principal = DevAPIPrincipal(config.session_id, config.scopes)
+    principal = DevAPIPrincipal(config.client_id, config.session_id, config.scopes)
     now = datetime(2026, 7, 17, 12, 0, tzinfo=UTC)
     valid = UserMessage(text="hello", session_id=config.session_id, created_at=now)
     validate_user_message(valid, principal, config, now=now)
@@ -352,27 +359,117 @@ def test_user_message_requires_authorized_session_fresh_time_and_bounded_metadat
 
     with pytest.raises(DevAPIProtocolError, match="session_forbidden"):
         ensure_authorized_session(principal, "会话_other")
+    with pytest.raises(DevAPIProtocolError, match="client_identity_forbidden"):
+        ensure_authorized_identity(
+            principal,
+            client_id="client_other",
+            session_id=config.session_id,
+        )
 
 
-def test_websocket_command_parser_requires_protocol_v1_object_envelope() -> None:
+def test_websocket_command_parser_supports_authenticated_w04_transition_shape() -> None:
     valid = parse_websocket_command(
+        '{"protocol_version":1,"command_id":"command-1",'
+        '"client_id":"client_w04_test","type":"user.message",'
+        '"session_id":"session_w04_test","payload":{"text":"hello"}}',
+        now=datetime(2026, 7, 18, 12, tzinfo=UTC),
+    )
+    assert valid.protocol_version == 1
+    assert valid.received_at == datetime(2026, 7, 18, 12, tzinfo=UTC)
+
+    legacy_text = (
         '{"protocol_version":1,"type":"user.message",'
         '"session_id":"session_w04_test","payload":{"text":"hello"}}'
     )
-    assert valid.protocol_version == 1
+    with pytest.raises(DevAPIProtocolError, match="invalid_command_envelope"):
+        parse_websocket_command(legacy_text)
+    legacy = parse_websocket_command(
+        legacy_text,
+        legacy_client_id="client_w04_test",
+        now=datetime(2026, 7, 18, 12, tzinfo=UTC),
+    )
+    assert legacy.legacy_protocol
+    assert legacy.client_id == "client_w04_test"
+    assert legacy.command_id.startswith("legacy_")
 
     for value in (
         "[]",
-        '{"protocol_version":0,"type":"user.message","session_id":"session_w04_test","payload":{}}',
-        '{"protocol_version":1,"type":"user.message",'
-        '"session_id":"session_w04_test","payload":{},"extra":true}',
-        '{"protocol_version":1,"type":"user.message",'
-        '"session_id":"session_w04_test","payload":{"n":NaN}}',
-        '{"protocol_version":1,"type":"user.message","type":"turn.cancel",'
+        '{"protocol_version":0,"command_id":"old","client_id":"client_w04_test",'
+        '"type":"user.message","session_id":"session_w04_test","payload":{}}',
+        '{"protocol_version":1,"command_id":"extra","client_id":"client_w04_test",'
+        '"type":"user.message","session_id":"session_w04_test",'
+        '"payload":{},"extra":true}',
+        '{"protocol_version":1,"command_id":"nan","client_id":"client_w04_test",'
+        '"type":"user.message","session_id":"session_w04_test","payload":{"n":NaN}}',
+        '{"protocol_version":1,"command_id":"duplicate","client_id":"client_w04_test",'
+        '"type":"user.message","type":"turn.cancel",'
         '"session_id":"session_w04_test","payload":{}}',
     ):
         with pytest.raises(DevAPIProtocolError, match="invalid_command_envelope"):
             parse_websocket_command(value)
+
+
+def test_slow_subscription_cancels_blocked_sender_before_websocket_close() -> None:
+    async def scenario() -> None:
+        class RecordingWebSocket:
+            def __init__(self) -> None:
+                self.closed: tuple[int, str] | None = None
+
+            async def close(self, *, code: int, reason: str) -> None:
+                self.closed = (code, reason)
+
+        websocket = RecordingWebSocket()
+        subscription = EventSubscription(
+            "client_w04_test",
+            "session_w04_test",
+            maxsize=1,
+        )
+        sender_started = asyncio.Event()
+        sender_cancelled = asyncio.Event()
+
+        async def blocked_sender() -> None:
+            sender_started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                sender_cancelled.set()
+
+        async def blocked_peer() -> None:
+            await asyncio.Event().wait()
+
+        sender = asyncio.create_task(blocked_sender())
+        receiver = asyncio.create_task(blocked_peer())
+        expiry = asyncio.create_task(blocked_peer())
+        coordinating = asyncio.create_task(
+            _coordinate_client_tasks(
+                cast(WebSocket, websocket),
+                subscription,
+                sender,
+                receiver,
+                expiry,
+            )
+        )
+        await sender_started.wait()
+        assert subscription.offer(
+            PipelineEvent(
+                seq=1,
+                type="turn.accepted",
+                session_id="session_w04_test",
+            )
+        )
+        assert not subscription.offer(
+            PipelineEvent(
+                seq=2,
+                type="turn.cancelled",
+                session_id="session_w04_test",
+            )
+        )
+
+        await asyncio.wait_for(coordinating, timeout=0.5)
+        assert sender_cancelled.is_set()
+        assert websocket.closed == (1013, "slow_consumer")
+
+    asyncio.run(scenario())
 
 
 def test_streamed_http_body_is_rejected_before_downstream_json_parser() -> None:

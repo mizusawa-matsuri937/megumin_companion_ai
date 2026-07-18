@@ -116,14 +116,14 @@ class AudioResult(ContractModel):
 
 
 class TurnState(ContractModel):
-    turn_id: str = Field(default_factory=lambda: prefixed_id("turn"), min_length=1)
-    session_id: str = Field(min_length=1)
-    source_message_id: str = Field(min_length=1)
+    turn_id: str = Field(default_factory=lambda: prefixed_id("turn"), min_length=1, max_length=128)
+    session_id: str = Field(min_length=1, max_length=128)
+    source_message_id: str = Field(min_length=1, max_length=128)
     input_mode: InputMode
     status: TurnStatus = TurnStatus.accepted
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
-    error_code: str | None = None
+    error_code: str | None = Field(default=None, min_length=1, max_length=128)
 
 
 class TurnMetrics(ContractModel):
@@ -141,13 +141,56 @@ class TurnMetrics(ContractModel):
 
 
 class PipelineEvent(ContractModel):
-    """Event sent to a local client while a turn is running."""
+    """One original event in a session's monotonic replay stream."""
 
+    seq: int = Field(ge=1)
+    event_id: str = Field(
+        default_factory=lambda: prefixed_id("event"), min_length=1, max_length=128
+    )
     type: str = Field(min_length=1)
-    turn_id: str = Field(min_length=1)
+    turn_id: str | None = Field(default=None, min_length=1, max_length=128)
     session_id: str = Field(min_length=1)
     payload: dict[str, Any] = Field(default_factory=dict)
-    created_at: datetime = Field(default_factory=utc_now)
+    emitted_at: datetime = Field(default_factory=utc_now)
+
+
+class SessionSnapshot(ContractModel):
+    """Bounded manifest for a chunked, body-free authoritative snapshot."""
+
+    session_id: str = Field(min_length=1, max_length=128)
+    last_seq: int = Field(ge=0)
+    active_turn_ids: list[str] = Field(default_factory=list, max_length=1)
+    turn_count: int = Field(ge=0, le=201)
+    chunk_count: int = Field(ge=0, le=5)
+
+
+class SessionReset(ContractModel):
+    """Out-of-band marker used when replay continuity cannot be proven."""
+
+    type: Literal["session.reset"] = "session.reset"
+    reset_id: str = Field(
+        default_factory=lambda: prefixed_id("reset"), min_length=1, max_length=128
+    )
+    session_id: str = Field(min_length=1, max_length=128)
+    reason: Literal["replay_gap"] = "replay_gap"
+    requested_last_seq: int = Field(ge=0)
+    reset_to_seq: int = Field(ge=0)
+    snapshot: SessionSnapshot
+
+
+class SessionSnapshotChunk(ContractModel):
+    """One bounded part of a reset snapshot; chunks are not replay events."""
+
+    type: Literal["session.snapshot.chunk"] = "session.snapshot.chunk"
+    reset_id: str = Field(min_length=1, max_length=128)
+    session_id: str = Field(min_length=1, max_length=128)
+    chunk_index: int = Field(ge=0, le=4)
+    chunk_count: int = Field(ge=1, le=5)
+    turns: list[TurnState] = Field(min_length=1, max_length=50)
+
+
+class SessionResumeRequest(ContractModel):
+    last_seq: int = Field(default=0, ge=0, le=9_223_372_036_854_775_807)
 
 
 class TurnInterruptRequest(ContractModel):

@@ -6,6 +6,7 @@ from app.storage.database import (
     StorageConflictError,
     StorageError,
 )
+from app.storage.idempotency import SQLiteIdempotencyStore
 from app.storage.records import ConversationOrigin, ConversationRecord, ConversationRole
 from app.storage.repositories import (
     ConversationRepository,
@@ -22,6 +23,7 @@ __all__ = [
     "MemoryRepository",
     "MigrationError",
     "SQLiteDatabase",
+    "SQLiteIdempotencyStore",
     "StorageConflictError",
     "StorageError",
 ]

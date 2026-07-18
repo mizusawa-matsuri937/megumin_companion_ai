@@ -185,7 +185,7 @@ def logger() -> logging.Logger:
 
 
 async def receive_type(
-    queue: asyncio.Queue[Any],
+    queue: Any,
     event_type: str,
 ) -> Any:
     while True:
@@ -208,14 +208,14 @@ def test_success_records_safe_outcome_and_observers_are_isolated() -> None:
             observers=(bad, good),
             event_sinks=(bad_sink, good_sink),
         )
-        queue = service.subscribe("session-a")
-        wildcard = service.subscribe("*")
+        queue = await service.subscribe("session-a")
+        mirror = await service.subscribe("session-a")
 
         state = await service.accept(UserMessage(text="你好", session_id="session-a"))
         event = await receive_type(queue, "assistant.completed")
-        wildcard_event = await receive_type(wildcard, "assistant.completed")
+        mirror_event = await receive_type(mirror, "assistant.completed")
 
-        assert event.turn_id == state.turn_id == wildcard_event.turn_id
+        assert event.turn_id == state.turn_id == mirror_event.turn_id
         assert service.snapshot()["turns"][state.turn_id]["status"] == "completed"
         assert service.snapshot()["metrics"][state.turn_id]["turn_total_ms"] == 1
         assert service.snapshot()["outcomes"][state.turn_id] == {
@@ -228,11 +228,11 @@ def test_success_records_safe_outcome_and_observers_are_isolated() -> None:
         assert good_sink.events[0] == "turn.accepted"
         assert good_sink.events[-1] == "assistant.completed"
 
-        service.unsubscribe("session-a", queue)
-        service.unsubscribe("session-a", queue)
-        service.unsubscribe("*", wildcard)
+        service.unsubscribe(queue)
+        service.unsubscribe(queue)
+        service.unsubscribe(mirror)
         assert service.snapshot()["subscriber_count"] == 0
-        assert (await service.cancel(turn_id=state.turn_id)) is not None
+        assert (await service.cancel(session_id="session-a", turn_id=state.turn_id)) is not None
         await service.shutdown()
         await service.shutdown()
         assert pipeline.closed
@@ -254,7 +254,7 @@ def test_success_records_safe_outcome_and_observers_are_isolated() -> None:
 def test_failure_codes_are_safe_and_terminal(failure: Exception, expected: str) -> None:
     async def scenario() -> None:
         service = TurnService(logger(), ControllablePipeline(failure=failure))
-        queue = service.subscribe("local_session")
+        queue = await service.subscribe("local_session")
         state = await service.accept(UserMessage(text="触发失败"))
         event = await receive_type(queue, "turn.failed")
 
@@ -269,7 +269,7 @@ def test_failure_codes_are_safe_and_terminal(failure: Exception, expected: str) 
 def test_cancel_without_pipeline_and_unknown_turns() -> None:
     async def scenario() -> None:
         service = TurnService(logger())
-        queue = service.subscribe("local_session")
+        queue = await service.subscribe("local_session")
         state = await service.accept(UserMessage(text="只接受，不运行"))
         cancelled = await service.cancel(turn_id=state.turn_id)
 
@@ -286,7 +286,7 @@ def test_cancel_active_pipeline_and_shutdown_cleanup() -> None:
     async def scenario() -> None:
         pipeline = ControllablePipeline(wait_forever=True)
         service = TurnService(logger(), pipeline)
-        queue = service.subscribe("local_session")
+        queue = await service.subscribe("local_session")
         state = await service.accept(UserMessage(text="长任务"))
         await pipeline.started.wait()
         cancelled = await service.cancel(turn_id=state.turn_id, reason="test")
@@ -309,7 +309,7 @@ def test_interrupt_during_acceptance_does_not_wait_for_observer() -> None:
         pipeline = ControllablePipeline(wait_forever=True)
         observer = GatedObserver()
         service = TurnService(logger(), pipeline, observers=(observer,))
-        queue = service.subscribe("local_session")
+        queue = await service.subscribe("local_session")
 
         accepting = asyncio.create_task(service.accept(UserMessage(text="原子注册")))
         accepted = await receive_type(queue, "turn.accepted")
@@ -342,7 +342,7 @@ def test_cancelling_acceptance_cleans_registered_state_and_priority() -> None:
             observers=(observer,),
             priority_controller=priority,
         )
-        queue = service.subscribe("local_session")
+        queue = await service.subscribe("local_session")
         accepting = asyncio.create_task(service.accept(UserMessage(text="取消接受过程")))
         accepted = await receive_type(queue, "turn.accepted")
         await observer.entered.wait()
@@ -355,7 +355,8 @@ def test_cancelling_acceptance_cleans_registered_state_and_priority() -> None:
         assert snapshot["turns"][accepted.turn_id]["status"] == "cancelled"
         assert snapshot["active_turns"] == []
         assert priority.active == set()
-        assert await service.cancel(session_id="local_session") is None
+        repeated = await service.cancel(session_id="local_session")
+        assert repeated is not None and repeated.status is TurnStatus.cancelled
         await service.shutdown()
 
     asyncio.run(scenario())
@@ -495,7 +496,7 @@ def test_completion_observer_can_reenter_cancel_without_deadlock() -> None:
 
         observer = CancellingObserver()
         service = TurnService(logger(), ControllablePipeline(), observers=(observer,))
-        queue = service.subscribe("local_session")
+        queue = await service.subscribe("local_session")
         state = await service.accept(UserMessage(text="完成后重入"))
         await receive_type(queue, "assistant.completed")
 
@@ -612,10 +613,11 @@ def test_completion_observer_can_reenter_accept_without_self_join() -> None:
 
         observer = ReentrantObserver()
         service = TurnService(logger(), ControllablePipeline(), observers=(observer,))
-        queue = service.subscribe("*")
+        queue = await service.subscribe("first-session")
         first = await service.accept(UserMessage(text="第一轮", session_id="first-session"))
         await receive_type(queue, "assistant.completed")
-        await receive_type(queue, "assistant.completed")
+        nested_queue = await service.subscribe("nested-session")
+        await receive_type(nested_queue, "assistant.completed")
 
         assert observer.reentered
         assert service.snapshot()["turns"][first.turn_id]["status"] == "completed"
@@ -663,7 +665,7 @@ def test_proactive_turn_uses_the_same_direct_cancel_registry(cancel_by_id: bool)
     async def scenario() -> None:
         pipeline = ControllablePipeline(wait_forever=True)
         service = TurnService(logger(), pipeline)
-        queue = service.subscribe("local_session")
+        queue = await service.subscribe("local_session")
         token = CancellationToken("proactive-direct-cancel")
         proactive = asyncio.create_task(
             service.run_proactive(

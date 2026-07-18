@@ -65,6 +65,7 @@ def _verify_websocket(
     *,
     port: int,
     headers: dict[str, str],
+    client_id: str,
     session_id: str,
 ) -> None:
     uri = f"ws://{HOST}:{port}/ws/client"
@@ -80,6 +81,21 @@ def _verify_websocket(
             json.dumps(
                 {
                     "protocol_version": 1,
+                    "command_id": "w04-smoke-resume",
+                    "client_id": client_id,
+                    "type": "session.resume",
+                    "session_id": session_id,
+                    "payload": {"last_seq": 0},
+                },
+                separators=(",", ":"),
+            )
+        )
+        websocket.send(
+            json.dumps(
+                {
+                    "protocol_version": 1,
+                    "command_id": "w04-smoke-message",
+                    "client_id": client_id,
                     "type": "user.message",
                     "session_id": session_id,
                     "payload": {
@@ -151,6 +167,7 @@ def main() -> int:
         creationflags=creation_flags,
     )
     token = ""
+    client_id = ""
     session_id = ""
     private_attack_value = "w04-private-attack-sentinel"
     remaining_stdout = ""
@@ -160,6 +177,7 @@ def main() -> int:
         credential_line = process.stdout.readline()
         credential = json.loads(credential_line)
         token = str(credential["token"])
+        client_id = str(credential["client_id"])
         session_id = str(credential["session_id"])
         origin = str(credential["allowed_origins"][0])
         if credential.get("scopes") != ["chat"]:
@@ -168,6 +186,7 @@ def main() -> int:
             "Authorization": f"Bearer {token}",
             "Origin": origin,
             "X-Megumin-Protocol": "1",
+            "X-Megumin-Client-ID": client_id,
             "X-Megumin-Session-ID": session_id,
         }
         base_url = f"http://{HOST}:{port}"
@@ -197,7 +216,12 @@ def main() -> int:
             if oversized.status_code != 413:
                 raise RuntimeError("oversized HTTP body was accepted")
 
-        _verify_websocket(port=port, headers=headers, session_id=session_id)
+        _verify_websocket(
+            port=port,
+            headers=headers,
+            client_id=client_id,
+            session_id=session_id,
+        )
     finally:
         if process.poll() is None:
             process.terminate()
