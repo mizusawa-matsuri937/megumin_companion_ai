@@ -118,6 +118,8 @@ ACL，不上传、不进入诊断包。本 PR 不自动删除该回滚副本：�
 ## 自动验证矩阵
 
 - 32/128 路并发 duplicate，accepted/running/terminal duplicate、断线重发、同键异文；
+- 两个独立 `TurnService` 共享 SQLite 时，持久层终态压过等时间戳的过期 running cache；该确定性
+  回归与 128 路跨服务竞争各重复 20 轮，未出现第二次副作用或终态回退；
 - provider/TTS/playback/VTS/accepted observer/completed observer 调用计数恰为一次；
 - cancel race、重复 cancel、disconnect/replay/preemption 顺序；
 - 10,000 turns、200/24 小时 TTL/LRU、2,000/10 分钟 replay 平台；
@@ -132,15 +134,15 @@ ACL，不上传、不进入诊断包。本 PR 不自动删除该回滚副本：�
 
 修复内容提交前的本地 Windows 自动证据（提交后仍需核对 exact head，且不代替远端 runner）：
 
-- `uv run pytest`：698 passed、2 个既有可选 RapidOCR/Pillow 依赖 skip，aggregate branch coverage
+- `uv run pytest`：699 passed、2 个既有可选 RapidOCR/Pillow 依赖 skip，aggregate branch coverage
   90.33%，满足 90% 门槛；
 - `uv run ruff check .`、`uv run ruff format --check .`、strict `uv run mypy`、`git diff --check`
   全部通过；mypy 检查 164 个 source file；
 - 本机真实 loopback HTTP/WebSocket smoke 通过 auth/origin/64 KiB/1009/resume/port release；
 - 仓库外隔离安装 wheel smoke 通过，`idempotent_chat=true`、source-tree import=false、arbitrary CWD
   unchanged；wheel 105 members，raw SHA-256
-  `a8f62d65b33cf9dfcabd4ad8b7843ac578f23226d77b78f00391d0f18ae47466`，member manifest SHA-256
-  `83eb669c1b42be2bd70c44fbbdadb9da0983a80f3283d09642401d8f9b54ebce`；
+  `2858184093095358dddff926f8a6e88cabd7759b3ab2941868bf4355a026c711`，member manifest SHA-256
+  `a1adcb610be7dc741bba2d519bfc4d81b24a5085e9b0338a260b64ba43dfff10`；
 - wheel/runtime 使用 Mock provider；这些证据不是远端 Windows/macOS CI、真实 TTS/VTS/设备或人工签字。
 
 最终 exact head/diff 和 PR CI URL 只在修复提交、推送及远端 CI 完成后记录，避免把中间工作树证据冒充

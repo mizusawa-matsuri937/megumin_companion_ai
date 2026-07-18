@@ -244,6 +244,47 @@ def test_two_services_share_one_sqlite_claim_without_duplicate_side_effects(
     asyncio.run(scenario())
 
 
+def test_persisted_terminal_beats_equal_timestamp_streaming_cache_across_services(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        database = SQLiteDatabase(tmp_path / "terminal-dominance.sqlite3")
+        database.initialize()
+        clock = MutableClock()
+        winner_pipeline = SideEffectPipeline(wait=True)
+        loser_pipeline = SideEffectPipeline()
+        winner = TurnService(
+            _logger(),
+            winner_pipeline,
+            idempotency_store=SQLiteIdempotencyStore(database),
+            clock=clock,
+        )
+        loser = TurnService(
+            _logger(),
+            loser_pipeline,
+            idempotency_store=SQLiteIdempotencyStore(database),
+            clock=clock,
+        )
+        message = _message()
+
+        original = await winner.accept(message, client_id="client-w06")
+        cached = await loser.accept(message, client_id="client-w06")
+        assert cached.turn_id == original.turn_id
+        assert cached.status is TurnStatus.streaming
+
+        winner_pipeline.release.set()
+        await winner.wait_idle()
+        terminal = await loser.accept(message, client_id="client-w06")
+
+        assert terminal.turn_id == original.turn_id
+        assert terminal.status is TurnStatus.completed
+        assert winner_pipeline.provider_calls == 1
+        assert loser_pipeline.provider_calls == 0
+        await asyncio.gather(winner.shutdown(), loser.shutdown())
+
+    asyncio.run(scenario())
+
+
 @given(
     actions=st.lists(
         st.sampled_from(("duplicate", "cancel", "resume", "conflict")),

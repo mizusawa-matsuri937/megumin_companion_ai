@@ -1049,9 +1049,24 @@ class TurnService:
 
     def _prefer_memory_state(self, stored: TurnState) -> TurnState:
         memory = self._states.get(stored.turn_id)
-        if memory is not None and memory.updated_at >= stored.updated_at:
+        if memory is None:
+            return stored
+        if stored.status in TERMINAL_STATUSES:
+            if memory.status is stored.status and memory.updated_at > stored.updated_at:
+                return memory
+            return stored
+        if memory.status in TERMINAL_STATUSES:
             return memory
-        return stored
+        progress = {
+            TurnStatus.accepted: 0,
+            TurnStatus.streaming: 1,
+            TurnStatus.speaking: 2,
+        }
+        memory_progress = progress[memory.status]
+        stored_progress = progress[stored.status]
+        if memory_progress != stored_progress:
+            return memory if memory_progress > stored_progress else stored
+        return memory if memory.updated_at > stored.updated_at else stored
 
     def _remember_existing(self, client_id: str, state: TurnState) -> None:
         self._states[state.turn_id] = state
