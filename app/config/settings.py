@@ -91,6 +91,7 @@ class LLMConfig(StrictModel):
 
 class GPTSoVITSPresetConfig(StrictModel):
     ref_audio_path: str = Field(min_length=1)
+    ref_audio_scope: Literal["service_resource", "local_file"] = "service_resource"
     prompt_text: str = ""
     prompt_lang: str = "zh"
     text_lang: str = "zh"
@@ -130,8 +131,8 @@ class VTSConfig(StrictModel):
     token_path: Path = Path("data/private/vts-token.json")
     request_timeout_seconds: float = Field(default=5.0, gt=0.0, le=60.0)
     queue_capacity: int = Field(default=16, ge=1, le=256)
-    reconnect_initial_seconds: float = Field(default=1.0, ge=0.0, le=60.0)
-    reconnect_max_seconds: float = Field(default=30.0, ge=0.0, le=300.0)
+    reconnect_initial_seconds: float = Field(default=1.0, gt=0.0, le=60.0)
+    reconnect_max_seconds: float = Field(default=30.0, gt=0.0, le=300.0)
     expression_hotkeys: dict[str, str] = Field(default_factory=dict)
 
     @model_validator(mode="after")
@@ -140,6 +141,11 @@ class VTSConfig(StrictModel):
             raise ValueError("reconnect_max_seconds 不能小于 reconnect_initial_seconds")
         if not self.uri.startswith(("ws://", "wss://")):
             raise ValueError("VTS uri 必须使用 WebSocket")
+        if any(
+            not expression.strip() or not hotkey_id.strip()
+            for expression, hotkey_id in self.expression_hotkeys.items()
+        ):
+            raise ValueError("VTS expression/hotkey ID 不能为空")
         return self
 
 
