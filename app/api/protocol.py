@@ -7,11 +7,12 @@ import math
 import secrets
 from datetime import UTC, datetime
 from typing import Any, Literal
+from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from app.api.security import DEV_API_PROTOCOL_VERSION, DevAPIConfig, DevAPIPrincipal
-from app.schemas import PipelineEvent, UserMessage
+from app.schemas import PipelineEvent, SessionReset, SessionSnapshotChunk, UserMessage
 
 
 class DevAPIProtocolError(RuntimeError):
@@ -22,8 +23,21 @@ class DevAPIProtocolError(RuntimeError):
         self.code = code
 
 
-class WebSocketCommandEnvelope(BaseModel):
-    """Protocol-v1 client command envelope."""
+class _WebSocketCommandWire(BaseModel):
+    """Client-controlled portion of the finalized protocol-v1 command."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    protocol_version: Literal[1]
+    command_id: str = Field(min_length=1, max_length=128)
+    client_id: str = Field(min_length=1, max_length=128)
+    type: str = Field(min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_.-]*$")
+    session_id: str = Field(min_length=1, max_length=128)
+    payload: dict[str, Any]
+
+
+class _LegacyWebSocketCommandWire(BaseModel):
+    """One-version W04 development-client compatibility shape."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -31,6 +45,21 @@ class WebSocketCommandEnvelope(BaseModel):
     type: str = Field(min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_.-]*$")
     session_id: str = Field(min_length=1, max_length=128)
     payload: dict[str, Any]
+
+
+class CommandEnvelope(BaseModel):
+    """Validated command with the backend-owned receipt timestamp."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    protocol_version: Literal[1]
+    command_id: str = Field(min_length=1, max_length=128)
+    client_id: str = Field(min_length=1, max_length=128)
+    type: str = Field(min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_.-]*$")
+    session_id: str = Field(min_length=1, max_length=128)
+    payload: dict[str, Any]
+    received_at: datetime
+    legacy_protocol: bool = False
 
 
 def _reject_nonstandard_number(_value: str) -> None:
@@ -46,7 +75,12 @@ def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return result
 
 
-def parse_websocket_command(text: str) -> WebSocketCommandEnvelope:
+def parse_websocket_command(
+    text: str,
+    *,
+    now: datetime | None = None,
+    legacy_client_id: str | None = None,
+) -> CommandEnvelope:
     """Parse a bounded frame without reflecting validation input in an error."""
 
     try:
@@ -55,7 +89,24 @@ def parse_websocket_command(text: str) -> WebSocketCommandEnvelope:
             parse_constant=_reject_nonstandard_number,
             object_pairs_hook=_unique_object,
         )
-        return WebSocketCommandEnvelope.model_validate(payload)
+        received_at = now or datetime.now(UTC)
+        try:
+            wire = _WebSocketCommandWire.model_validate(payload)
+            return CommandEnvelope(**wire.model_dump(), received_at=received_at)
+        except ValidationError:
+            if legacy_client_id is None or not 1 <= len(legacy_client_id) <= 128:
+                raise
+            legacy = _LegacyWebSocketCommandWire.model_validate(payload)
+            return CommandEnvelope(
+                protocol_version=legacy.protocol_version,
+                command_id=f"legacy_{uuid4().hex}",
+                client_id=legacy_client_id,
+                type=legacy.type,
+                session_id=legacy.session_id,
+                payload=legacy.payload,
+                received_at=received_at,
+                legacy_protocol=True,
+            )
     except (json.JSONDecodeError, RecursionError, TypeError, ValueError, ValidationError) as exc:
         raise DevAPIProtocolError("invalid_command_envelope") from exc
 
@@ -66,6 +117,20 @@ def ensure_authorized_session(principal: DevAPIPrincipal, session_id: str) -> No
         session_id.encode("utf-8"),
     ):
         raise DevAPIProtocolError("session_forbidden")
+
+
+def ensure_authorized_identity(
+    principal: DevAPIPrincipal,
+    *,
+    client_id: str,
+    session_id: str,
+) -> None:
+    if not secrets.compare_digest(
+        principal.client_id.encode("utf-8"),
+        client_id.encode("utf-8"),
+    ):
+        raise DevAPIProtocolError("client_identity_forbidden")
+    ensure_authorized_session(principal, session_id)
 
 
 def validate_metadata(metadata: dict[str, Any], config: DevAPIConfig) -> None:
@@ -116,6 +181,20 @@ def event_envelope(event: PipelineEvent) -> dict[str, Any]:
     return {
         "protocol_version": DEV_API_PROTOCOL_VERSION,
         **event.model_dump(mode="json"),
+    }
+
+
+def reset_envelope(reset: SessionReset) -> dict[str, Any]:
+    return {
+        "protocol_version": DEV_API_PROTOCOL_VERSION,
+        **reset.model_dump(mode="json"),
+    }
+
+
+def snapshot_chunk_envelope(chunk: SessionSnapshotChunk) -> dict[str, Any]:
+    return {
+        "protocol_version": DEV_API_PROTOCOL_VERSION,
+        **chunk.model_dump(mode="json"),
     }
 
 

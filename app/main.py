@@ -24,6 +24,7 @@ from app.clients.llm.base import LLMProvider
 from app.config import Settings, load_settings
 from app.config.logging import close_logging, configure_logging, log_event
 from app.core import TurnService
+from app.core.idempotency import UnavailableIdempotencyStore
 from app.diagnostics import write_crash_report
 from app.health import (
     CapabilityCheck,
@@ -35,6 +36,8 @@ from app.memory.analyzer import LLMMemoryCandidateAnalyzer
 from app.memory.runtime import MemoryRuntime, create_memory_runtime
 from app.proactive import ProactivePolicy, ProactiveRuntime
 from app.runtime_storage import prepare_runtime_storage
+from app.schemas import utc_now
+from app.storage import SQLiteIdempotencyStore
 
 
 class _CoreHealthProvider:
@@ -50,6 +53,25 @@ class _CoreHealthProvider:
         return CapabilityCheck(
             status=CapabilityState.unavailable,
             error_code="service_not_ready",
+        )
+
+
+class _IdempotencyHealthProvider:
+    """Expose the real W06 composition boundary without probing private records."""
+
+    name = "idempotency"
+    required_for_readiness = True
+
+    def __init__(self, app: FastAPI) -> None:
+        self._app = app
+
+    async def check_health(self) -> CapabilityCheck:
+        store = getattr(self._app.state, "idempotency_store", None)
+        if isinstance(store, SQLiteIdempotencyStore):
+            return CapabilityCheck(status=CapabilityState.ready)
+        return CapabilityCheck(
+            status=CapabilityState.unavailable,
+            error_code="idempotency_unavailable",
         )
 
 
@@ -95,7 +117,9 @@ def create_app(
         runtime_storage = prepare_runtime_storage(resolved_settings.paths)
         logger = configure_logging(
             resolved_settings,
-            additional_secrets=(dev_api.token, dev_api.session_id) if dev_api is not None else (),
+            additional_secrets=(dev_api.token, dev_api.client_id, dev_api.session_id)
+            if dev_api is not None
+            else (),
         )
         if dev_api_security is not None:
             dev_api_security.set_logger(logger)
@@ -105,6 +129,7 @@ def create_app(
         app.state.proactive_runtime = None
         app.state.turn_service = None
         app.state.health = None
+        app.state.idempotency_store = None
         app.state.temp_asset_registry = runtime_storage.temp_registry
         standalone_analyzer_provider: LLMProvider | None = None
         try:
@@ -129,6 +154,14 @@ def create_app(
                 )
                 standalone_analyzer_provider = None
             app.state.memory_runtime = memory_runtime
+            idempotency_store = (
+                SQLiteIdempotencyStore(memory_runtime.database)
+                if memory_runtime is not None
+                else UnavailableIdempotencyStore()
+            )
+            if memory_runtime is not None:
+                await idempotency_store.recover_incomplete(now=utc_now())
+            app.state.idempotency_store = idempotency_store
             proactive_runtime = (
                 ProactiveRuntime(
                     memory_runtime.features,
@@ -170,12 +203,17 @@ def create_app(
                 observers=observers,
                 event_sinks=event_sinks,
                 priority_controller=proactive_runtime,
+                idempotency_store=idempotency_store,
             )
             app.state.turn_service = turn_service
             app.state.health = HealthAggregator(
                 service="megumin-companion-ai",
                 version=__version__,
-                providers=(_CoreHealthProvider(app), *health_providers),
+                providers=(
+                    _CoreHealthProvider(app),
+                    _IdempotencyHealthProvider(app),
+                    *health_providers,
+                ),
             )
             if proactive_runtime is not None:
                 proactive_runtime.start(turn_service.run_proactive)

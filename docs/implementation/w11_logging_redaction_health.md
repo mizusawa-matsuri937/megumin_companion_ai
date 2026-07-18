@@ -1,9 +1,9 @@
 # W11：有界日志、key-aware 脱敏、健康模型与诊断包
 
-> 基线：`7eb82f14fe1be4395b8e73373c580dde334f8863`（W05 merge commit）
+> 基线：`b308af9e164a4110f3f5c842bc26718a395d41b4`（包含 W06 的 baseline merge commit）
 > 分支：`codex/w11-logging-redaction-health`
 > 风险：P1-11、P1-12、P2-01、P2-13
-> Gate：**CLOSED；项目所有者已于 2026-07-18 明确回复“W11 审计合格”**
+> Gate：**REOPENED；W06 集成改变了 readiness 语义，旧 head 的授权不能自动转移**
 
 ## 已实现范围
 
@@ -45,8 +45,11 @@
   provider。单 provider 有 250 ms 上限，timeout/exception/非法字段只映射为稳定 error code。
 - response schema 严格 `extra=forbid`，component 只能返回 `status` 与 `error_code`；聚合层冻结 provider 名称及
   readiness 角色，运行时篡改不会进入响应。
-- 当前只注册真实存在的 `core` provider。没有虚构 W10 database maintenance 或 W12 worker/device 状态；
-  后续组件必须实现通用 `HealthProvider` protocol 后才会出现在 health 输出中。
+- 当前只注册真实存在的 `core` 与 W06 `idempotency` provider。`idempotency` 是 required capability；仅当
+  应用实际组合了 `SQLiteIdempotencyStore` 时为 ready，storage disabled、缺失或错误占位对象均返回稳定
+  `idempotency_unavailable`。它不读取幂等记录，也不声称执行了数据库 I/O 探测。
+- 没有虚构 W10 database maintenance 或 W12 worker/device 状态；后续组件必须实现通用
+  `HealthProvider` protocol 后才会出现在 health 输出中。
 
 ### 显式诊断包
 
@@ -77,26 +80,28 @@ retention_days: 14
 设置 schema 仍为 v1：旧 user settings 通过 package defaults 获得三项默认值，不做磁盘静默写回；现有
 `file_path` 仍兼容，但实际文件名增加 role/PID。日志 schema 现在显式为 v1。诊断 manifest 独立为 v1。
 
-## 与并行 W06/W10 的共享文件
+## W06/W10 的共享文件与集成纪律
 
-2026-07-18 关闭 Gate 前二次只读检查发现 W06 Draft PR #17（head `c99b6c6d41c47ac4e6b6017605ce35d406f49c3b`）；
-W10 仍无远端分支或 open PR。W06 与 W11 的实际共享文件为 `app/api/routes.py`、`app/cli.py`、
-`app/main.py`、`tests/e2e/test_ai_backend_resilience.py`、`tests/integration/test_api.py` 和
-`tests/integration/test_dev_api_security.py`。W06 保留 baseline 的旧 `/health` 实现，未定义新的
-`HealthProvider` 或 health 聚合接口；但它在 `app/main.py` 把 `client_id` 加入日志 additional secrets，
-未来集成时必须逐 hunk 增量重审脱敏接线。以下同时保留 W10/配置文件的潜在共享面：
+2026-07-18 集成前只读核验确认 PR #17 已 MERGED：W06 head 为
+`e60604dc9e77c76dee4f18abeea75594c83969e5`，merge commit 与远端
+`agent/windows-development-baseline` 均为 `b308af9e164a4110f3f5c842bc26718a395d41b4`。W10 仍不在本 PR 范围。
+
+实际文本冲突只有 `app/api/routes.py` 与 `app/main.py`；其余共享文件由 Git 自动合并，但仍逐项检查语义。
+集成保留 W06 的 protocol/client identity、idempotency store/recovery、turn/replay 生命周期，并保留 W11 的
+health routes、provider 聚合、content-free crash report 与 logging close。W06 新增的 `client_id` 与既有 token、
+session_id 一起传给日志 additional-secret 脱敏。
 
 | 文件 | W11 的局部语义 | 合并纪律 |
 | --- | --- | --- |
-| `app/api/routes.py` | 仅 health helper/四个 health route | 不改 chat/replay/debug/memory route 语义；W06 若改 router，逐 hunk 重审。 |
-| `app/main.py` | health provider 注入、core 注册、content-free crash summary、handler close | 不改 turn/replay 生命周期；W10 若提供真实 health provider，增量重审。 |
+| `app/api/routes.py` | health helper/四个 health route与 W06 chat/interrupt/replay 共存 | health 只读取聚合器；不改变 W06 idempotency error/status。 |
+| `app/main.py` | 注册 core/idempotency provider、crash summary、handler close | 保留 W06 store recovery 与 turn service 注入；不探测私有记录。 |
 | `app/config/settings.py` | 仅 `LoggingConfig` 三个上限 | 不替 W06/W10 决定其他 settings schema。 |
 | `app/windows_security.py` | 仅修复受管子目录首次创建的多进程 race，并在 race 后重验类型/reparse | 不改变 W04 DACL/DPAPI/卸载策略。 |
 | `app/resources/default_config.yaml`、`config.yaml` | 仅 logging 三项默认值 | 若其他分支改 config，保留各自独立 section。 |
 | `tests/integration/test_api.py`、`tests/integration/test_dev_api_security.py` | 只适配 process-owned 日志文件名 | 不改既有 W04 security 断言。 |
 | `tests/e2e/test_ai_backend_resilience.py` | 只适配 process-owned 日志文件名并显式关闭 handler | 不改 resilience/turn 语义。 |
 
-这里没有擅自实现或解释 W06 的 idempotency/replay，也没有读取不存在的 W10/W12 私有状态。
+这里没有改写 W06 的 idempotency/replay 业务语义，也没有读取不存在的 W10/W12 私有状态。
 
 ## 自动证据
 
@@ -105,19 +110,49 @@ W10 仍无远端分支或 open PR。W06 与 W11 的实际共享文件为 `app/ap
 - 聚焦覆盖：随机嵌套 key/value、Unicode、cycle、恶意 repr/exception、UTF-8 字节轮转、单文件模式、
   14 天 active/inactive 清理、并发 process writer、字段 allowlist、provider timeout/exception/非法输出、
   malicious diagnostic file/reparse/JSON/secret/body/path、ZIP/manifest/hash、失败清理和自动 crash report。
-- 2026-07-18 本地 Windows 质量门：`ruff check .` 通过、`ruff format --check .` 通过（169 files）、
-  strict `mypy` 通过（164 source files）、`pytest` 为 722 passed / 2 optional-dependency skipped，实际总覆盖率
-  90.40%（门槛 90%）。`mypy --platform darwin` 也通过（164 source files）。Windows 首次建目录的双进程
-  race 在修复后额外连续运行 10 次，10/10 通过。
+- W06 集成前的旧 head 本地 Windows 质量门：`pytest` 722 passed / 2 optional-dependency skipped，覆盖率
+  90.40%；Windows 首次建目录双进程 race 额外连续运行 10 次，10/10 通过。
+- 包含 W06 的工作树最终本地门禁：W06/W11 聚焦矩阵 144 passed；全量 `pytest` 为 771 passed / 2 个
+  optional-dependency skipped，branch coverage 90.12%（门槛 90%）；`ruff check .` 与
+  `ruff format --check .` 均通过（175 files）；strict `mypy` 与 `mypy --platform darwin` 均通过
+  （170 source files）。
 - 2026-07-18 installed-wheel smoke：从 `megumin_companion_ai-0.1.0-py3-none-any.whl` 创建隔离环境，临时隐藏
   source packages 后仍通过 API help/config、desktop preflight 和 authenticated/locked health；
   `source_tree_imported=false`。wheel SHA-256 为
   `74aaf79167e0b24152a73643387a60729ff75e22d1b58433a60ab392614c3445`，manifest SHA-256 为
   `3f48e2dfcce8920356e3a5dd77255fb860183eff711168dbb2b6719b79f86dda`。该 wheel 仅为本地验证产物，
   不上传为 release artifact。
+- W06 集成后的 installed-wheel smoke 同样临时隐藏 source packages；API help/config、desktop preflight、
+  authenticated health=200、locked health=503 与 idempotent chat 全部通过，`source_tree_imported=false`。
+  wheel SHA-256 为 `697a1f1562e9ef2eb47a07cd4df85e73608f341e7813b670ef3c898e50f58dc6`，manifest
+  SHA-256 为 `8e350328e98cbd97f3e7ff2789391b2c6cbdb829f68b83151ad664ba0fb8ac0a`；仍仅为本地验证产物。
 - GitHub `quality` 与 `installed-wheel` 的 Windows/macOS 四项证据以 Draft PR 最终 head 的 check URLs 为准，
   避免为回填动态 URL 改写已测试 head；任一项未成功时不得提交人工 Gate。人工 Gate 在全部自动检查通过后仍保持
   OPEN，直到项目所有者给出规定的明确授权；该授权已于 2026-07-18 给出。
+
+## W06 集成增量反方审计
+
+旧 W11 实物审计 head 为 `bf4c14e304a97114d4ed946d2febb35e9dd21bd8`。W06 集成改变了 health 的真实
+readiness 前提，因此没有把旧 health 结论直接套到新工作树；先写失败测试，机械合并状态确实暴露出
+“storage disabled 时 `/api/chat` 返回 503、但 readiness 仍为 ready”的矛盾，随后才增加真实的
+`idempotency` provider。
+
+增量反方检查覆盖：
+
+- storage enabled/disabled、store 缺失与错误占位对象；readiness 与 W06 chat/interrupt/WebSocket 的
+  `idempotency_unavailable` 一致，liveness 仍独立。
+- 标准与兼容 legacy WebSocket 在无幂等存储时只返回稳定 error code 并以 1013 关闭；跨 session interrupt
+  先以 403 拒绝，不回显 turn ID、正文或路径。
+- 错误 client identity 请求 health 返回 403 `client_identity_forbidden`，不反射攻击者值；token、client_id、
+  session_id 均进入 runtime additional-secret 脱敏。
+- health 顶层与 component 字段继续受精确 allowlist 约束；聚合器、turn service 或 idempotency store 缺失时
+  fail closed，不输出内部状态名、异常 repr 或路径。
+- logging/redaction/diagnostics 的实现文件未因 W06 冲突改变；重新执行 property/fault/ZIP/sentinel 聚焦测试。
+  旧 rollover、14 天清理、多进程 handle、crash 与 ZIP 实物仍能证明未改实现，但不替代上述新 health 审计。
+
+增量审计未发现尚未修复的产品断言失败。已修复的两个问题是 readiness 未纳入 W06 required capability，以及
+provider 对任意非-Unavailable 对象过度乐观。残余风险是当前 health 证明“已组合真实 SQLite store”，不是持续
+数据库读写探针；启动后磁盘或 SQLite 故障仍需未来真实 W10 database provider 表达，并触发再次增量重审。
 
 ## 人工审计方案（Gate W11）
 
@@ -201,7 +236,8 @@ readiness 传播或虚构 capability 即拒绝。
 
 审计摘要 SHA-256 为 `a64375335334ccebca88210e84ff46ef403bbb9b0ed622cd30d48c298ff3f9a7`；
 诊断 ZIP SHA-256 为 `2d619efd784ee07f28846af0f62b935e28cca05e35136f78dd408ea096f228ee`。
-未出现产品断言失败，不需要实现补丁。项目所有者随后明确回复 **“W11 审计合格”**，满足 Gate 关闭条件。
+该旧 head 未出现产品断言失败。项目所有者随后明确回复 **“W11 审计合格”**，满足当时 Gate 关闭条件；
+该授权不自动覆盖本次 W06 readiness 语义变化。
 
 ## 残余风险
 
@@ -211,6 +247,8 @@ readiness 传播或虚构 capability 即拒绝。
   输出路径，但目前没有 W12/W25 的 cleanup-pending UI。
 - provider protocol 能隔离异常和超时，但不等于真实 provider/VTS/device preflight；对应真实设备证据仍属于
   W09/W19/W17 及后续 Gate。
+- W06 `idempotency` health 当前是组合状态检查，不是持续 SQLite I/O 探针；运行期数据库故障可能先由业务请求
+  暴露。W10 若增加真实 database provider，必须重新审查 readiness 传播和 error-code allowlist。
 - 诊断导出不包含 DB，因此不能用于数据库内容恢复；它是隐私优先的运行摘要，不是完整 forensic dump。
 - 项目所有者兼任 reviewer 仍属于非独立审计；若要求独立隐私签字，需另行安排 reviewer。
 
@@ -226,6 +264,6 @@ readiness 传播或虚构 capability 即拒绝。
 
 ## Gate 状态
 
-**CLOSED（2026-07-18）**。项目所有者已明确回复 **“W11 审计合格”**；自动验证、实物审计和授权条件均已满足。
-关闭 Gate 不等于授权合并：本分支仍保持 Draft，不自行合并，也不会开始 W12。最终合并前仍须基于最新 baseline
-重跑全部测试；若 W06/W10 导致 health 或 logging 接口变化，必须增量重审。
+**REOPENED（W06 集成）**。旧 head 曾由项目所有者明确回复 **“W11 审计合格”**，但 W06 已实际改变 health
+readiness 语义；本次已完成 AI 增量审计和本地门禁，仍须等待最终 exact-head Windows/macOS CI，并由项目所有者
+确认新 head 的增量结果后才能再次关闭 Gate。本分支保持 Draft，不自行合并，也不会开始 W12。

@@ -135,7 +135,7 @@ def _logger() -> logging.Logger:
     return logger
 
 
-async def _receive_completed(queue: asyncio.Queue[Any]) -> None:
+async def _receive_completed(queue: Any) -> None:
     while True:
         event = await asyncio.wait_for(queue.get(), timeout=1)
         queue.task_done()
@@ -182,7 +182,7 @@ def test_candidate_llm_does_not_block_assistant_completion(tmp_path: Path) -> No
         await runtime.set_feature(FeatureName.long_term_memory, True)
         pipeline = ImmediatePipeline()
         service = TurnService(_logger(), pipeline, observers=(runtime.observer,))
-        queue = service.subscribe("local_session")
+        queue = await service.subscribe("local_session")
 
         await service.accept(UserMessage(text="我喜欢手冲咖啡"))
         await _receive_completed(queue)
@@ -212,7 +212,7 @@ def test_disabling_long_term_memory_cancels_and_joins_active_analysis(
         runtime = await create_memory_runtime(str(tmp_path / "disabled.sqlite3"), analyzer=analyzer)
         await runtime.set_feature(FeatureName.long_term_memory, True)
         service = TurnService(_logger(), ImmediatePipeline(), observers=(runtime.observer,))
-        queue = service.subscribe("local_session")
+        queue = await service.subscribe("local_session")
 
         await service.accept(UserMessage(text="我喜欢手冲咖啡"))
         await _receive_completed(queue)

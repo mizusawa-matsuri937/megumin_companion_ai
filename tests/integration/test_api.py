@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from app.api.security import DevAPIConfig, DevAPIScope
 from app.config import Settings
-from app.config.settings import LLMConfig, LoggingConfig, PipelineConfig
+from app.config.settings import LLMConfig, LoggingConfig, PipelineConfig, StorageConfig
 from app.core import TurnService
 from app.main import _settle_resource_close, create_app
 from app.paths import AppPaths
@@ -17,6 +17,7 @@ from fastapi.testclient import TestClient
 
 DEV_API = DevAPIConfig(
     token="integration-api-token-000000000000000000000000",
+    client_id="client_integration_api",
     session_id="session_integration_api",
     allowed_origins=frozenset({"http://127.0.0.1:8765"}),
     allowed_hosts=frozenset({"127.0.0.1:8765"}),
@@ -41,10 +42,16 @@ def secured_client(application: FastAPI) -> TestClient:
 def command(command_type: str, payload: dict[str, object]) -> dict[str, object]:
     return {
         "protocol_version": 1,
+        "command_id": f"command-{command_type}-{id(payload)}",
+        "client_id": DEV_API.client_id,
         "type": command_type,
         "session_id": DEV_API.session_id,
         "payload": payload,
     }
+
+
+def resume(websocket: object, *, last_seq: int = 0) -> None:
+    websocket.send_json(command("session.resume", {"last_seq": last_seq}))  # type: ignore[attr-defined]
 
 
 class RecordingTurnService(TurnService):
@@ -52,9 +59,14 @@ class RecordingTurnService(TurnService):
         super().__init__(original._logger)
         self.messages: list[UserMessage] = []
 
-    async def accept(self, message: UserMessage) -> TurnState:
+    async def accept(
+        self,
+        message: UserMessage,
+        *,
+        client_id: str = "local_client",
+    ) -> TurnState:
         self.messages.append(message)
-        return await super().accept(message)
+        return await super().accept(message, client_id=client_id)
 
 
 def quiet_settings(*, root: Path, log_path: Path | None = None) -> Settings:
@@ -63,7 +75,8 @@ def quiet_settings(*, root: Path, log_path: Path | None = None) -> Settings:
             console_enabled=False,
             file_enabled=log_path is not None,
             file_path=Path(log_path.name) if log_path is not None else Path("unused.jsonl"),
-        )
+        ),
+        storage=StorageConfig(enabled=True, database_path=Path("companion.sqlite3")),
     )
     settings._paths = AppPaths(root=root)
     return settings
@@ -77,6 +90,7 @@ def mock_pipeline_settings(*, root: Path, token_delay_ms: int = 0) -> Settings:
             mock_token_delay_ms=token_delay_ms,
             mock_audio_duration_ms=0,
         ),
+        storage=StorageConfig(enabled=True, database_path=Path("companion.sqlite3")),
     )
     settings._paths = AppPaths(root=root)
     return settings
@@ -109,6 +123,7 @@ def test_text_and_voice_use_the_same_turn_service(tmp_path: Path) -> None:
         app.state.turn_service = recording_service
 
         with client.websocket_connect(f"{WS_BASE_URL}/ws/client") as websocket:
+            resume(websocket)
             for mode in ("text", "voice"):
                 websocket.send_json(
                     command(
@@ -120,7 +135,10 @@ def test_text_and_voice_use_the_same_turn_service(tmp_path: Path) -> None:
                         },
                     )
                 )
-                event = websocket.receive_json()
+                while True:
+                    event = websocket.receive_json()
+                    if event["type"] == "turn.accepted":
+                        break
                 assert event["type"] == "turn.accepted"
                 assert event["payload"]["input_mode"] == mode
                 assert event["payload"]["status"] == "accepted"
@@ -185,6 +203,7 @@ def test_websocket_streams_complete_mock_pipeline_for_text_and_voice(tmp_path: P
         secured_client(app) as client,
         client.websocket_connect(f"{WS_BASE_URL}/ws/client") as websocket,
     ):
+        resume(websocket)
         for mode in ("text", "voice"):
             websocket.send_json(
                 command(
@@ -251,6 +270,7 @@ def test_websocket_rejects_malformed_commands_without_private_echo(tmp_path: Pat
         secured_client(app) as client,
         client.websocket_connect(f"{WS_BASE_URL}/ws/client") as websocket,
     ):
+        resume(websocket)
         websocket.send_json(["not", "an", "object"])
         assert websocket.receive_json()["error"]["code"] == "invalid_command_envelope"
 

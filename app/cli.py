@@ -402,6 +402,7 @@ def _print_dev_api_credential(config: DevAPIConfig) -> None:
                 "protocol_version": config.protocol_version,
                 "authorization_scheme": "Bearer",
                 "token": config.token,
+                "client_id": config.client_id,
                 "session_id": config.session_id,
                 "allowed_origins": sorted(config.allowed_origins),
                 "scopes": sorted(scope.value for scope in config.scopes),

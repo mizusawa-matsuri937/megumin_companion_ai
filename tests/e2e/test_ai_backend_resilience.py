@@ -443,7 +443,7 @@ def test_failure_storm_preserves_user_priority_and_all_settled_shutdown(
             event_sinks=(sink,),
             priority_controller=proactive,
         )
-        events = service.subscribe("*")
+        events = await service.subscribe("local_session")
 
         decision = await proactive.submit(
             _trigger(ProactiveTriggerType.task_complete, "start background"),
@@ -460,6 +460,7 @@ def test_failure_storm_preserves_user_priority_and_all_settled_shutdown(
         while True:
             event = await asyncio.wait_for(events.get(), timeout=1)
             events.task_done()
+            assert isinstance(event, PipelineEvent)
             if event.type == "turn.failed" and event.turn_id == failed.turn_id:
                 break
 

@@ -14,6 +14,7 @@ from app.schemas import (
     ChatCompletion,
     ChatRequest,
     InputMode,
+    PipelineEvent,
     ProactiveIntent,
     TurnState,
     UserMessage,
@@ -120,7 +121,7 @@ def test_new_input_is_a_hard_barrier_for_old_turn_events(tmp_path: Path) -> None
         logger = logging.getLogger("test.turn_barrier")
         logger.addHandler(logging.NullHandler())
         service = TurnService(logger, pipeline)
-        queue = service.subscribe("*")
+        queue = await service.subscribe("local_session")
         first = await service.accept(UserMessage(text="第一次", input_mode=InputMode.text))
         await asyncio.sleep(0.05)
         second = await service.accept(UserMessage(text="第二次", input_mode=InputMode.voice))
@@ -128,6 +129,8 @@ def test_new_input_is_a_hard_barrier_for_old_turn_events(tmp_path: Path) -> None
         observed: list[tuple[str, str]] = []
         while True:
             event = await asyncio.wait_for(queue.get(), timeout=2)
+            assert isinstance(event, PipelineEvent)
+            assert event.turn_id is not None
             observed.append((event.type, event.turn_id))
             queue.task_done()
             if event.type == "assistant.completed" and event.turn_id == second.turn_id:
