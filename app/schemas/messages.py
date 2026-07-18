@@ -138,6 +138,19 @@ class TurnMetrics(ContractModel):
     audio_queue_wait_ms: list[int] = Field(default_factory=list)
     segment_count: int = Field(default=0, ge=0)
     playback_count: int = Field(default=0, ge=0)
+    tts_queue_capacity: int = Field(default=0, ge=0)
+    tts_queue_max_depth: int = Field(default=0, ge=0)
+    tts_producer_block_count: int = Field(default=0, ge=0)
+    tts_producer_block_ms: int = Field(default=0, ge=0)
+    ready_audio_queue_capacity: int = Field(default=0, ge=0)
+    ready_audio_queue_max_depth: int = Field(default=0, ge=0)
+    audio_producer_block_count: int = Field(default=0, ge=0)
+    audio_producer_block_ms: int = Field(default=0, ge=0)
+    max_audio_inflight_bytes: int = Field(default=0, ge=0)
+    final_audio_inflight_bytes: int = Field(default=0, ge=0)
+    max_output_utf8_bytes: int = Field(default=0, ge=0)
+    max_temp_bytes: int = Field(default=0, ge=0)
+    cleanup_ms: int = Field(default=0, ge=0)
 
 
 class PipelineEvent(ContractModel):

@@ -23,6 +23,7 @@ from pydantic import (
     model_validator,
 )
 
+from app.limits import LimitsConfig
 from app.paths import AppPathError, AppPaths
 
 DEFAULT_CONFIG_PACKAGE = "app.resources"
@@ -249,6 +250,7 @@ class Settings(StrictModel):
     proactive: ProactiveConfig = Field(default_factory=ProactiveConfig)
     stt: STTConfig = Field(default_factory=STTConfig)
     pipeline: PipelineConfig = Field(default_factory=PipelineConfig)
+    limits: LimitsConfig = Field(default_factory=LimitsConfig)
 
     _environment: dict[str, str] = PrivateAttr(default_factory=dict)
     _paths: AppPaths = PrivateAttr(default_factory=AppPaths.discover)
@@ -332,6 +334,14 @@ class Settings(StrictModel):
             return ()
         value = self._environment.get(self.llm.api_key_env, "").strip()
         return (value,) if value else ()
+
+    def validate_runtime_limits(self) -> None:
+        """Fail startup when a provider preference bypasses a W07 hard cap."""
+
+        if self.llm.max_tokens > self.limits.provider_output_tokens:
+            raise ValueError("llm.max_tokens exceeds provider output hard limit")
+        if self.tts.max_audio_bytes > self.limits.audio_single_result_bytes:
+            raise ValueError("tts.max_audio_bytes exceeds audio result hard limit")
 
 
 ENV_OVERRIDES: dict[str, tuple[str, str]] = {
@@ -516,6 +526,10 @@ def _validate_runtime_paths(settings: Settings) -> None:
     settings.stt_temporary_directory()
     settings.stt_executable_path()
     settings.stt_model_path()
+    try:
+        settings.validate_runtime_limits()
+    except ValueError as exc:
+        raise ConfigurationError(f"运行时 hard limits 无效：{exc}") from exc
 
 
 def load_settings(

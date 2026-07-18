@@ -136,6 +136,9 @@ def ensure_authorized_identity(
 def validate_metadata(metadata: dict[str, Any], config: DevAPIConfig) -> None:
     """Bound aggregate metadata depth, keys, and nodes after JSON decoding."""
 
+    serialized = json.dumps(metadata, ensure_ascii=False, separators=(",", ":"))
+    if len(serialized.encode("utf-8")) > config.max_metadata_bytes:
+        raise DevAPIProtocolError("metadata_limits_exceeded")
     total_keys = 0
     total_nodes = 0
     pending: list[tuple[Any, int]] = [(metadata, 1)]

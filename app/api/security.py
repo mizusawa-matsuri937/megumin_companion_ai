@@ -12,7 +12,7 @@ import threading
 import time
 from collections import deque
 from collections.abc import Callable, Iterable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from typing import Any
 from urllib.parse import urlsplit
@@ -20,6 +20,7 @@ from urllib.parse import urlsplit
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from app.config.logging import log_event
+from app.limits import LimitsConfig
 
 DEV_API_PROTOCOL_VERSION = 1
 DEV_API_MAX_BODY_BYTES = 64 * 1024
@@ -155,8 +156,9 @@ class DevAPIConfig:
     max_http_body_bytes: int = DEV_API_MAX_BODY_BYTES
     max_websocket_frame_bytes: int = DEV_API_MAX_FRAME_BYTES
     max_json_depth: int = 16
-    max_metadata_depth: int = 4
-    max_metadata_keys: int = 32
+    max_metadata_bytes: int = 8 * 1024
+    max_metadata_depth: int = 3
+    max_metadata_keys: int = 16
     max_metadata_nodes: int = 128
     max_client_clock_skew_seconds: float = 5 * 60
     http_rate_limit: int = 120
@@ -202,6 +204,7 @@ class DevAPIConfig:
             self.max_http_body_bytes,
             self.max_websocket_frame_bytes,
             self.max_json_depth,
+            self.max_metadata_bytes,
             self.max_metadata_depth,
             self.max_metadata_keys,
             self.max_metadata_nodes,
@@ -256,6 +259,23 @@ class DevAPIConfig:
             "X-Megumin-Client-ID": self.client_id,
             "X-Megumin-Session-ID": self.session_id,
         }
+
+
+def apply_hard_limits(config: DevAPIConfig, limits: LimitsConfig) -> DevAPIConfig:
+    """Clamp a generated credential to the centralized W07 transport caps."""
+
+    return replace(
+        config,
+        max_http_body_bytes=min(config.max_http_body_bytes, limits.dev_http_body_bytes),
+        max_websocket_frame_bytes=min(
+            config.max_websocket_frame_bytes,
+            limits.dev_websocket_frame_bytes,
+        ),
+        max_metadata_bytes=min(config.max_metadata_bytes, limits.metadata_bytes),
+        max_metadata_depth=min(config.max_metadata_depth, limits.metadata_depth),
+        max_metadata_keys=min(config.max_metadata_keys, limits.metadata_keys),
+        max_metadata_nodes=min(config.max_metadata_nodes, limits.metadata_nodes),
+    )
 
 
 @dataclass(frozen=True, slots=True)

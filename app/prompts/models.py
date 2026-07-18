@@ -27,9 +27,14 @@ class HistoryMessage(PromptModel):
 
 
 class PromptBudget(PromptModel):
-    history_chars: int = Field(default=6_000, ge=0, le=100_000)
-    context_chars: int = Field(default=4_000, ge=0, le=100_000)
-    max_block_chars: int = Field(default=1_000, ge=64, le=20_000)
+    total_tokens: int = Field(default=16_384, ge=256, le=100_000)
+    system_tokens: int = Field(default=4_096, ge=128, le=100_000)
+    current_user_tokens: int = Field(default=8_192, ge=32, le=100_000)
+    history_tokens: int = Field(default=4_096, ge=0, le=100_000)
+    memory_tokens: int = Field(default=2_048, ge=0, le=100_000)
+    screen_tokens: int = Field(default=1_024, ge=0, le=100_000)
+    max_block_tokens: int = Field(default=512, ge=16, le=20_000)
+    provider_output_tokens: int = Field(default=600, ge=1, le=100_000)
 
 
 class PromptBuildResult(PromptModel):
@@ -38,3 +43,7 @@ class PromptBuildResult(PromptModel):
     included_context_ids: tuple[str, ...] = ()
     omitted_history_count: int = Field(default=0, ge=0)
     omitted_context_count: int = Field(default=0, ge=0)
+    estimated_prompt_tokens: int = Field(default=0, ge=0)
+    token_estimator_profile: str = Field(min_length=1)
+    degradation_steps: tuple[str, ...] = ()
+    current_user_truncated: bool = False

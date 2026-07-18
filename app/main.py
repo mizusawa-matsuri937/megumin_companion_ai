@@ -14,7 +14,12 @@ from fastapi.responses import JSONResponse
 
 from app import __version__
 from app.api.routes import router
-from app.api.security import DevAPIConfig, DevAPIGuardMiddleware, DevAPISecurity
+from app.api.security import (
+    DevAPIConfig,
+    DevAPIGuardMiddleware,
+    DevAPISecurity,
+    apply_hard_limits,
+)
 from app.bootstrap import (
     build_dialogue_pipeline,
     build_llm_provider,
@@ -110,6 +115,9 @@ def create_app(
     health_providers: Sequence[HealthProvider] = (),
 ) -> FastAPI:
     resolved_settings = settings or load_settings()
+    resolved_settings.validate_runtime_limits()
+    if dev_api is not None:
+        dev_api = apply_hard_limits(dev_api, resolved_settings.limits)
     dev_api_security = DevAPISecurity(dev_api) if dev_api is not None else None
 
     @asynccontextmanager

@@ -15,7 +15,7 @@ from pathlib import Path
 from fastapi import FastAPI
 
 from app import __version__
-from app.api.security import DevAPIConfig, DevAPIScope
+from app.api.security import DevAPIConfig, DevAPIScope, apply_hard_limits
 from app.clients.vts import DPAPITokenStore, read_legacy_plaintext_token
 from app.config import ConfigurationError, Settings, load_settings
 from app.config.user_settings import upgrade_user_settings
@@ -483,6 +483,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             origins=args.dev_origin,
             scopes=scopes,
         )
+        dev_api = apply_hard_limits(dev_api, settings.limits)
     except ValueError as exc:
         parser.error(str(exc))
     application = create_app(settings, dev_api=dev_api)

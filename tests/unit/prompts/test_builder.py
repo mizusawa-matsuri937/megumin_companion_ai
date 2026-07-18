@@ -64,7 +64,7 @@ def test_history_budget_keeps_newest_complete_messages_in_order() -> None:
         HistoryMessage(message_id="new", role=ChatRole.user, content="c" * 6),
     ]
     result = PromptBuilder(
-        budget=PromptBudget(history_chars=12, context_chars=100, max_block_chars=64)
+        budget=PromptBudget(history_tokens=20, memory_tokens=100, max_block_tokens=64)
     ).build_with_report(current_user_text="now", emotion=_emotion(), history=history)
 
     assert result.included_history_ids == ("middle", "new")
@@ -89,7 +89,12 @@ def test_context_budget_is_origin_priority_ordered_and_truncated() -> None:
         ),
     ]
     result = PromptBuilder(
-        budget=PromptBudget(history_chars=0, context_chars=64, max_block_chars=64)
+        budget=PromptBudget(
+            history_tokens=0,
+            memory_tokens=68,
+            screen_tokens=0,
+            max_block_tokens=64,
+        )
     ).build_with_report(current_user_text="now", emotion=_emotion(), context_blocks=blocks)
 
     assert result.included_context_ids == ("profile",)
@@ -148,3 +153,41 @@ def test_proactive_prompt_has_no_history_or_current_user_instruction() -> None:
         }
     }
     assert "not a user instruction" in str(request.messages[-2].content)
+
+
+def test_total_budget_uses_fixed_screen_memory_history_degradation_order() -> None:
+    baseline = PromptBuilder().build_with_report(current_user_text="now", emotion=_emotion())
+    history = [HistoryMessage(message_id="history", role=ChatRole.user, content="h" * 40)]
+    blocks = [
+        ExternalContextBlock(
+            source_id="memory",
+            origin=ContextOrigin.long_term_memory,
+            trust=ContextTrust.stored_fact,
+            content="m" * 40,
+        ),
+        ExternalContextBlock(
+            source_id="screen",
+            origin=ContextOrigin.screen,
+            trust=ContextTrust.untrusted_observation,
+            content="s" * 40,
+        ),
+    ]
+    result = PromptBuilder(
+        budget=PromptBudget(
+            total_tokens=baseline.estimated_prompt_tokens + 10,
+            history_tokens=100,
+            memory_tokens=100,
+            screen_tokens=100,
+            max_block_tokens=64,
+        )
+    ).build_with_report(
+        current_user_text="now",
+        emotion=_emotion(),
+        history=history,
+        context_blocks=blocks,
+    )
+
+    assert result.degradation_steps == ("screen", "memory", "history")
+    assert result.included_context_ids == ()
+    assert result.included_history_ids == ()
+    assert not result.current_user_truncated
