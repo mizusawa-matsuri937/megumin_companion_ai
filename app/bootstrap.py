@@ -19,7 +19,13 @@ from app.config import ConfigurationError, Settings
 from app.emotion import EmotionEngine, EmotionSegmentDecorator, ExpressionCooldown, SystemClock
 from app.pipelines import DialoguePipeline
 from app.pipelines.audio_player import AudioPlayer, SilentAudioPlayer, SystemAudioPlayer
-from app.prompts import EmotionPromptContextBuilder, PromptBuilder, PromptContextSource
+from app.prompts import (
+    EmotionPromptContextBuilder,
+    PromptBudget,
+    PromptBuilder,
+    PromptContextSource,
+)
+from app.prompts.tokens import ProviderTokenEstimator
 from app.secret_store import LLM_API_KEY_ID, EncryptedSecretFile, llm_api_key_file, vts_token_file
 from app.temp_assets import TempAssetRegistry
 
@@ -31,6 +37,7 @@ def build_llm_provider(
 ) -> LLMProvider | None:
     """Build the configured provider without a silent fallback to a mock."""
 
+    settings.validate_runtime_limits()
     provider_name = settings.llm.provider.strip().lower()
     if provider_name == "none":
         return None
@@ -46,7 +53,14 @@ def build_llm_provider(
         api_key=api_key,
         timeout_seconds=settings.llm.timeout_seconds,
         default_temperature=settings.llm.temperature,
-        default_max_tokens=settings.llm.max_tokens,
+        default_max_tokens=min(
+            settings.llm.max_tokens,
+            settings.limits.provider_output_tokens,
+        ),
+        max_stream_event_bytes=settings.limits.llm_output_bytes,
+        stream_completion_mode=settings.llm.stream_completion_mode,
+        proxy_url=settings.llm.transport.proxy_url,
+        ca_bundle_path=settings.llm_ca_bundle_path(),
     )
 
 
@@ -57,6 +71,7 @@ def build_dialogue_pipeline(
     llm_provider: LLMProvider | None = None,
     temp_registry: TempAssetRegistry | None = None,
 ) -> DialoguePipeline | None:
+    settings.validate_runtime_limits()
     llm = llm_provider or build_llm_provider(settings)
     if llm is None:
         return None
@@ -76,7 +91,25 @@ def build_dialogue_pipeline(
         explosion_cooldown=timedelta(seconds=settings.emotion.explosion_cooldown_seconds),
     )
     context_builder = EmotionPromptContextBuilder(
-        PromptBuilder(),
+        PromptBuilder(
+            budget=PromptBudget(
+                total_tokens=settings.limits.prompt_total_tokens,
+                system_tokens=settings.limits.prompt_system_tokens,
+                current_user_tokens=settings.limits.prompt_current_tokens,
+                history_tokens=settings.limits.prompt_history_tokens,
+                memory_tokens=settings.limits.prompt_memory_tokens,
+                screen_tokens=settings.limits.prompt_screen_tokens,
+                max_block_tokens=settings.limits.prompt_block_tokens,
+                provider_output_tokens=min(
+                    settings.llm.max_tokens,
+                    settings.limits.provider_output_tokens,
+                ),
+            ),
+            estimator=ProviderTokenEstimator(
+                provider=settings.llm.provider,
+                model=settings.llm.model,
+            ),
+        ),
         emotion_engine,
         clock,
         source=prompt_context_source,
@@ -103,6 +136,11 @@ def build_dialogue_pipeline(
         segment_min_chars=settings.pipeline.segment_min_chars,
         segment_max_chars=settings.pipeline.segment_max_chars,
         segment_max_words=settings.pipeline.segment_max_words,
+        limits=settings.limits,
+        tts_connect_timeout_ms=round(settings.tts.connect_timeout_seconds * 1000),
+        tts_first_byte_timeout_ms=round(settings.tts.first_byte_timeout_seconds * 1000),
+        tts_total_timeout_ms=round(settings.tts.timeout_seconds * 1000),
+        tts_cancellation_timeout_ms=round(settings.tts.cancellation_timeout_seconds * 1000),
     )
 
 
@@ -133,12 +171,14 @@ def _build_tts(
         settings.tts_output_directory(),
         presets,
         default_preset=settings.tts.default_preset,
-        timeout_seconds=settings.tts.timeout_seconds,
         max_audio_bytes=settings.tts.max_audio_bytes,
         cache_enabled=settings.tts.cache_enabled,
         cache_dir=settings.tts_cache_directory(),
         cache_max_bytes=settings.tts.cache_max_bytes,
         cache_ttl_seconds=settings.tts.cache_ttl_seconds,
+        proxy_url=settings.tts.transport.proxy_url,
+        ca_bundle_path=settings.tts_ca_bundle_path(),
+        max_owned_synthesis_tasks=settings.limits.tts_queue_capacity,
         temp_registry=temp_registry,
     )
 
@@ -159,6 +199,8 @@ def build_vts_event_sink(
         lambda: VTSClient(
             settings.vts.uri,
             request_timeout_seconds=settings.vts.request_timeout_seconds,
+            proxy_url=settings.vts.transport.proxy_url,
+            ca_bundle_path=settings.vts_ca_bundle_path(),
         ),
         token_store
         or DPAPITokenStore(

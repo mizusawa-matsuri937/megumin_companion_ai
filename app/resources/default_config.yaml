@@ -29,13 +29,24 @@ llm:
   timeout_seconds: 45
   temperature: 0.8
   max_tokens: 600
+  # OpenAI Chat Completions 默认必须同时观察 finish_reason=stop 和 [DONE]。
+  stream_completion_mode: done_and_finish_reason
+  transport:
+    # 不继承 HTTP_PROXY/HTTPS_PROXY；企业代理必须在这里显式配置且不得含 URL 凭据。
+    proxy_url: null
+    # 相对路径位于受管 config 目录；绝对企业 CA 路径也必须显式提供。
+    ca_bundle_path: null
 
 # 默认仍为离线 Mock。启用 GPT-SoVITS 时必须显式配置本机 /tts 地址和 preset。
 tts:
   provider: mock
   base_url: http://127.0.0.1:9880
   output_directory: tts/gpt-sovits/ephemeral
+  connect_timeout_seconds: 8
+  first_byte_timeout_seconds: 8
+  # 保留的兼容字段现在只表示单个 TTS job 的总 deadline。
   timeout_seconds: 30
+  cancellation_timeout_seconds: 1
   max_audio_bytes: 33554432
   default_preset: default
   presets: {}
@@ -46,6 +57,9 @@ tts:
   cache_directory: tts/gpt-sovits/persistent
   cache_max_bytes: 536870912
   cache_ttl_seconds: 604800
+  transport:
+    proxy_url: null
+    ca_bundle_path: null
 
 # 默认禁用；首次启用真实 VTS 时仍需用户在 VTube Studio 内人工 Allow。
 vts:
@@ -59,6 +73,9 @@ vts:
   reconnect_initial_seconds: 1
   reconnect_max_seconds: 30
   expression_hotkeys: {}
+  transport:
+    proxy_url: null
+    ca_bundle_path: null
 
 emotion:
   enabled: true
@@ -128,3 +145,28 @@ pipeline:
   audio_cache_path: mock
   # 默认静默模拟播放，避免后端启动后意外发声；Gate A 人工工具显式使用系统播放器。
   playback_mode: silent
+
+# W07 集中硬上限；provider/功能配置只允许低于这些值，不能绕过。
+limits:
+  version: 1
+  dev_http_body_bytes: 65536
+  dev_websocket_frame_bytes: 65536
+  metadata_bytes: 8192
+  metadata_keys: 16
+  metadata_depth: 3
+  metadata_nodes: 128
+  provider_output_tokens: 4096
+  prompt_total_tokens: 16384
+  prompt_system_tokens: 4096
+  prompt_current_tokens: 8192
+  prompt_history_tokens: 4096
+  prompt_memory_tokens: 2048
+  prompt_screen_tokens: 1024
+  prompt_block_tokens: 512
+  llm_output_bytes: 65536
+  llm_output_segments: 128
+  tts_queue_capacity: 8
+  ready_audio_queue_capacity: 4
+  audio_single_result_bytes: 33554432
+  audio_inflight_bytes: 67108864
+  audio_total_duration_ms: 120000

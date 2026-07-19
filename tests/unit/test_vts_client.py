@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import ssl
 from typing import Any, cast
 
 import pytest
+from app.clients.vts import client as client_module
 from app.clients.vts.client import (
     VTSAPIError,
     VTSClient,
@@ -48,6 +50,43 @@ def test_client_rejects_invalid_timeout_and_disconnected_requests() -> None:
         with pytest.raises(ValueError, match="hotkey"):
             await client.trigger_hotkey(" ")
         await client.close()
+
+    asyncio.run(scenario())
+
+
+def test_remote_wss_uses_verified_tls_and_ignores_implicit_proxy_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def scenario() -> None:
+        captured: dict[str, object] = {}
+
+        class Connection:
+            async def send(self, _message: str) -> None:
+                return None
+
+            async def recv(self) -> str:
+                await asyncio.Event().wait()
+                raise AssertionError("unreachable")
+
+            async def close(self) -> None:
+                return None
+
+        async def connect(uri: str, **kwargs: object) -> Connection:
+            captured["uri"] = uri
+            captured.update(kwargs)
+            return Connection()
+
+        monkeypatch.setattr(client_module, "websocket_connect", connect)
+        client = VTSClient("wss://vts.example/socket", proxy_url=None)
+        await client.connect()
+        await client.close()
+
+        context = captured["ssl"]
+        assert isinstance(context, ssl.SSLContext)
+        assert context.verify_mode is ssl.CERT_REQUIRED
+        assert context.check_hostname
+        assert captured["proxy"] is None
+        assert "verify" not in captured
 
     asyncio.run(scenario())
 

@@ -11,10 +11,12 @@ from app.config.user_settings import (
     upgrade_user_settings,
     write_user_settings,
 )
+from app.limits import LimitsConfig
 
 __all__ = [
     "CURRENT_SETTINGS_SCHEMA_VERSION",
     "ConfigurationError",
+    "LimitsConfig",
     "Settings",
     "UserSettingsWriteResult",
     "load_settings",

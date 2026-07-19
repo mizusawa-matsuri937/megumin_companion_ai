@@ -8,6 +8,7 @@ import json
 import os
 import re
 import shutil
+import ssl
 import time
 import wave
 from collections.abc import Awaitable, Callable, Mapping
@@ -21,6 +22,13 @@ from uuid import uuid4
 import httpx
 
 from app.core.cancellation import CancellationToken
+from app.limits import LimitsConfig
+from app.provider_transport import (
+    EndpointKind,
+    build_ssl_context,
+    validate_endpoint,
+    validate_proxy_url,
+)
 from app.schemas import AudioResult, TTSJob
 from app.temp_assets import TempAssetKind, TempAssetRegistry, TempRegistryError
 
@@ -85,6 +93,10 @@ class _AudioTooLargeError(ValueError):
     pass
 
 
+class _FirstByteTimeoutError(TimeoutError):
+    pass
+
+
 @dataclass(slots=True)
 class _KeyLock:
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -101,18 +113,22 @@ class GPTSoVITSProvider:
         presets: Mapping[str, GPTSoVITSPreset],
         *,
         default_preset: str = "default",
-        timeout_seconds: float = 30.0,
+        timeout_seconds: float | None = None,
         max_audio_bytes: int = 32 * 1024 * 1024,
         cache_enabled: bool = False,
         cache_dir: Path | None = None,
         cache_max_bytes: int = 512 * 1024 * 1024,
         cache_ttl_seconds: float = 7 * 24 * 60 * 60,
         sensitive_text_predicate: Callable[[str], bool] | None = None,
+        proxy_url: str | None = None,
+        ca_bundle_path: Path | None = None,
+        transport: httpx.AsyncBaseTransport | None = None,
         client: httpx.AsyncClient | None = None,
         temp_registry: TempAssetRegistry | None = None,
+        max_owned_synthesis_tasks: int = LimitsConfig().tts_queue_capacity,
     ) -> None:
-        if timeout_seconds <= 0.0:
-            raise ValueError("timeout_seconds 必须大于 0")
+        if timeout_seconds is not None:
+            raise ValueError("GPT-SoVITS constructor timeout is forbidden; TTSJob owns deadlines")
         if max_audio_bytes < 44:
             raise ValueError("max_audio_bytes 必须至少容纳 WAV header")
         if default_preset not in presets:
@@ -121,6 +137,13 @@ class GPTSoVITSProvider:
             raise ValueError("启用持久缓存时必须配置 cache_dir")
         if cache_max_bytes < 1 or cache_ttl_seconds <= 0.0:
             raise ValueError("cache_max_bytes/cache_ttl_seconds 必须大于 0")
+        if not 1 <= max_owned_synthesis_tasks <= LimitsConfig().tts_queue_capacity:
+            raise ValueError("max owned synthesis tasks exceeds W07 TTS queue budget")
+        validate_endpoint(base_url, kind=EndpointKind.http)
+        if client is not None and transport is not None:
+            raise ValueError("GPT-SoVITS test transport must have one owner")
+        if proxy_url is not None:
+            validate_proxy_url(proxy_url)
         self._output_directory = output_directory
         self._presets = dict(presets)
         self._default_preset = default_preset
@@ -134,9 +157,15 @@ class GPTSoVITSProvider:
         self._tts_endpoint = httpx.URL(base_url.rstrip("/") + "/").join("tts")
         for preset in presets.values():
             _validate_reference_scope(self._tts_endpoint, preset)
-        self._owns_client = client is None
-        self._client = client or httpx.AsyncClient(
-            timeout=httpx.Timeout(timeout_seconds),
+        if client is not None:
+            transport = client._transport
+        self._client = httpx.AsyncClient(
+            timeout=None,
+            verify=build_ssl_context(ca_bundle_path),
+            proxy=proxy_url,
+            transport=transport,
+            follow_redirects=False,
+            trust_env=False,
         )
         self._paths: set[Path] = set()
         self._asset_ids: dict[Path, str] = {}
@@ -146,28 +175,48 @@ class GPTSoVITSProvider:
         self._synthesis_tasks: set[asyncio.Task[AudioResult]] = set()
         self._synthesis_cancellations: set[asyncio.Task[AudioResult]] = set()
         self._synthesis_calls: set[asyncio.Future[None]] = set()
+        self._synthesis_capacity = asyncio.BoundedSemaphore(max_owned_synthesis_tasks)
+        self._max_owned_synthesis_tasks = max_owned_synthesis_tasks
         self._close_task: asyncio.Task[None] | None = None
         self._closed = False
 
-    async def probe(self) -> GPTSoVITSProbe:
+    async def probe(self, *, timeout_ms: int) -> GPTSoVITSProbe:
         """Identify an API v2 ``/tts`` route without generating or saving audio."""
 
+        if timeout_ms <= 0:
+            raise ValueError("GPT-SoVITS probe timeout must be positive")
         if self._closed:
             return GPTSoVITSProbe(False, None, error_code="tts_closed")
+        response: httpx.Response | None = None
         try:
-            response = await self._client.post(self._tts_endpoint, json={})
-        except httpx.TimeoutException:
+            request = self._client.build_request("POST", self._tts_endpoint, json={})
+            request.extensions["timeout"] = {
+                "connect": timeout_ms / 1000,
+                "read": timeout_ms / 1000,
+                "write": timeout_ms / 1000,
+                "pool": timeout_ms / 1000,
+            }
+            response = await asyncio.wait_for(
+                self._client.send(request, stream=True),
+                timeout=timeout_ms / 1000,
+            )
+        except (TimeoutError, httpx.TimeoutException):
             return GPTSoVITSProbe(False, None, error_code="tts_timeout")
         except httpx.RequestError:
             return GPTSoVITSProbe(False, None, error_code="tts_unavailable")
-        if response.status_code in {200, 400, 405, 422}:
-            return GPTSoVITSProbe(True, "api_v2", status_code=response.status_code)
-        return GPTSoVITSProbe(
-            False,
-            None,
-            status_code=response.status_code,
-            error_code=("tts_unavailable" if response.status_code >= 500 else "tts_protocol_error"),
-        )
+        try:
+            if response.status_code in {200, 400, 405, 422}:
+                return GPTSoVITSProbe(True, "api_v2", status_code=response.status_code)
+            return GPTSoVITSProbe(
+                False,
+                None,
+                status_code=response.status_code,
+                error_code=(
+                    "tts_unavailable" if response.status_code >= 500 else "tts_protocol_error"
+                ),
+            )
+        finally:
+            await response.aclose()
 
     async def synthesize(
         self,
@@ -179,25 +228,64 @@ class GPTSoVITSProvider:
         token.raise_if_cancelled()
         if self._closed:
             return self._failure(job, "tts_closed")
+        if self._synthesis_cancellations:
+            return self._failure(job, "tts_cancel_timeout")
 
         # Register the worker and its public call completion without yielding. A
         # concurrently scheduled close therefore either sees this operation or
         # flips ``_closed`` first and makes the call fail closed above.
         call_done: asyncio.Future[None] = asyncio.get_running_loop().create_future()
-        worker = asyncio.create_task(
-            self._synthesize(job, segment_index=segment_index, token=token),
-            name=f"gpt-sovits-synthesis-{job.job_id}",
-        )
         self._synthesis_calls.add(call_done)
-        self._synthesis_tasks.add(worker)
-        worker.add_done_callback(self._synthesis_finished)
+        deadline = asyncio.get_running_loop().time() + job.timeout_ms / 1000
+        slot_acquired = False
+        worker: asyncio.Task[AudioResult] | None = None
         try:
-            return await asyncio.shield(worker)
-        except asyncio.CancelledError:
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                return self._failure(job, "tts_total_timeout")
+            if not await _acquire_semaphore_with_token(
+                self._synthesis_capacity,
+                token,
+                timeout_seconds=remaining,
+            ):
+                return self._failure(job, "tts_total_timeout")
+            slot_acquired = True
+            if self._is_closed():
+                return self._failure(job, "tts_closed")
+            if self._synthesis_cancellations:
+                return self._failure(job, "tts_cancel_timeout")
+
+            worker = asyncio.create_task(
+                self._synthesize(job, segment_index=segment_index, token=token),
+                name=f"gpt-sovits-synthesis-{job.job_id}",
+            )
+            self._synthesis_tasks.add(worker)
+            worker.add_done_callback(self._synthesis_finished)
+            slot_acquired = False
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                raise TimeoutError
+            return await asyncio.wait_for(
+                asyncio.shield(worker),
+                timeout=remaining,
+            )
+        except TimeoutError:
+            if worker is None:
+                return self._failure(job, "tts_total_timeout")
             self._cancel_synthesis(worker)
-            await _join_task(worker)
+            settled = await _join_task(worker, job.cancellation_timeout_ms / 1000)
+            return self._failure(
+                job,
+                "tts_total_timeout" if settled else "tts_cancel_timeout",
+            )
+        except asyncio.CancelledError:
+            if worker is not None:
+                self._cancel_synthesis(worker)
+                await _join_task(worker, job.cancellation_timeout_ms / 1000)
             raise
         finally:
+            if slot_acquired:
+                self._synthesis_capacity.release()
             self._synthesis_calls.discard(call_done)
             if not call_done.done():
                 call_done.set_result(None)
@@ -253,6 +341,12 @@ class GPTSoVITSProvider:
         try:
             await _run_to_thread(self._register_temp_path, part_path, TempAssetKind.tts_part)
             request = self._client.build_request("POST", self._tts_endpoint, json=request_payload)
+            request.extensions["timeout"] = {
+                "connect": job.connect_timeout_ms / 1000,
+                "read": None,
+                "write": None,
+                "pool": job.connect_timeout_ms / 1000,
+            }
             response = await _await_with_token(self._client.send(request, stream=True), token)
             error_code = self._response_error(response)
             if error_code is not None:
@@ -266,7 +360,12 @@ class GPTSoVITSProvider:
                 return self._failure(job, "tts_response_too_large")
 
             final_path.parent.mkdir(parents=True, exist_ok=True)
-            await self._write_response(response, part_path, token)
+            await self._write_response(
+                response,
+                part_path,
+                token,
+                first_byte_timeout_seconds=job.first_byte_timeout_ms / 1000,
+            )
             sample_rate, duration_ms = await _run_to_thread(_inspect_wave, part_path)
             token.raise_if_cancelled()
             replace_started = True
@@ -296,10 +395,17 @@ class GPTSoVITSProvider:
             return self._failure(job, "tts_response_too_large")
         except _AudioValidationError:
             return self._failure(job, "tts_invalid_audio")
+        except _FirstByteTimeoutError:
+            return self._failure(job, "tts_first_byte_timeout")
+        except httpx.ConnectTimeout:
+            return self._failure(job, "tts_connect_timeout")
         except httpx.TimeoutException:
-            return self._failure(job, "tts_timeout")
-        except httpx.RequestError:
-            return self._failure(job, "tts_unavailable")
+            return self._failure(job, "tts_total_timeout")
+        except httpx.RequestError as exc:
+            return self._failure(
+                job,
+                "tts_tls_error" if _has_ssl_error(exc) else "tts_connection_error",
+            )
         except TempRegistryError:
             return self._failure(job, "tts_temp_registry_failed")
         finally:
@@ -330,15 +436,34 @@ class GPTSoVITSProvider:
         response: httpx.Response,
         path: Path,
         token: CancellationToken,
+        *,
+        first_byte_timeout_seconds: float,
     ) -> None:
         byte_count = 0
         stream = response.aiter_bytes()
+        first_byte_deadline = asyncio.get_running_loop().time() + first_byte_timeout_seconds
+        received_first_byte = False
         with path.open("xb") as output:
             while True:
                 try:
-                    chunk = await _await_with_token(anext(stream), token)
+                    if received_first_byte:
+                        chunk = await _await_with_token(anext(stream), token)
+                    else:
+                        remaining = first_byte_deadline - asyncio.get_running_loop().time()
+                        if remaining <= 0:
+                            raise _FirstByteTimeoutError
+                        try:
+                            chunk = await asyncio.wait_for(
+                                _await_with_token(anext(stream), token),
+                                timeout=remaining,
+                            )
+                        except TimeoutError as exc:
+                            raise _FirstByteTimeoutError from exc
                 except StopAsyncIteration:
                     break
+                if not chunk:
+                    continue
+                received_first_byte = True
                 byte_count += len(chunk)
                 if byte_count > self._max_audio_bytes:
                     raise _AudioTooLargeError
@@ -537,6 +662,8 @@ class GPTSoVITSProvider:
         status = response.status_code
         if 200 <= status < 300:
             return None
+        if 300 <= status < 400:
+            return "tts_protocol_error"
         if status in {401, 403}:
             return "tts_auth_failed"
         if status == 404:
@@ -558,6 +685,11 @@ class GPTSoVITSProvider:
             success=False,
             error_code=error_code,
         )
+
+    def _is_closed(self) -> bool:
+        """Re-read the close state after an awaited capacity handoff."""
+
+        return self._closed
 
     async def discard(self, result: AudioResult) -> None:
         if self._cache_results.pop(result.audio_id, None) is not None:
@@ -589,7 +721,7 @@ class GPTSoVITSProvider:
             for worker in workers:
                 self._cancel_synthesis(worker)
             await asyncio.gather(
-                *(_join_task(worker) for worker in workers),
+                *(_join_task(worker, 1.0) for worker in workers),
                 *(asyncio.shield(call) for call in calls),
                 return_exceptions=True,
             )
@@ -601,8 +733,7 @@ class GPTSoVITSProvider:
         parents = {path.parent for path in paths}
         await asyncio.gather(*(_run_to_thread(_remove_empty_parent, path) for path in parents))
         await self._cleanup_cache()
-        if self._owns_client:
-            await self._client.aclose()
+        await self._client.aclose()
 
     def _register_temp_path(self, path: Path, kind: TempAssetKind) -> None:
         if self._temp_registry is None:
@@ -638,6 +769,7 @@ class GPTSoVITSProvider:
     def _synthesis_finished(self, task: asyncio.Task[AudioResult]) -> None:
         self._synthesis_tasks.discard(task)
         self._synthesis_cancellations.discard(task)
+        self._synthesis_capacity.release()
 
 
 async def _await_with_token(awaitable: Awaitable[_T], token: CancellationToken) -> _T:
@@ -687,21 +819,78 @@ async def _finish_cleanup(awaitable: Awaitable[_T]) -> _T:
                 raise
 
 
-async def _join_task(task: asyncio.Task[Any]) -> None:
+async def _join_task(task: asyncio.Task[Any], timeout_seconds: float) -> bool:
     """Join a task without letting repeated waiter cancellation orphan it."""
 
     cancelled = False
-    while not task.done():
+    deadline = asyncio.get_running_loop().time() + timeout_seconds
+    while not task.done() and asyncio.get_running_loop().time() < deadline:
         try:
-            await asyncio.shield(task)
+            remaining = max(0.0, deadline - asyncio.get_running_loop().time())
+            await asyncio.wait_for(asyncio.shield(task), timeout=remaining)
+        except TimeoutError:
+            break
         except asyncio.CancelledError:
             if not task.done():
                 cancelled = True
         except Exception:
             break
-    await asyncio.gather(task, return_exceptions=True)
+    if task.done():
+        await asyncio.gather(task, return_exceptions=True)
     if cancelled:
         raise asyncio.CancelledError
+    return task.done()
+
+
+async def _acquire_semaphore_with_token(
+    semaphore: asyncio.Semaphore,
+    token: CancellationToken,
+    *,
+    timeout_seconds: float,
+) -> bool:
+    """Acquire one provider slot without leaking it across timeout/cancel races."""
+
+    token.raise_if_cancelled()
+    acquisition = asyncio.create_task(semaphore.acquire())
+    cancellation = asyncio.create_task(token.wait())
+    acquired = False
+    try:
+        done, _pending = await asyncio.wait(
+            {acquisition, cancellation},
+            timeout=max(0.0, timeout_seconds),
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if cancellation in done:
+            token.raise_if_cancelled()
+        if acquisition in done:
+            acquisition.result()
+            acquired = True
+            return True
+        return False
+    finally:
+        cancellation.cancel()
+        if not acquired:
+            if not acquisition.done():
+                acquisition.cancel()
+            await asyncio.gather(acquisition, return_exceptions=True)
+            if (
+                acquisition.done()
+                and not acquisition.cancelled()
+                and acquisition.exception() is None
+            ):
+                semaphore.release()
+        await asyncio.gather(cancellation, return_exceptions=True)
+
+
+def _has_ssl_error(exc: BaseException) -> bool:
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, ssl.SSLError):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
 
 
 def _content_length(response: httpx.Response) -> int | None:

@@ -3,7 +3,7 @@
 from app.clients.llm.base import LLMProvider
 from app.clients.llm.errors import LLMErrorCode, LLMProviderError
 from app.clients.llm.mock_llm import MockLLMProvider
-from app.clients.llm.openai_compatible import OpenAICompatibleLLMProvider
+from app.clients.llm.openai_compatible import OpenAICompatibleLLMProvider, StreamCompletionMode
 
 __all__ = [
     "LLMErrorCode",
@@ -11,4 +11,5 @@ __all__ = [
     "LLMProviderError",
     "MockLLMProvider",
     "OpenAICompatibleLLMProvider",
+    "StreamCompletionMode",
 ]

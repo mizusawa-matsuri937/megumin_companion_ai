@@ -4,6 +4,7 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator
 from pathlib import Path
+from typing import TypedDict
 
 from app.clients.llm import MockLLMProvider
 from app.clients.tts import MockTTSProvider
@@ -19,6 +20,21 @@ from app.schemas import (
     TurnState,
     UserMessage,
 )
+
+
+class _TTSDeadlines(TypedDict):
+    tts_connect_timeout_ms: int
+    tts_first_byte_timeout_ms: int
+    tts_total_timeout_ms: int
+    tts_cancellation_timeout_ms: int
+
+
+_TTS_DEADLINES: _TTSDeadlines = {
+    "tts_connect_timeout_ms": 80,
+    "tts_first_byte_timeout_ms": 80,
+    "tts_total_timeout_ms": 300,
+    "tts_cancellation_timeout_ms": 50,
+}
 
 
 class RecordingAudioPlayer:
@@ -74,6 +90,7 @@ def test_out_of_order_tts_is_played_in_segment_order_and_cleaned(tmp_path: Path)
             ),
             player,
             tts_worker_count=2,
+            **_TTS_DEADLINES,
         )
         message = UserMessage(text="开始测试")
         state = TurnState(
@@ -117,6 +134,7 @@ def test_new_input_is_a_hard_barrier_for_old_turn_events(tmp_path: Path) -> None
             ),
             MockTTSProvider(tmp_path, duration_ms=100, synthesis_delay_seconds=0.01),
             RecordingAudioPlayer(),
+            **_TTS_DEADLINES,
         )
         logger = logging.getLogger("test.turn_barrier")
         logger.addHandler(logging.NullHandler())
@@ -151,7 +169,7 @@ def test_text_only_proactive_turn_has_no_user_message_or_audio_work(tmp_path: Pa
         llm = CapturingLLM()
         tts = MockTTSProvider(tmp_path, duration_ms=1, synthesis_delay_seconds=0)
         player = RecordingAudioPlayer()
-        pipeline = DialoguePipeline(llm, tts, player)
+        pipeline = DialoguePipeline(llm, tts, player, **_TTS_DEADLINES)
         intent = ProactiveIntent(
             trigger_type="idle",
             instruction="进行一次低打扰问候",
@@ -209,7 +227,7 @@ def test_pipeline_close_attempts_all_resources_once_after_failures(tmp_path: Pat
         llm = FailingLLM()
         tts = FailingTTS()
         player = FailingPlayer()
-        pipeline = DialoguePipeline(llm, tts, player)
+        pipeline = DialoguePipeline(llm, tts, player, **_TTS_DEADLINES)
         results = await asyncio.gather(
             pipeline.close(),
             pipeline.close(),

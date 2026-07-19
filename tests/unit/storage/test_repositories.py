@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import hashlib
+import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import app.storage.repositories as repositories_module
 import pytest
 from app.memory.models import (
     ApprovedMemory,
@@ -14,7 +16,7 @@ from app.memory.models import (
     SourceProvenance,
 )
 from app.schemas.ai import FeatureName
-from app.storage.database import SQLiteDatabase, StorageConflictError
+from app.storage.database import SQLiteDatabase, StorageConflictError, transaction
 from app.storage.records import ConversationOrigin, ConversationRecord, ConversationRole
 from app.storage.repositories import (
     ConversationRepository,
@@ -32,6 +34,30 @@ def _database(tmp_path: Path) -> SQLiteDatabase:
     database = SQLiteDatabase(tmp_path / "companion.sqlite3")
     database.initialize()
     return database
+
+
+def _set_fts_config(
+    database: SQLiteDatabase,
+    *,
+    secure_delete: int = 1,
+    version: int = 4,
+) -> None:
+    with database.connect() as connection, transaction(connection):
+        connection.execute(
+            "UPDATE memories_fts_config SET v = ? WHERE k = 'secure-delete'",
+            (secure_delete,),
+        )
+        connection.execute(
+            "UPDATE memories_fts_config SET v = ? WHERE k = 'version'",
+            (version,),
+        )
+
+
+def _fts_config_value(database: SQLiteDatabase, key: str) -> int:
+    with database.connect() as connection:
+        row = connection.execute("SELECT v FROM memories_fts_config WHERE k = ?", (key,)).fetchone()
+    assert row is not None
+    return int(row["v"])
 
 
 def _conversation(
@@ -132,11 +158,11 @@ def test_history_validates_arguments_and_clears_only_selected_session(tmp_path: 
         repository.list_recent(user_id="local_user", session_id="session-1", now=_now(), limit=0)
     with pytest.raises(ValueError, match="positive"):
         repository.cleanup_expired(now=_now(), retention_days=0)
-    assert repository.clear(user_id="local_user", session_id="session-1") == 1
+    assert repository.clear(user_id="local_user", session_id="session-1", now=_now()) == 1
     assert repository.list_recent(user_id="local_user", session_id="session-2", now=_now()) == [
         other
     ]
-    assert repository.clear(user_id="local_user") == 1
+    assert repository.clear(user_id="local_user", now=_now()) == 1
 
 
 def test_feature_flags_have_privacy_safe_defaults_and_persist_updates(tmp_path: Path) -> None:
@@ -165,6 +191,236 @@ def test_missing_feature_flag_is_reported_as_database_corruption(tmp_path: Path)
         repository.get(FeatureName.vision)
     with pytest.raises(KeyError, match="vision"):
         repository.set(FeatureName.vision, True, updated_at=_now())
+
+
+@pytest.mark.parametrize(
+    ("sqlite_version", "expected_update"),
+    [
+        ((3, 41, 2), False),
+        ((3, 42, 0), True),
+        ((3, 46, 0), True),
+        ((3, 46, 1), False),
+    ],
+)
+def test_fts5_secure_delete_compatibility_version_boundaries(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    sqlite_version: tuple[int, int, int],
+    expected_update: bool,
+) -> None:
+    database = _database(tmp_path)
+    _set_fts_config(database)
+    monkeypatch.setattr(sqlite3, "sqlite_version_info", sqlite_version)
+
+    with database.connect() as connection, transaction(connection):
+        updated = repositories_module._repair_legacy_fts5_secure_delete_version(connection)
+
+    assert updated is expected_update
+    assert _fts_config_value(database, "version") == (5 if expected_update else 4)
+
+
+@pytest.mark.parametrize(
+    ("secure_delete", "version"),
+    [(0, 4), (1, 5)],
+)
+def test_fts5_secure_delete_compatibility_requires_exact_config_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    secure_delete: int,
+    version: int,
+) -> None:
+    database = _database(tmp_path)
+    _set_fts_config(database, secure_delete=secure_delete, version=version)
+    monkeypatch.setattr(sqlite3, "sqlite_version_info", (3, 45, 1))
+
+    with database.connect() as connection, transaction(connection):
+        updated = repositories_module._repair_legacy_fts5_secure_delete_version(connection)
+
+    assert not updated
+    assert _fts_config_value(database, "version") == version
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["exact_upsert", "supersede", "update_content", "delete", "clear"],
+)
+def test_memory_mutations_invoke_fts5_compatibility_inside_their_transaction(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+) -> None:
+    database = _database(tmp_path)
+    repository = MemoryRepository(database)
+    item = repository.upsert(
+        _approved(
+            memory_id="compat-original",
+            content="合成兼容旧内容",
+            normalized="合成兼容旧内容",
+            source_message_id="compat-original-source",
+        )
+    )
+    _set_fts_config(database)
+    monkeypatch.setattr(sqlite3, "sqlite_version_info", (3, 45, 1))
+    original_helper = repositories_module._repair_legacy_fts5_secure_delete_version
+    calls: list[bool] = []
+
+    def recording_helper(connection: sqlite3.Connection) -> bool:
+        calls.append(connection.in_transaction)
+        return original_helper(connection)
+
+    monkeypatch.setattr(
+        repositories_module,
+        "_repair_legacy_fts5_secure_delete_version",
+        recording_helper,
+    )
+
+    if mutation == "exact_upsert":
+        repository.upsert(
+            _approved(
+                memory_id="compat-exact",
+                content="合成兼容旧内容",
+                normalized="合成兼容旧内容",
+                source_message_id="compat-exact-source",
+            )
+        )
+    elif mutation == "supersede":
+        repository.upsert(
+            _approved(
+                memory_id="compat-new",
+                content="合成兼容新内容",
+                normalized="合成兼容新内容",
+                source_message_id="compat-new-source",
+            )
+        )
+    elif mutation == "update_content":
+        repository.update_content(
+            item.memory_id,
+            user_id="local_user",
+            content="合成兼容编辑内容",
+            normalized_content="合成兼容编辑内容",
+            updated_at=_now() + timedelta(minutes=1),
+        )
+    elif mutation == "delete":
+        repository.delete_logically(item.memory_id, user_id="local_user", now=_now())
+    else:
+        repository.clear_logically(user_id="local_user", now=_now())
+
+    assert calls == [True]
+    assert _fts_config_value(database, "version") == 5
+
+
+def test_pure_memory_insert_does_not_mark_fts5_secure_delete_format(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = _database(tmp_path)
+    repository = MemoryRepository(database)
+    _set_fts_config(database)
+    monkeypatch.setattr(sqlite3, "sqlite_version_info", (3, 45, 1))
+    original_helper = repositories_module._repair_legacy_fts5_secure_delete_version
+    calls = 0
+
+    def recording_helper(connection: sqlite3.Connection) -> bool:
+        nonlocal calls
+        calls += 1
+        return original_helper(connection)
+
+    monkeypatch.setattr(
+        repositories_module,
+        "_repair_legacy_fts5_secure_delete_version",
+        recording_helper,
+    )
+
+    repository.upsert(
+        _approved(
+            memory_id="compat-insert",
+            content="合成纯插入内容",
+            normalized="合成纯插入内容",
+            source_message_id="compat-insert-source",
+        )
+    )
+
+    assert calls == 0
+    assert _fts_config_value(database, "version") == 4
+
+
+def test_fts5_compatibility_update_rolls_back_with_memory_transaction(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = _database(tmp_path)
+    repository = MemoryRepository(database)
+    original = repository.upsert(
+        _approved(
+            memory_id="compat-rollback",
+            content="合成回滚原值",
+            normalized="合成回滚原值",
+            source_message_id="compat-rollback-source",
+        )
+    )
+    _set_fts_config(database)
+    monkeypatch.setattr(sqlite3, "sqlite_version_info", (3, 45, 1))
+
+    def fail_after_compatibility(*_args: object) -> None:
+        raise RuntimeError("synthetic rollback after compatibility update")
+
+    monkeypatch.setattr(
+        MemoryRepository,
+        "_add_source",
+        staticmethod(fail_after_compatibility),
+    )
+
+    with pytest.raises(RuntimeError, match="synthetic rollback"):
+        repository.upsert(
+            _approved(
+                memory_id="compat-rollback-exact",
+                content="合成回滚原值",
+                normalized="合成回滚原值",
+                source_message_id="compat-rollback-failure",
+            )
+        )
+
+    assert repository.get(original.memory_id) == original
+    assert _fts_config_value(database, "version") == 4
+
+
+def test_legacy_fts5_compatibility_preserves_search_and_integrity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = _database(tmp_path)
+    repository = MemoryRepository(database)
+    retained = repository.upsert(
+        _approved(
+            memory_id="compat-retained",
+            content="合成保留草莓内容",
+            normalized="合成保留草莓内容",
+            source_message_id="compat-retained-source",
+            canonical_key="preference:retained",
+        )
+    )
+    deleted = repository.upsert(
+        _approved(
+            memory_id="compat-deleted",
+            content="合成删除咖啡内容",
+            normalized="合成删除咖啡内容",
+            source_message_id="compat-deleted-source",
+            canonical_key="preference:deleted",
+        )
+    )
+    _set_fts_config(database)
+    monkeypatch.setattr(sqlite3, "sqlite_version_info", (3, 45, 1))
+
+    result = repository.delete_logically(deleted.memory_id, user_id="local_user", now=_now())
+
+    assert result.logical_deleted
+    assert repository.search(user_id="local_user", query="合成删除咖啡") == []
+    assert [
+        item.memory_id for item in repository.search(user_id="local_user", query="合成保留草莓")
+    ] == [retained.memory_id]
+    assert _fts_config_value(database, "version") == 5
+    with database.connect() as connection:
+        assert connection.execute("PRAGMA quick_check").fetchone()[0] == "ok"
 
 
 def test_memory_exact_dedup_merges_sources_without_growing_items(tmp_path: Path) -> None:
@@ -270,8 +526,8 @@ def test_hard_delete_cascades_sources_profile_and_fts_then_truncates_wal(tmp_pat
         )
     )
 
-    assert repository.delete(item.memory_id, user_id="local_user")
-    assert not repository.delete(item.memory_id, user_id="local_user")
+    assert repository.delete(item.memory_id, user_id="local_user", now=_now())
+    assert not repository.delete(item.memory_id, user_id="local_user", now=_now())
     assert repository.get(item.memory_id) is None
     assert repository.list_sources(item.memory_id) == []
     assert repository.list_profiles(user_id="local_user") == []
@@ -401,10 +657,10 @@ def test_clear_removes_only_selected_users_memories(tmp_path: Path) -> None:
     ).model_copy(update={"user_id": "other_user"})
     repository.upsert(other)
 
-    assert repository.clear(user_id="local_user") == 1
+    assert repository.clear(user_id="local_user", now=_now()) == 1
     assert repository.list_items(user_id="local_user") == []
     assert [item.memory_id for item in repository.list_items(user_id="other_user")] == ["other"]
-    assert repository.clear(user_id="local_user") == 0
+    assert repository.clear(user_id="local_user", now=_now()) == 0
 
 
 def test_conversation_record_rejects_invalid_role_time_and_blank_content() -> None:

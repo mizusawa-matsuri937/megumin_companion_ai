@@ -310,11 +310,22 @@ class TurnService:
                 if not claim.created:
                     existing = self._prefer_memory_state(claim.state)
                     if existing != claim.state:
-                        await self._idempotency_store.update(
-                            client_id=client_id,
-                            state=existing,
-                            now=self._now(),
-                        )
+                        try:
+                            await self._idempotency_store.update(
+                                client_id=client_id,
+                                state=existing,
+                                now=self._now(),
+                            )
+                        except IdempotencyConflictError:
+                            refreshed = await self._idempotency_store.lookup_turn(
+                                client_id=client_id,
+                                session_id=message.session_id,
+                                turn_id=claim.state.turn_id,
+                                now=self._now(),
+                            )
+                            if refreshed is None:
+                                raise IdempotencyUnavailableError from None
+                            existing = refreshed
                     self._remember_existing(client_id, existing)
                     await self._publish_state(
                         existing,
