@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import os
 import re
+import stat
+import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePath
@@ -43,10 +46,34 @@ class ResourceReference:
                 raise ResourceAccessError("worker_resource_authority_invalid")
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class AuthorizedResource:
+    """A stable worker-side authority, never a pathname capability.
+
+    Path resources own a non-inheritable descriptor opened and validated by
+    the helper. Inherited native handles remain parent-owned and are not
+    closed here.
+    """
+
     resource_id: str
-    value: Path | int
+    value: int
+    owns_descriptor: bool = False
+    _closed: bool = False
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
+    def close(self) -> None:
+        if self.owns_descriptor and not self._closed:
+            self._closed = True
+            os.close(self.value)
+
+    def __enter__(self) -> AuthorizedResource:
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self.close()
 
 
 class ApprovedResourcePolicy:
@@ -82,12 +109,13 @@ class ApprovedResourcePolicy:
     def inherited_handle_values(self) -> tuple[int, ...]:
         return tuple(self._handles.values())
 
-    def authorize(self, reference: ResourceReference) -> Path | int:
+    def authorize(self, reference: ResourceReference) -> AuthorizedResource:
         if reference.handle_id is not None:
             try:
-                return self._handles[reference.handle_id]
+                handle = self._handles[reference.handle_id]
             except KeyError as exc:
                 raise ResourceAccessError("worker_handle_not_approved") from exc
+            return AuthorizedResource(resource_id=reference.resource_id, value=handle)
         assert reference.root_id is not None and reference.relative_path is not None
         try:
             root = self._roots[reference.root_id]
@@ -113,25 +141,51 @@ class ApprovedResourcePolicy:
             raise ResourceAccessError("worker_path_escape_or_reparse") from exc
         if not canonical.is_file():
             raise ResourceAccessError("worker_resource_not_regular_file")
-        return canonical
+        flags = os.O_RDONLY
+        for optional in ("O_BINARY", "O_CLOEXEC", "O_NOFOLLOW", "O_NONBLOCK"):
+            flags |= int(getattr(os, optional, 0))
+        try:
+            descriptor = os.open(lexical, flags)
+        except OSError as exc:
+            raise ResourceAccessError("worker_path_escape_or_reparse") from exc
+        try:
+            os.set_inheritable(descriptor, False)
+            if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+                raise ResourceAccessError("worker_resource_not_regular_file")
+            final_path = _final_path_from_descriptor(descriptor)
+            if os.path.commonpath((_comparison_path(root), _comparison_path(final_path))) != (
+                _comparison_path(root)
+            ):
+                raise ResourceAccessError("worker_path_escape_or_reparse")
+        except (OSError, ValueError, ResourceAccessError) as exc:
+            os.close(descriptor)
+            if isinstance(exc, ResourceAccessError):
+                raise
+            raise ResourceAccessError("worker_path_escape_or_reparse") from exc
+        return AuthorizedResource(
+            resource_id=reference.resource_id,
+            value=descriptor,
+            owns_descriptor=True,
+        )
 
     def wire_reference(self, reference: ResourceReference) -> dict[str, object]:
         """Validate then return a path-free/root-relative wire description."""
 
         authorized = self.authorize(reference)
         if reference.handle_id is not None:
-            del authorized
             return {
                 "resource_id": reference.resource_id,
                 "handle_id": reference.handle_id,
             }
         assert reference.root_id is not None and reference.relative_path is not None
-        del authorized
-        return {
-            "resource_id": reference.resource_id,
-            "root_id": reference.root_id,
-            "relative_path": reference.relative_path,
-        }
+        try:
+            return {
+                "resource_id": reference.resource_id,
+                "root_id": reference.root_id,
+                "relative_path": reference.relative_path,
+            }
+        finally:
+            authorized.close()
 
     def authorize_wire(self, raw: object) -> AuthorizedResource:
         """Revalidate an untrusted helper-protocol resource inside the worker."""
@@ -157,6 +211,44 @@ class ApprovedResourcePolicy:
             )
         else:
             raise ResourceAccessError("worker_resource_reference_invalid")
-        return AuthorizedResource(
-            resource_id=reference.resource_id, value=self.authorize(reference)
-        )
+        return self.authorize(reference)
+
+
+def _comparison_path(path: Path) -> str:
+    return os.path.normcase(os.path.abspath(os.fspath(path)))
+
+
+def _final_path_from_descriptor(descriptor: int) -> Path:
+    """Return the kernel-resolved target of an already-open descriptor."""
+
+    if os.name == "nt":
+        import ctypes
+        import msvcrt
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        get_final = kernel32.GetFinalPathNameByHandleW
+        get_final.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_uint32, ctypes.c_uint32]
+        get_final.restype = ctypes.c_uint32
+        handle = msvcrt.get_osfhandle(descriptor)
+        needed = get_final(handle, None, 0, 0)
+        if needed == 0:
+            raise OSError(ctypes.get_last_error(), "final path unavailable")
+        buffer = ctypes.create_unicode_buffer(needed + 1)
+        written = get_final(handle, buffer, len(buffer), 0)
+        if written == 0 or written >= len(buffer):
+            raise OSError(ctypes.get_last_error(), "final path unavailable")
+        raw = buffer.value
+        if raw.startswith("\\\\?\\UNC\\"):
+            raw = "\\\\" + raw[8:]
+        elif raw.startswith("\\\\?\\"):
+            raw = raw[4:]
+        return Path(raw)
+    proc_link = Path("/proc/self/fd") / str(descriptor)
+    if proc_link.exists():
+        return Path(os.readlink(proc_link))
+    if sys.platform == "darwin":
+        import fcntl
+
+        buffer = fcntl.fcntl(descriptor, 50, b"\0" * 4096)
+        return Path(buffer.split(b"\0", 1)[0].decode())
+    raise OSError("final path unavailable")

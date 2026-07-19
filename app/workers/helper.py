@@ -41,15 +41,23 @@ class HelperRuntime:
         handler: HelperJobHandler,
         resource_policy: ApprovedResourcePolicy | None = None,
         heartbeat_interval_seconds: float = 0.25,
+        maximum_active_jobs: int = 8,
         read: Callable[[int], Awaitable[bytes]] | None = None,
         write: Callable[[bytes], Awaitable[None]] | None = None,
     ) -> None:
-        if not _SAFE_CODE.fullmatch(role) or heartbeat_interval_seconds <= 0:
+        if (
+            not _SAFE_CODE.fullmatch(role)
+            or heartbeat_interval_seconds <= 0
+            or isinstance(maximum_active_jobs, bool)
+            or not 1 <= maximum_active_jobs <= 64
+        ):
             raise ValueError("helper runtime configuration invalid")
         self._role = role
         self._handler = handler
         self._resource_policy = resource_policy or ApprovedResourcePolicy()
         self._heartbeat_interval = heartbeat_interval_seconds
+        self._maximum_active_jobs = maximum_active_jobs
+        self._active_job_limit = maximum_active_jobs
         self._read = read or self._read_stdin
         self._write = write or self._write_stdout
         self._write_lock = asyncio.Lock()
@@ -98,12 +106,24 @@ class HelperRuntime:
 
     async def _dispatch(self, message: HelperMessage) -> None:
         if not self._handshake.is_set():
+            requested_limit = message.payload.get("maximum_active_jobs")
+            if message.payload == {"role": self._role}:
+                requested_limit = self._maximum_active_jobs
             if (
                 message.message_type != "handshake.accepted"
                 or message.request_id is not None
-                or message.payload != {"role": self._role}
+                or set(message.payload)
+                not in (
+                    {"role"},
+                    {"role", "maximum_active_jobs"},
+                )
+                or message.payload.get("role") != self._role
+                or isinstance(requested_limit, bool)
+                or not isinstance(requested_limit, int)
+                or not 1 <= requested_limit <= self._maximum_active_jobs
             ):
                 raise ProtocolError("helper_protocol_handshake_invalid")
+            self._active_job_limit = requested_limit
             self._handshake.set()
             return
         if message.message_type == "job.start":
@@ -136,6 +156,15 @@ class HelperRuntime:
             or not isinstance(resources, list)
         ):
             raise ProtocolError("helper_protocol_job_invalid")
+        if len(self._jobs) >= self._active_job_limit:
+            await self._send(
+                HelperMessage(
+                    message_type="job.failed",
+                    request_id=job_id,
+                    payload={"error_code": "worker_job_capacity"},
+                )
+            )
+            return
         cancelled = asyncio.Event()
         task = asyncio.create_task(
             self._run_job(job_id, job_kind, resources, cancelled),
@@ -150,13 +179,14 @@ class HelperRuntime:
         resources: list[dict[str, Any]],
         cancelled: asyncio.Event,
     ) -> None:
+        authorized_items: list[AuthorizedResource] = []
         try:
             try:
-                authorized = tuple(
-                    self._resource_policy.authorize_wire(resource) for resource in resources
-                )
+                for resource in resources:
+                    authorized_items.append(self._resource_policy.authorize_wire(resource))
             except ResourceAccessError as exc:
                 raise ProtocolError("helper_protocol_resource_rejected") from exc
+            authorized = tuple(authorized_items)
             result = await self._handler.run_job(job_kind, authorized, cancelled)
             if not isinstance(result, dict):
                 raise ProtocolError("helper_protocol_job_result_invalid")
@@ -183,6 +213,9 @@ class HelperRuntime:
                     )
                 )
         finally:
+            for authorized_resource in authorized_items:
+                with suppress(OSError):
+                    authorized_resource.close()
             self._jobs.pop(job_id, None)
 
     async def _cancel_job(self, message: HelperMessage) -> None:

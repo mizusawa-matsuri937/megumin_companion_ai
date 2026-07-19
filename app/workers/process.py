@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import ctypes
 import os
+import queue
 import stat
 import subprocess
 import threading
@@ -33,7 +34,6 @@ _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
 _JOB_OBJECT_BASIC_ACCOUNTING_INFORMATION = 1
 _WAIT_OBJECT_0 = 0
 _WAIT_TIMEOUT = 258
-_INFINITE = 0xFFFFFFFF
 _STILL_ACTIVE = 259
 _MAX_COMMAND_ARGUMENTS = 128
 _MAX_COMMAND_LINE_CHARS = 32767
@@ -505,7 +505,9 @@ class _WindowsManagedProcess:
         self._stdin_fd = stdin_fd
         self._stdout_fd = stdout_fd
         self._stderr_fd = stderr_fd
-        self._write_lock: threading.Lock | None = threading.Lock()
+        self._write_queue: queue.Queue[_WriteRequest | None] | None = None
+        self._writer_stopping: threading.Event | None = None
+        self._writer_thread: threading.Thread | None = None
         self._close_lock = asyncio.Lock()
         self._closed = False
         self._bind()
@@ -528,19 +530,80 @@ class _WindowsManagedProcess:
         k32.QueryInformationJobObject.restype = c_int
 
     async def write_stdin(self, data: bytes) -> None:
-        await asyncio.to_thread(self._write_all, data)
+        if self._closed:
+            raise ProcessAdapterError("worker_process_closed")
+        if self._writer_thread is None:
+            self._write_queue = queue.Queue(maxsize=1)
+            self._writer_stopping = threading.Event()
+            self._writer_thread = threading.Thread(
+                target=self._write_loop,
+                name=f"worker-pipe-writer-{self.pid}",
+                daemon=True,
+            )
+            self._writer_thread.start()
+        writer_stopping = self._writer_stopping
+        write_queue = self._write_queue
+        if (
+            self._closed
+            or writer_stopping is None
+            or writer_stopping.is_set()
+            or write_queue is None
+        ):
+            raise ProcessAdapterError("worker_process_closed")
+        loop = asyncio.get_running_loop()
+        completed: asyncio.Future[None] = loop.create_future()
+        request = _WriteRequest(bytes(data), loop, completed)
+        try:
+            write_queue.put_nowait(request)
+        except queue.Full as exc:
+            raise ProcessAdapterError("worker_pipe_write_busy") from exc
+        await completed
+
+    def _write_loop(self) -> None:
+        write_queue = self._write_queue
+        writer_stopping = self._writer_stopping
+        if write_queue is None or writer_stopping is None:
+            return
+        while True:
+            request = write_queue.get()
+            if request is None:
+                return
+            error: ProcessAdapterError | None = None
+            try:
+                self._write_all(request.data)
+            except Exception:
+                error = ProcessAdapterError("worker_pipe_write_failed")
+            with suppress(RuntimeError):
+                request.loop.call_soon_threadsafe(
+                    self._complete_write,
+                    request.completed,
+                    error,
+                )
+            if writer_stopping.is_set():
+                return
 
     def _write_all(self, data: bytes) -> None:
-        lock = self._write_lock
-        if lock is None:
-            raise ProcessAdapterError("worker_process_closed")
-        with lock:
+        try:
             view = memoryview(data)
             while view:
                 written = os.write(self._stdin_fd, view)
                 if written <= 0:
                     raise ProcessAdapterError("worker_pipe_write_failed")
                 view = view[written:]
+        except OSError as exc:
+            raise ProcessAdapterError("worker_pipe_write_failed") from exc
+
+    @staticmethod
+    def _complete_write(
+        completed: asyncio.Future[None],
+        error: ProcessAdapterError | None,
+    ) -> None:
+        if completed.done():
+            return
+        if error is None:
+            completed.set_result(None)
+        else:
+            completed.set_exception(error)
 
     async def read_stdout(self, max_bytes: int) -> bytes:
         return await asyncio.to_thread(os.read, self._stdout_fd, max_bytes)
@@ -549,12 +612,13 @@ class _WindowsManagedProcess:
         return await asyncio.to_thread(os.read, self._stderr_fd, max_bytes)
 
     async def wait(self) -> int:
-        return await asyncio.to_thread(self._wait_sync)
-
-    def _wait_sync(self) -> int:
-        result = self._kernel32.WaitForSingleObject(c_void_p(self._process), _INFINITE)
-        if result != _WAIT_OBJECT_0:
-            raise _win_error("worker_process_wait")
+        while True:
+            result = self._kernel32.WaitForSingleObject(c_void_p(self._process), 0)
+            if result == _WAIT_OBJECT_0:
+                break
+            if result != _WAIT_TIMEOUT:
+                raise _win_error("worker_process_wait")
+            await asyncio.sleep(0.005)
         code = c_uint32()
         if not self._kernel32.GetExitCodeProcess(c_void_p(self._process), byref(code)):
             raise _win_error("worker_exit_code")
@@ -586,6 +650,10 @@ class _WindowsManagedProcess:
             if self._closed:
                 return
             self._closed = True
+            write_queue = self._write_queue
+            writer_stopping = self._writer_stopping
+            if writer_stopping is not None:
+                writer_stopping.set()
             close_failed = False
             for fd_name in ("_stdin_fd", "_stdout_fd", "_stderr_fd"):
                 fd = getattr(self, fd_name)
@@ -601,9 +669,38 @@ class _WindowsManagedProcess:
             if self._process:
                 close_failed = not _close_handle(self._kernel32, self._process) or close_failed
                 self._process = 0
-            self._write_lock = None
+            if write_queue is not None:
+                while True:
+                    try:
+                        pending = write_queue.get_nowait()
+                    except queue.Empty:
+                        break
+                    if pending is not None:
+                        with suppress(RuntimeError):
+                            pending.loop.call_soon_threadsafe(
+                                self._complete_write,
+                                pending.completed,
+                                ProcessAdapterError("worker_process_closed"),
+                            )
+                with suppress(queue.Full):
+                    write_queue.put_nowait(None)
+            writer_thread = self._writer_thread
+            if writer_thread is not None:
+                writer_thread.join(timeout=0.05)
+                close_failed = writer_thread.is_alive() or close_failed
+                self._writer_thread = None
+                if not writer_thread.is_alive():
+                    self._write_queue = None
+                    self._writer_stopping = None
             if close_failed:
                 raise ProcessAdapterError("worker_handle_close_failed")
+
+
+@dataclass(frozen=True, slots=True)
+class _WriteRequest:
+    data: bytes
+    loop: asyncio.AbstractEventLoop
+    completed: asyncio.Future[None]
 
 
 def process_adapter_for_current_platform() -> ProcessAdapter:

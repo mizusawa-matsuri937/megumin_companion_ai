@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import struct
+import threading
 from collections.abc import Sequence
 from contextlib import suppress
 from dataclasses import asdict
@@ -41,6 +42,9 @@ class _FakeJobProcess:
         fail_write: bool = False,
         fail_query: bool = False,
         fail_close: bool = False,
+        ignore_cancel: bool = False,
+        blocked_writes: frozenset[str] = frozenset(),
+        failed_writes: frozenset[str] = frozenset(),
     ) -> None:
         self.pid = 1234
         self.create_no_window = create_no_window
@@ -57,6 +61,11 @@ class _FakeJobProcess:
         self._fail_write = fail_write
         self._fail_query = fail_query
         self._fail_close = fail_close
+        self._ignore_cancel = ignore_cancel
+        self._blocked_writes = blocked_writes
+        self._failed_writes = failed_writes
+        self.write_started = asyncio.Event()
+        self.write_release = asyncio.Event()
         self.terminated = False
         self.closed = False
         self.active = 1
@@ -76,6 +85,11 @@ class _FakeJobProcess:
             raise OSError("synthetic write failure")
         for message in self._decoder.feed(data):
             self.received_types.append(message.message_type)
+            if message.message_type in self._failed_writes:
+                raise OSError("synthetic control write failure")
+            if message.message_type in self._blocked_writes:
+                self.write_started.set()
+                await self.write_release.wait()
             if message.message_type == "handshake.accepted":
                 if self._malformed_after_handshake is not None:
                     self._stdout.put_nowait(self._malformed_after_handshake)
@@ -96,6 +110,8 @@ class _FakeJobProcess:
                     )
             elif message.message_type == "job.cancel" and message.request_id is not None:
                 self.cancelled_jobs.append(message.request_id)
+                if self._ignore_cancel:
+                    continue
                 self._stdout.put_nowait(
                     encode_message(
                         HelperMessage(
@@ -193,6 +209,29 @@ class _FakeJobAdapter:
         return process
 
 
+class _BarrierJobAdapter:
+    supports_job_objects = True
+
+    def __init__(self) -> None:
+        self.spawn_entered = asyncio.Event()
+        self.spawn_release = asyncio.Event()
+        self.processes: list[_FakeJobProcess] = []
+
+    async def spawn(
+        self,
+        command: Sequence[str],
+        *,
+        inherited_handles: Sequence[int] = (),
+    ) -> ManagedProcess:
+        assert command == ("trusted-helper",)
+        assert not inherited_handles
+        self.spawn_entered.set()
+        await self.spawn_release.wait()
+        process = _FakeJobProcess()
+        self.processes.append(process)
+        return process
+
+
 def _config(**overrides: Any) -> SupervisorConfig:
     values: dict[str, Any] = {
         "handshake_timeout_seconds": 0.2,
@@ -211,12 +250,16 @@ def test_successful_handshake_job_and_orderly_shutdown() -> None:
     async def scenario() -> None:
         scavenges: list[str] = []
         adapter = _FakeJobAdapter()
+
+        async def scavenge() -> None:
+            scavenges.append("done")
+
         supervisor = WorkerSupervisor(
             name="media-worker",
             role="media",
             command=("trusted-helper",),
             adapter=adapter,
-            temp_scavenger=lambda: scavenges.append("done"),
+            temp_scavenger=scavenge,
             config=_config(),
         )
         await supervisor.start()
@@ -274,7 +317,9 @@ def test_heartbeat_loss_is_a_hard_fault_not_a_fake_timeout() -> None:
             config=_config(crash_budget=0),
         )
         await supervisor.start()
-        await asyncio.sleep(0.12)
+        async with asyncio.timeout(0.3):
+            while supervisor.actual_state is not WorkerActualState.quarantined:
+                await asyncio.sleep(0.005)
         assert adapter.processes[0].terminated
         assert supervisor.actual_state is WorkerActualState.quarantined
         assert (await supervisor.snapshot()).last_error_code == "worker_crash_budget_exhausted"
@@ -313,16 +358,50 @@ def test_crash_loop_uses_budget_backoff_and_quarantine() -> None:
     asyncio.run(scenario())
 
 
-def test_shutdown_cancels_jobs_before_grace_and_scavenges_after_process_zero() -> None:
+def test_crash_restart_reenters_starting_and_can_return_to_enabled() -> None:
     async def scenario() -> None:
-        adapter = _FakeJobAdapter()
-        observed: list[int] = []
+        adapter = _FakeJobAdapter(
+            (
+                {"crash_after_handshake": True},
+                {"crash_after_handshake": False},
+            )
+        )
         supervisor = WorkerSupervisor(
             name="media-worker",
             role="media",
             command=("trusted-helper",),
             adapter=adapter,
-            temp_scavenger=lambda: observed.append(adapter.processes[0].active),
+            config=_config(crash_budget=2),
+        )
+        await supervisor.start()
+        async with asyncio.timeout(0.3):
+            while len(adapter.processes) < 2 or supervisor.actual_state is not (
+                WorkerActualState.enabled
+            ):
+                await asyncio.sleep(0.005)
+        assert await supervisor.run_job(job_id="after-restart", job_kind="complete") == {
+            "status": "ok"
+        }
+        assert (await supervisor.snapshot()).restart_count == 1
+        await supervisor.stop()
+
+    asyncio.run(scenario())
+
+
+def test_shutdown_cancels_jobs_before_grace_and_scavenges_after_process_zero() -> None:
+    async def scenario() -> None:
+        adapter = _FakeJobAdapter()
+        observed: list[int] = []
+
+        async def scavenge() -> None:
+            observed.append(adapter.processes[0].active)
+
+        supervisor = WorkerSupervisor(
+            name="media-worker",
+            role="media",
+            command=("trusted-helper",),
+            adapter=adapter,
+            temp_scavenger=scavenge,
             config=_config(),
         )
         await supervisor.start()
@@ -429,6 +508,239 @@ def test_capacity_duplicate_and_cancellation_races_remain_bounded() -> None:
             await first
         assert (await supervisor.snapshot()).active_jobs == 0
         await supervisor.stop()
+
+    asyncio.run(scenario())
+
+
+def test_caller_cancellation_keeps_capacity_until_terminal_or_job_tree_zero() -> None:
+    async def scenario() -> None:
+        adapter = _FakeJobAdapter(({"ignore_cancel": True},))
+        supervisor = WorkerSupervisor(
+            name="media-worker",
+            role="media",
+            command=("trusted-helper",),
+            adapter=adapter,
+            config=_config(maximum_active_jobs=1),
+        )
+        await supervisor.start()
+        first = asyncio.create_task(
+            supervisor.run_job(job_id="one", job_kind="hang", hard_deadline_seconds=0.15)
+        )
+        async with asyncio.timeout(0.1):
+            while "job.start" not in adapter.processes[0].received_types:
+                await asyncio.sleep(0)
+        first.cancel()
+        with suppress(asyncio.CancelledError):
+            await asyncio.wait_for(first, timeout=0.12)
+
+        assert adapter.processes[0].terminated
+        snapshot = await supervisor.snapshot()
+        assert snapshot.active_processes == 0
+        assert snapshot.active_jobs == 0
+        with pytest.raises(WorkerError, match="not_accepting|capacity"):
+            await supervisor.run_job(job_id="two", job_kind="hang")
+        await supervisor.stop()
+
+    asyncio.run(scenario())
+
+
+def test_explicit_zero_deadline_is_rejected_before_start_write() -> None:
+    async def scenario() -> None:
+        adapter = _FakeJobAdapter()
+        supervisor = WorkerSupervisor(
+            name="media-worker",
+            role="media",
+            command=("trusted-helper",),
+            adapter=adapter,
+            config=_config(),
+        )
+        await supervisor.start()
+        with pytest.raises(WorkerError, match="worker_job_deadline_invalid"):
+            await supervisor.run_job(
+                job_id="zero-deadline",
+                job_kind="hang",
+                hard_deadline_seconds=0,
+            )
+        assert "job.start" not in adapter.processes[0].received_types
+        await supervisor.stop()
+
+    asyncio.run(scenario())
+
+
+def test_job_absolute_deadline_includes_a_blocked_start_write() -> None:
+    async def scenario() -> None:
+        adapter = _FakeJobAdapter(({"blocked_writes": frozenset({"job.start"})},))
+        supervisor = WorkerSupervisor(
+            name="media-worker",
+            role="media",
+            command=("trusted-helper",),
+            adapter=adapter,
+            config=_config(),
+        )
+        await supervisor.start()
+        process = adapter.processes[0]
+        started = asyncio.get_running_loop().time()
+        task = asyncio.create_task(
+            supervisor.run_job(
+                job_id="blocked-start",
+                job_kind="hang",
+                hard_deadline_seconds=0.02,
+            )
+        )
+        await asyncio.wait_for(process.write_started.wait(), timeout=0.05)
+        try:
+            with pytest.raises(WorkerError, match="worker_job_deadline"):
+                await asyncio.wait_for(asyncio.shield(task), timeout=0.08)
+        finally:
+            process.write_release.set()
+            with suppress(asyncio.CancelledError, Exception):
+                await task
+        assert asyncio.get_running_loop().time() - started < 0.08
+        assert process.terminated and process.active == 0
+        await supervisor.stop()
+
+    asyncio.run(scenario())
+
+
+def test_job_start_write_error_hard_faults_and_releases_capacity_after_tree_zero() -> None:
+    async def scenario() -> None:
+        adapter = _FakeJobAdapter(({"failed_writes": frozenset({"job.start"})},))
+        supervisor = WorkerSupervisor(
+            name="media-worker",
+            role="media",
+            command=("trusted-helper",),
+            adapter=adapter,
+            config=_config(maximum_active_jobs=1),
+        )
+        await supervisor.start()
+
+        with pytest.raises(WorkerError, match="worker_pipe_write_failed"):
+            await supervisor.run_job(job_id="write-fails", job_kind="hang")
+
+        process = adapter.processes[0]
+        assert process.terminated
+        assert process.active == 0
+        assert supervisor.actual_state is WorkerActualState.failed
+        assert (await supervisor.snapshot()).active_jobs == 0
+
+        await supervisor.stop()
+
+    asyncio.run(scenario())
+
+
+def test_shutdown_deadline_includes_blocked_control_writes() -> None:
+    async def scenario() -> None:
+        adapter = _FakeJobAdapter(({"blocked_writes": frozenset({"shutdown"})},))
+        supervisor = WorkerSupervisor(
+            name="media-worker",
+            role="media",
+            command=("trusted-helper",),
+            adapter=adapter,
+            config=_config(),
+        )
+        await supervisor.start()
+        process = adapter.processes[0]
+        started = asyncio.get_running_loop().time()
+        stopping = asyncio.create_task(supervisor.stop())
+        await asyncio.wait_for(process.write_started.wait(), timeout=0.05)
+        try:
+            report = await asyncio.wait_for(stopping, timeout=0.18)
+        finally:
+            process.write_release.set()
+        assert asyncio.get_running_loop().time() - started < 0.18
+        assert report.hard_terminated
+        assert process.active == 0
+        assert supervisor.actual_state is WorkerActualState.disabled
+
+    asyncio.run(scenario())
+
+
+def test_stop_generation_barrier_prevents_stale_spawn_from_reenabling_worker() -> None:
+    async def scenario() -> None:
+        adapter = _BarrierJobAdapter()
+        supervisor = WorkerSupervisor(
+            name="media-worker",
+            role="media",
+            command=("trusted-helper",),
+            adapter=adapter,
+            config=_config(),
+        )
+        starting = asyncio.create_task(supervisor.start())
+        await asyncio.wait_for(adapter.spawn_entered.wait(), timeout=0.05)
+        report = await asyncio.wait_for(supervisor.stop(), timeout=0.08)
+        assert report.deadline_met
+        assert supervisor.actual_state is WorkerActualState.disabled
+        adapter.spawn_release.set()
+        with pytest.raises(WorkerError, match="worker_start_cancelled"):
+            await starting
+        assert supervisor.actual_state is WorkerActualState.disabled
+        assert not (await supervisor.snapshot()).accepting_jobs
+        assert adapter.processes and adapter.processes[0].closed
+
+    asyncio.run(scenario())
+
+
+def test_stop_generation_barrier_prevents_handshake_timeout_from_overwriting_disabled() -> None:
+    async def scenario() -> None:
+        adapter = _FakeJobAdapter(({"send_hello": False},))
+        supervisor = WorkerSupervisor(
+            name="media-worker",
+            role="media",
+            command=("trusted-helper",),
+            adapter=adapter,
+            config=_config(),
+        )
+        starting = asyncio.create_task(supervisor.start())
+        async with asyncio.timeout(0.05):
+            while not adapter.processes:
+                await asyncio.sleep(0)
+        await asyncio.wait_for(supervisor.stop(), timeout=0.18)
+        with pytest.raises(WorkerError, match="worker_start_cancelled"):
+            await starting
+        await asyncio.sleep(0.22)
+        assert supervisor.actual_state is WorkerActualState.disabled
+        assert not (await supervisor.snapshot()).desired_enabled
+
+    asyncio.run(scenario())
+
+
+def test_scavenger_contract_rejects_sync_callables_and_bounds_async_hang() -> None:
+    with pytest.raises(ValueError, match="scavenger"):
+        WorkerSupervisor(
+            name="media-worker",
+            role="media",
+            command=("trusted-helper",),
+            adapter=_FakeJobAdapter(),
+            temp_scavenger=lambda: threading.Event().wait(),  # type: ignore[arg-type]
+            config=_config(),
+        )
+
+    async def scenario() -> None:
+        entered = asyncio.Event()
+        cancelled = asyncio.Event()
+
+        async def hanging_scavenger() -> None:
+            entered.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+
+        supervisor = WorkerSupervisor(
+            name="media-worker",
+            role="media",
+            command=("trusted-helper",),
+            adapter=_FakeJobAdapter(),
+            temp_scavenger=hanging_scavenger,
+            config=_config(),
+        )
+        await supervisor.start()
+        started = asyncio.get_running_loop().time()
+        report = await asyncio.wait_for(supervisor.stop(), timeout=0.18)
+        assert asyncio.get_running_loop().time() - started < 0.18
+        assert entered.is_set() and cancelled.is_set()
+        assert not report.scavenge_succeeded
+        assert supervisor.actual_state is WorkerActualState.disabled
 
     asyncio.run(scenario())
 
@@ -545,7 +857,7 @@ def test_shutdown_escalates_after_grace_and_reports_scavenge_and_query_failures(
             ({"ignore_shutdown": True, "fail_query": True, "fail_close": True},)
         )
 
-        def fail_scavenge() -> None:
+        async def fail_scavenge() -> None:
             raise OSError(_SENTINEL)
 
         supervisor = WorkerSupervisor(

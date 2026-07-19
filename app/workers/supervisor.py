@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import re
 import time
 from collections import deque
-from collections.abc import Callable, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
 from enum import StrEnum
@@ -42,7 +43,7 @@ class WorkerError(RuntimeError):
 
 
 class TempScavenger(Protocol):
-    def __call__(self) -> object: ...
+    def __call__(self) -> Awaitable[None]: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -143,6 +144,8 @@ class WorkerSupervisor:
         self._command = selected_command
         self._adapter = adapter
         self._resource_policy = resource_policy or ApprovedResourcePolicy()
+        if temp_scavenger is not None and not _is_async_callable(temp_scavenger):
+            raise ValueError("worker temp scavenger must be async")
         self._temp_scavenger = temp_scavenger
         self._config = config or SupervisorConfig()
         self._clock = clock
@@ -157,8 +160,10 @@ class WorkerSupervisor:
         self._jobs: dict[str, asyncio.Future[dict[str, Any]]] = {}
         self._tasks: set[asyncio.Task[Any]] = set()
         self._process_wait_task: asyncio.Task[int] | None = None
-        self._start_lock = asyncio.Lock()
-        self._stop_lock = asyncio.Lock()
+        self._lifecycle_lock = asyncio.Lock()
+        self._lifecycle_epoch = 0
+        self._start_operation: asyncio.Task[None] | None = None
+        self._stop_operation: asyncio.Task[ShutdownReport] | None = None
         self._send_lock = asyncio.Lock()
         self._crashes: deque[float] = deque(maxlen=33)
         self._restart_count = 0
@@ -197,30 +202,48 @@ class WorkerSupervisor:
         return CapabilityCheck(status=CapabilityState.unavailable, error_code=code)
 
     async def start(self) -> None:
-        async with self._start_lock:
+        async with self._lifecycle_lock:
             if self._state is WorkerActualState.enabled:
                 return
             if self._state is WorkerActualState.quarantined:
                 raise WorkerError("worker_quarantined")
-            self._desired_enabled = True
-            self._deliberate_stop = False
+            if self._state is WorkerActualState.stopping:
+                raise WorkerError("worker_stopping")
             if not self._adapter.supports_job_objects:
+                self._desired_enabled = True
                 self._state = WorkerActualState.unsupported
                 self._last_error_code = "worker_platform_unsupported"
                 self._emit("worker.unsupported")
                 raise WorkerError("worker_platform_unsupported")
-            await self._spawn_and_handshake()
+            existing = self._start_operation
+            if existing is not None and not existing.done():
+                operation = existing
+            else:
+                self._lifecycle_epoch += 1
+                epoch = self._lifecycle_epoch
+                self._state = WorkerActualState.starting
+                self._accepting_jobs = False
+                self._last_error_code = None
+                self._hello = asyncio.Event()
+                self._heartbeat_sequence = 0
+                self._decoder = FrameDecoder()
+                self._emit("worker.starting")
+                operation = asyncio.create_task(
+                    self._spawn_and_handshake(epoch),
+                    name=f"worker-start-{self.name}-{epoch}",
+                )
+                self._start_operation = operation
+            self._desired_enabled = True
+            self._deliberate_stop = False
+        try:
+            await asyncio.shield(operation)
+        finally:
+            async with self._lifecycle_lock:
+                if self._start_operation is operation and operation.done():
+                    self._start_operation = None
 
-    async def _spawn_and_handshake(self) -> None:
-        self._state = WorkerActualState.starting
-        self._accepting_jobs = False
-        self._last_error_code = None
-        self._hello = asyncio.Event()
-        self._heartbeat_sequence = 0
-        self._decoder = FrameDecoder()
-        self._generation += 1
-        generation = self._generation
-        self._emit("worker.starting")
+    async def _spawn_and_handshake(self, epoch: int) -> None:
+        process: ManagedProcess | None = None
         try:
             process = await self._adapter.spawn(
                 self._command,
@@ -228,8 +251,24 @@ class WorkerSupervisor:
             )
             if not process.create_no_window:
                 await process.close()
+                process = None
                 raise WorkerError("worker_no_window_not_enforced")
-            self._process = process
+            async with self._lifecycle_lock:
+                if (
+                    epoch != self._lifecycle_epoch
+                    or not self._desired_enabled
+                    or self._state is not WorkerActualState.starting
+                ):
+                    stale = True
+                else:
+                    stale = False
+                    self._generation += 1
+                    generation = self._generation
+                    self._process = process
+            if stale:
+                await process.close()
+                process = None
+                raise WorkerError("worker_start_cancelled")
             self._last_heartbeat = self._clock()
             self._spawn_task(self._read_stdout(generation), "worker-stdout")
             self._spawn_task(self._read_stderr(generation), "worker-stderr")
@@ -237,24 +276,46 @@ class WorkerSupervisor:
                 self._watch_process(process, generation),
                 "worker-process-wait",
             )
-            async with asyncio.timeout(self._config.handshake_timeout_seconds):
+            handshake_deadline = (
+                asyncio.get_running_loop().time() + self._config.handshake_timeout_seconds
+            )
+            async with asyncio.timeout_at(handshake_deadline):
                 await self._hello.wait()
             await self._send(
                 HelperMessage(
                     message_type="handshake.accepted",
-                    payload={"role": self._role},
-                )
+                    payload={
+                        "role": self._role,
+                        "maximum_active_jobs": self._config.maximum_active_jobs,
+                    },
+                ),
+                deadline_at=handshake_deadline,
             )
         except TimeoutError as exc:
-            await self._terminate_current("worker_handshake_timeout")
+            if epoch != self._lifecycle_epoch:
+                raise WorkerError("worker_start_cancelled") from exc
+            await self._terminate_current("worker_handshake_timeout", epoch=epoch)
             raise WorkerError("worker_handshake_timeout") from exc
         except (ProcessAdapterError, ProtocolError, WorkerError, OSError) as exc:
             code = getattr(exc, "code", "worker_start_failed")
-            await self._terminate_current(code)
+            if epoch != self._lifecycle_epoch:
+                if process is not None and process is not self._process:
+                    with suppress(Exception):
+                        await process.close()
+                raise WorkerError("worker_start_cancelled") from exc
+            await self._terminate_current(code, epoch=epoch)
             raise WorkerError(code) from exc
-        self._state = WorkerActualState.enabled
-        self._accepting_jobs = True
-        self._emit("worker.enabled")
+        async with self._lifecycle_lock:
+            if epoch != self._lifecycle_epoch or not self._desired_enabled:
+                stale = True
+            else:
+                stale = False
+                self._state = WorkerActualState.enabled
+                self._accepting_jobs = True
+                self._emit("worker.enabled")
+        if stale:
+            await self._close_current_process(expected=process)
+            raise WorkerError("worker_start_cancelled")
         self._spawn_task(self._monitor_heartbeat(generation), "worker-heartbeat")
 
     def _spawn_task(self, coroutine: Any, label: str) -> asyncio.Task[Any]:
@@ -340,6 +401,8 @@ class WorkerSupervisor:
             future = self._jobs.pop(request_id, None)
             if future is None:
                 return
+            if future.done():
+                return
             if message.message_type == "job.completed":
                 future.set_result(message.payload)
             elif message.message_type == "job.cancelled":
@@ -353,16 +416,19 @@ class WorkerSupervisor:
             return
         raise ProtocolError("helper_protocol_message_unexpected")
 
-    async def _send(self, message: HelperMessage) -> None:
+    async def _send(self, message: HelperMessage, *, deadline_at: float) -> None:
         process = self._process
         if process is None:
             raise WorkerError("worker_not_running")
         frame = encode_message(message)
-        async with self._send_lock:
-            try:
-                await process.write_stdin(frame)
-            except (OSError, ProcessAdapterError) as exc:
-                raise WorkerError("worker_pipe_write_failed") from exc
+        try:
+            async with asyncio.timeout_at(deadline_at):
+                async with self._send_lock:
+                    await process.write_stdin(frame)
+        except TimeoutError:
+            raise
+        except (OSError, ProcessAdapterError) as exc:
+            raise WorkerError("worker_pipe_write_failed") from exc
 
     async def run_job(
         self,
@@ -378,43 +444,88 @@ class WorkerSupervisor:
             raise WorkerError("worker_not_accepting_jobs")
         if job_id in self._jobs or len(self._jobs) >= self._config.maximum_active_jobs:
             raise WorkerError("worker_job_capacity_or_duplicate")
-        deadline = hard_deadline_seconds or self._config.maximum_job_seconds
+        deadline = (
+            self._config.maximum_job_seconds
+            if hard_deadline_seconds is None
+            else hard_deadline_seconds
+        )
         if deadline <= 0 or deadline > self._config.maximum_job_seconds:
             raise WorkerError("worker_job_deadline_invalid")
         wire_resources = [self._resource_policy.wire_reference(item) for item in resources]
         loop = asyncio.get_running_loop()
+        deadline_at = loop.time() + deadline
+        termination_reserve = min(self._config.terminate_wait_seconds, deadline / 2)
+        work_deadline = deadline_at - termination_reserve
         future: asyncio.Future[dict[str, Any]] = loop.create_future()
         self._jobs[job_id] = future
         try:
-            await self._send(
-                HelperMessage(
-                    message_type="job.start",
-                    request_id=job_id,
-                    payload={"job_kind": job_kind, "resources": wire_resources},
-                )
-            )
             try:
-                async with asyncio.timeout(deadline):
+                async with asyncio.timeout_at(work_deadline):
+                    await self._send(
+                        HelperMessage(
+                            message_type="job.start",
+                            request_id=job_id,
+                            payload={"job_kind": job_kind, "resources": wire_resources},
+                        ),
+                        deadline_at=work_deadline,
+                    )
                     return await asyncio.shield(future)
             except TimeoutError as exc:
-                await self._hard_fault("worker_job_deadline")
+                await self._hard_fault("worker_job_deadline", deadline_at=deadline_at)
                 raise WorkerError("worker_job_deadline") from exc
+            except WorkerError as exc:
+                if exc.code == "worker_pipe_write_failed":
+                    await self._hard_fault(exc.code, deadline_at=deadline_at)
+                raise
         except asyncio.CancelledError:
-            await self.cancel_job(job_id)
+            await self._settle_caller_cancel(job_id, future, deadline_at)
             raise
-        finally:
-            self._jobs.pop(job_id, None)
 
-    async def cancel_job(self, job_id: str) -> None:
+    async def cancel_job(self, job_id: str, *, deadline_at: float | None = None) -> None:
         future = self._jobs.get(job_id)
         if future is None or future.done():
             return
+        if deadline_at is None:
+            deadline_at = asyncio.get_running_loop().time() + self._config.soft_cancel_grace_seconds
         try:
             await self._send(
-                HelperMessage(message_type="job.cancel", request_id=job_id, payload={})
+                HelperMessage(message_type="job.cancel", request_id=job_id, payload={}),
+                deadline_at=deadline_at,
             )
-        except WorkerError:
+        except (TimeoutError, WorkerError):
             return
+
+    async def _settle_caller_cancel(
+        self,
+        job_id: str,
+        future: asyncio.Future[dict[str, Any]],
+        deadline_at: float,
+    ) -> None:
+        loop = asyncio.get_running_loop()
+        remaining = max(0.0, deadline_at - loop.time())
+        terminate_reserve = min(self._config.terminate_wait_seconds, remaining / 2)
+        soft_deadline = min(
+            loop.time() + self._config.soft_cancel_grace_seconds,
+            deadline_at - terminate_reserve,
+        )
+        await self.cancel_job(job_id, deadline_at=soft_deadline)
+        settled = future.done()
+        if not settled and soft_deadline > loop.time():
+            try:
+                async with asyncio.timeout_at(soft_deadline):
+                    await asyncio.shield(future)
+            except (TimeoutError, WorkerError):
+                pass
+            settled = future.done()
+        if settled:
+            self._jobs.pop(job_id, None)
+            return
+        tree_zero = await self._hard_fault(
+            "worker_job_cancel_unsettled",
+            deadline_at=deadline_at,
+        )
+        if tree_zero:
+            self._jobs.pop(job_id, None)
 
     async def _monitor_heartbeat(self, generation: int) -> None:
         while generation == self._generation and self._state is WorkerActualState.enabled:
@@ -440,21 +551,37 @@ class WorkerSupervisor:
         await self._handle_crash("worker_process_exited")
         return code
 
-    async def _hard_fault(self, code: str) -> None:
+    async def _hard_fault(self, code: str, *, deadline_at: float | None = None) -> bool:
         if self._deliberate_stop or self._state in {
             WorkerActualState.stopping,
             WorkerActualState.disabled,
             WorkerActualState.quarantined,
         }:
-            return
+            return False
         self._accepting_jobs = False
         self._last_error_code = code
         self._state = WorkerActualState.failed
         self._emit("worker.hard_fault")
         process = self._process
-        if process is not None:
-            with suppress(Exception):
+        if process is None:
+            return True
+        if deadline_at is None:
+            deadline_at = asyncio.get_running_loop().time() + self._config.terminate_wait_seconds
+        try:
+            async with asyncio.timeout_at(deadline_at):
                 await process.terminate_tree()
+                while True:
+                    active = await process.active_process_count()
+                    if active == 0:
+                        for future in tuple(self._jobs.values()):
+                            if not future.done():
+                                future.set_exception(WorkerError(code))
+                                future.exception()
+                        self._jobs.clear()
+                        return True
+                    await asyncio.sleep(0)
+        except (TimeoutError, OSError, ProcessAdapterError):
+            return False
 
     async def _handle_crash(self, code: str) -> None:
         self._accepting_jobs = False
@@ -469,7 +596,9 @@ class WorkerSupervisor:
                 future.set_exception(WorkerError(code))
         self._jobs.clear()
         await self._close_current_process()
-        await self._scavenge()
+        await self._scavenge(
+            asyncio.get_running_loop().time() + self._config.terminate_wait_seconds
+        )
         if len(self._crashes) > self._config.crash_budget:
             self._state = WorkerActualState.quarantined
             self._desired_enabled = False
@@ -485,95 +614,168 @@ class WorkerSupervisor:
             self._config.restart_backoff_initial_seconds * (2 ** max(0, len(self._crashes) - 1)),
         )
         await asyncio.sleep(delay)
-        if self._desired_enabled and not self._deliberate_stop:
+        async with self._lifecycle_lock:
+            if not self._desired_enabled or self._deliberate_stop:
+                return
             self._restart_count += 1
-            try:
-                await self._spawn_and_handshake()
-            except WorkerError:
-                await self._handle_crash("worker_restart_failed")
+            epoch = self._lifecycle_epoch
+            self._state = WorkerActualState.starting
+            self._hello = asyncio.Event()
+            self._heartbeat_sequence = 0
+            self._decoder = FrameDecoder()
+            self._emit("worker.starting")
+        try:
+            await self._spawn_and_handshake(epoch)
+        except WorkerError:
+            await self._handle_crash("worker_restart_failed")
 
     async def stop(self) -> ShutdownReport:
-        async with self._stop_lock:
-            if self._state is WorkerActualState.disabled and self._process is None:
+        async with self._lifecycle_lock:
+            existing = self._stop_operation
+            if existing is not None and not existing.done():
+                operation = existing
+            elif (
+                self._state is WorkerActualState.disabled
+                and self._process is None
+                and (self._start_operation is None or self._start_operation.done())
+            ):
                 report = ShutdownReport(0, False, 0, None, True, True, True)
                 self._last_report = report
                 return report
-            started = self._clock()
-            close_budget = (
-                self._config.soft_cancel_grace_seconds + self._config.terminate_wait_seconds
-            )
-            self._desired_enabled = False
-            self._accepting_jobs = False
-            self._deliberate_stop = True
-            self._state = WorkerActualState.stopping
-            self._emit("worker.stopping")
-            jobs = tuple(self._jobs)
-            for job_id in jobs:
-                await self.cancel_job(job_id)
-            with suppress(WorkerError):
-                await self._send(HelperMessage(message_type="shutdown", payload={}))
-            hard_terminated = False
-            exit_code: int | None = None
-            process = self._process
-            if process is not None:
-                wait_task = self._process_wait_task
-                try:
-                    if wait_task is not None:
-                        async with asyncio.timeout(self._config.soft_cancel_grace_seconds):
-                            exit_code = await asyncio.shield(wait_task)
-                except TimeoutError:
-                    hard_terminated = True
-                    with suppress(Exception):
-                        await process.terminate_tree()
-                    if wait_task is not None:
-                        with suppress(Exception):
-                            async with asyncio.timeout(self._config.terminate_wait_seconds):
-                                exit_code = await asyncio.shield(wait_task)
-            active_processes: int | None = None if process is not None else 0
-            if process is not None:
-                with suppress(Exception):
-                    active_processes = await process.active_process_count()
-            process_close_succeeded = await self._close_current_process()
-            scavenge_succeeded = await self._scavenge()
-            for future in tuple(self._jobs.values()):
-                if not future.done():
-                    future.set_exception(WorkerError("worker_stopped"))
-            self._jobs.clear()
-            self._state = WorkerActualState.disabled
-            self._last_error_code = None
-            self._emit("worker.disabled")
-            report = ShutdownReport(
-                soft_cancelled_jobs=len(jobs),
-                hard_terminated=hard_terminated,
-                active_processes=active_processes,
-                exit_code=exit_code,
-                process_close_succeeded=process_close_succeeded,
-                scavenge_succeeded=scavenge_succeeded,
-                deadline_met=(self._clock() - started) <= close_budget + 0.25,
-            )
-            self._last_report = report
-            return report
+            else:
+                self._lifecycle_epoch += 1
+                epoch = self._lifecycle_epoch
+                self._desired_enabled = False
+                self._accepting_jobs = False
+                self._deliberate_stop = True
+                self._state = WorkerActualState.stopping
+                self._emit("worker.stopping")
+                operation = asyncio.create_task(
+                    self._stop_impl(epoch),
+                    name=f"worker-stop-{self.name}-{epoch}",
+                )
+                self._stop_operation = operation
+        try:
+            return await asyncio.shield(operation)
+        finally:
+            async with self._lifecycle_lock:
+                if self._stop_operation is operation and operation.done():
+                    self._stop_operation = None
 
-    async def _terminate_current(self, code: str) -> None:
+    async def _stop_impl(self, epoch: int) -> ShutdownReport:
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        close_budget = self._config.soft_cancel_grace_seconds + self._config.terminate_wait_seconds
+        deadline_at = started + close_budget
+        close_reserve = min(0.05, self._config.terminate_wait_seconds / 4)
+        operation_deadline = deadline_at - close_reserve
+        soft_deadline = min(deadline_at, started + self._config.soft_cancel_grace_seconds)
+        jobs = tuple(self._jobs)
+        for job_id in jobs:
+            await self.cancel_job(job_id, deadline_at=soft_deadline)
+            if loop.time() >= soft_deadline:
+                break
+        with suppress(TimeoutError, WorkerError):
+            await self._send(
+                HelperMessage(message_type="shutdown", payload={}),
+                deadline_at=soft_deadline,
+            )
+        hard_terminated = False
+        exit_code: int | None = None
+        process = self._process
+        wait_task = self._process_wait_task
+        if process is not None and wait_task is not None and loop.time() < soft_deadline:
+            try:
+                async with asyncio.timeout_at(soft_deadline):
+                    exit_code = await asyncio.shield(wait_task)
+            except TimeoutError:
+                pass
+        if process is not None and (wait_task is None or not wait_task.done()):
+            hard_terminated = True
+            try:
+                async with asyncio.timeout_at(operation_deadline):
+                    await process.terminate_tree()
+            except (TimeoutError, OSError, ProcessAdapterError):
+                pass
+            if wait_task is not None and loop.time() < operation_deadline:
+                try:
+                    async with asyncio.timeout_at(operation_deadline):
+                        exit_code = await asyncio.shield(wait_task)
+                except TimeoutError:
+                    pass
+        active_processes: int | None = None if process is not None else 0
+        if process is not None and loop.time() < operation_deadline:
+            try:
+                async with asyncio.timeout_at(operation_deadline):
+                    active_processes = await process.active_process_count()
+            except (TimeoutError, OSError, ProcessAdapterError):
+                active_processes = None
+        process_close_succeeded = False
+        if loop.time() < deadline_at:
+            try:
+                async with asyncio.timeout_at(deadline_at):
+                    process_close_succeeded = await self._close_current_process()
+            except TimeoutError:
+                process_close_succeeded = False
+        else:
+            self._process = None
+            self._generation += 1
+            for task in tuple(self._tasks):
+                if not task.done():
+                    task.cancel()
+            self._process_wait_task = None
+        scavenge_succeeded = await self._scavenge(deadline_at)
+        for future in tuple(self._jobs.values()):
+            if not future.done():
+                future.set_exception(WorkerError("worker_stopped"))
+        self._jobs.clear()
+        async with self._lifecycle_lock:
+            if epoch == self._lifecycle_epoch:
+                self._state = WorkerActualState.disabled
+                self._last_error_code = None
+                self._emit("worker.disabled")
+        report = ShutdownReport(
+            soft_cancelled_jobs=len(jobs),
+            hard_terminated=hard_terminated,
+            active_processes=active_processes,
+            exit_code=exit_code,
+            process_close_succeeded=process_close_succeeded,
+            scavenge_succeeded=scavenge_succeeded,
+            deadline_met=loop.time() <= deadline_at,
+        )
+        self._last_report = report
+        return report
+
+    async def _terminate_current(self, code: str, *, epoch: int) -> None:
+        if epoch != self._lifecycle_epoch:
+            return
         self._last_error_code = code
         self._state = WorkerActualState.failed
         # Invalidate readers/watchers before forcing an incomplete startup
         # down; otherwise the normal crash-restart path races this failure.
         self._generation += 1
         process = self._process
+        deadline_at = asyncio.get_running_loop().time() + self._config.terminate_wait_seconds
         if process is not None:
-            with suppress(Exception):
-                await process.terminate_tree()
+            try:
+                async with asyncio.timeout_at(deadline_at):
+                    await process.terminate_tree()
+            except (TimeoutError, OSError, ProcessAdapterError):
+                pass
             wait_task = self._process_wait_task
-            if wait_task is not None:
-                with suppress(Exception):
-                    async with asyncio.timeout(self._config.terminate_wait_seconds):
+            if wait_task is not None and asyncio.get_running_loop().time() < deadline_at:
+                try:
+                    async with asyncio.timeout_at(deadline_at):
                         await asyncio.shield(wait_task)
+                except (TimeoutError, OSError, ProcessAdapterError):
+                    pass
         await self._close_current_process()
-        await self._scavenge()
+        await self._scavenge(deadline_at)
 
-    async def _close_current_process(self) -> bool:
+    async def _close_current_process(self, *, expected: ManagedProcess | None = None) -> bool:
         process = self._process
+        if expected is not None and process is not expected:
+            return True
         self._process = None
         self._generation += 1
         current = asyncio.current_task()
@@ -593,12 +795,13 @@ class WorkerSupervisor:
         self._process_wait_task = None
         return close_succeeded
 
-    async def _scavenge(self) -> bool:
+    async def _scavenge(self, deadline_at: float) -> bool:
         if self._temp_scavenger is None:
             return True
         try:
-            await asyncio.to_thread(self._temp_scavenger)
-        except Exception:
+            async with asyncio.timeout_at(deadline_at):
+                await self._temp_scavenger()
+        except (TimeoutError, Exception):
             self._last_error_code = "worker_temp_scavenge_failed"
             return False
         return True
@@ -634,3 +837,9 @@ class WorkerSupervisor:
                 count=count,
             )
         )
+
+
+def _is_async_callable(value: object) -> bool:
+    return inspect.iscoroutinefunction(value) or (
+        callable(value) and inspect.iscoroutinefunction(type(value).__call__)
+    )

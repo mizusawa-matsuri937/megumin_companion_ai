@@ -16,6 +16,8 @@ class _Handler:
         self.calls: list[tuple[str, tuple[AuthorizedResource, ...]]] = []
         self.closed = False
         self._fail_close = fail_close
+        self.hold_started = asyncio.Event()
+        self.hold_release = asyncio.Event()
 
     async def run_job(
         self,
@@ -28,6 +30,10 @@ class _Handler:
             return {"status": "ok"}
         if job_kind == "cancel.wait":
             await cancelled.wait()
+            return {}
+        if job_kind == "hold":
+            self.hold_started.set()
+            await self.hold_release.wait()
             return {}
         if job_kind == "fail":
             raise RuntimeError("W12_HELPER_EXCEPTION_BODY_SENTINEL")
@@ -116,7 +122,8 @@ def test_helper_handshake_heartbeat_jobs_cancel_resources_and_shutdown(tmp_path:
         completed = await pipes.next_message("job.completed")
         assert completed.request_id == "complete-1" and completed.payload == {"status": "ok"}
         resources = handler.calls[0][1]
-        assert resources[0].value == source.resolve() and resources[1].value == 7
+        assert resources[0].owns_descriptor and resources[0].closed
+        assert resources[1].value == 7 and not resources[1].owns_descriptor
 
         await pipes.input.put(
             encode_message(
@@ -254,5 +261,120 @@ def test_helper_initial_pipe_failure_is_content_free_and_closes_handler() -> Non
         )
         assert await close_failure_runtime.run() == 3
         assert close_failure_handler.closed
+
+    asyncio.run(scenario())
+
+
+def test_helper_enforces_its_own_active_job_ceiling() -> None:
+    async def scenario() -> None:
+        pipes = _MemoryPipes()
+        handler = _Handler()
+        runtime = HelperRuntime(
+            role="media",
+            handler=handler,
+            maximum_active_jobs=1,
+            read=pipes.read,
+            write=pipes.write,
+        )
+        task = asyncio.create_task(runtime.run())
+        await pipes.next_message("hello")
+        await pipes.input.put(
+            encode_message(
+                HelperMessage(
+                    message_type="handshake.accepted",
+                    payload={"role": "media", "maximum_active_jobs": 1},
+                )
+            )
+        )
+        await pipes.input.put(
+            encode_message(
+                HelperMessage(
+                    message_type="job.start",
+                    request_id="one",
+                    payload={"job_kind": "hold", "resources": []},
+                )
+            )
+        )
+        await asyncio.wait_for(handler.hold_started.wait(), timeout=0.1)
+        await pipes.input.put(
+            encode_message(
+                HelperMessage(
+                    message_type="job.start",
+                    request_id="two",
+                    payload={"job_kind": "hold", "resources": []},
+                )
+            )
+        )
+        failed = await pipes.next_message("job.failed")
+        assert failed.request_id == "two"
+        assert failed.payload == {"error_code": "worker_job_capacity"}
+        assert len(handler.calls) == 1
+
+        handler.hold_release.set()
+        assert (await pipes.next_message("job.completed")).request_id == "one"
+        await pipes.input.put(encode_message(HelperMessage(message_type="shutdown", payload={})))
+        assert await task == 0
+
+    asyncio.run(scenario())
+
+
+def test_helper_closes_earlier_descriptors_when_later_resource_is_rejected(
+    tmp_path: Path,
+) -> None:
+    class TrackingPolicy(ApprovedResourcePolicy):
+        opened: AuthorizedResource | None = None
+
+        def authorize_wire(self, raw: object) -> AuthorizedResource:
+            resource = super().authorize_wire(raw)
+            if resource.owns_descriptor:
+                self.opened = resource
+            return resource
+
+    async def scenario() -> None:
+        root = tmp_path / "approved"
+        root.mkdir()
+        (root / "input.bin").write_bytes(b"SAFE")
+        policy = TrackingPolicy(roots={"input": root})
+        pipes = _MemoryPipes()
+        runtime = HelperRuntime(
+            role="media",
+            handler=_Handler(),
+            resource_policy=policy,
+            read=pipes.read,
+            write=pipes.write,
+        )
+        task = asyncio.create_task(runtime.run())
+        await pipes.next_message("hello")
+        await pipes.input.put(
+            encode_message(
+                HelperMessage(
+                    message_type="handshake.accepted",
+                    payload={"role": "media"},
+                )
+            )
+        )
+        await pipes.input.put(
+            encode_message(
+                HelperMessage(
+                    message_type="job.start",
+                    request_id="partial-resource",
+                    payload={
+                        "job_kind": "complete",
+                        "resources": [
+                            {
+                                "resource_id": "source",
+                                "root_id": "input",
+                                "relative_path": "input.bin",
+                            },
+                            {"resource_id": "bad", "handle_id": "missing"},
+                        ],
+                    },
+                )
+            )
+        )
+        assert (await pipes.next_message("job.failed")).request_id == "partial-resource"
+        assert policy.opened is not None and policy.opened.closed
+        await pipes.input.put(encode_message(HelperMessage(message_type="shutdown", payload={})))
+        assert await task == 0
 
     asyncio.run(scenario())
