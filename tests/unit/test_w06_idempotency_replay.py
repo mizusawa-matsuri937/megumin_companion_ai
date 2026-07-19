@@ -357,7 +357,12 @@ def test_duplicate_repair_conflict_refreshes_sqlite_authoritative_terminal(
         )
         race_store = CompletingAfterDuplicateClaimStore(database, terminal)
         pipeline = SideEffectPipeline()
-        service = TurnService(_logger(), pipeline, idempotency_store=race_store)
+        service = TurnService(
+            _logger(),
+            pipeline,
+            idempotency_store=race_store,
+            clock=lambda: accepted_at + timedelta(seconds=3),
+        )
         service._remember_existing("client-w06", local)
 
         refreshed = await service.accept(message, client_id="client-w06")
@@ -403,7 +408,11 @@ def test_duplicate_repair_preserves_valid_forward_progress_and_timestamp(
             state=accepted,
             now=accepted_at,
         )
-        service = TurnService(_logger(), idempotency_store=store)
+        service = TurnService(
+            _logger(),
+            idempotency_store=store,
+            clock=lambda: accepted_at + timedelta(seconds=3),
+        )
         service._remember_existing("client-w06", local)
 
         repaired = await service.accept(message, client_id="client-w06")
@@ -473,7 +482,12 @@ def test_duplicate_repair_refresh_failure_is_fail_closed_without_pipeline(
             lookup_failure=lookup_failure,
         )
         pipeline = SideEffectPipeline()
-        service = TurnService(_logger(), pipeline, idempotency_store=race_store)
+        service = TurnService(
+            _logger(),
+            pipeline,
+            idempotency_store=race_store,
+            clock=lambda: accepted_at + timedelta(seconds=3),
+        )
         service._remember_existing("client-w06", local)
 
         with pytest.raises(expected_error):
