@@ -233,7 +233,7 @@ def test_websocket_large_authoritative_snapshot_is_chunked_below_frame_limit(
     tmp_path: Path,
 ) -> None:
     application = _app(tmp_path / "chunked")
-    now = datetime(2026, 7, 18, 12, 0, tzinfo=UTC)
+    now = datetime.now(UTC)
 
     async def populate() -> None:
         store = application.state.idempotency_store
