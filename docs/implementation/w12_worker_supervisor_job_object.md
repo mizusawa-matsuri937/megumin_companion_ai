@@ -268,6 +268,14 @@ unsupported。回滚是移除 `app/workers` 和 W12 测试/探针；因为本 PR
   write error、pending close、WinAPI 失败和 partial fd/handle cleanup。覆盖扩展首次全仓运行因 synthetic
   last-error 未隔离而失败（1 failed、1052 passed、raw 90.20%）；显式注入 synthetic last-error 后最终全仓
   `1055 passed, 3 skipped`、raw `90.32%`。
+- exact head `838ed8d...` 的 push run `29678564645` 与 pull-request run `29678565463` 均保留为失败证据。
+  两次 Windows quality、四次 installed-wheel job 均通过；两次 macOS quality 的全量测试也分别以 raw branch
+  coverage `90.17%` 与 `90.22%` 通过，但随后 strict mypy 在 `app/workers/access.py` 对 Darwin typeshed
+  直接解析 Windows-only `ctypes.WinDLL`、`msvcrt.get_osfhandle` 与两处 `ctypes.get_last_error` 时产生 4 个
+  `attr-defined` 错误。修复仅将 `ctypes`/`msvcrt` 模块视图显式 `cast(Any, ...)` 后调用这些既有 Windows API；
+  不增加 ignore，不改变 final-handle 路径校验、descriptor ownership、异常语义、wire protocol 或公开接口。
+  `838ed8d...` 的其余绿灯不能继承为新 head Gate 证据；修复后的本地全量、wheel smoke 与 push/PR 八项 CI
+  必须从头重跑。
 - 自动无闪窗证据包括 `CREATE_NO_WINDOW` flag、helper 内 `GetConsoleWindow()==0` 与运行期
   `EnumWindows` 可见窗口数 0；离散枚举仍不能绝对证明未出现比采样更短的瞬时窗口，因此只保留一次极小人工观察。
 

@@ -226,18 +226,20 @@ def _final_path_from_descriptor(descriptor: int) -> Path:
         import ctypes
         import msvcrt
 
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        ctypes_api = cast(Any, ctypes)
+        msvcrt_api = cast(Any, msvcrt)
+        kernel32 = ctypes_api.WinDLL("kernel32", use_last_error=True)
         get_final = kernel32.GetFinalPathNameByHandleW
         get_final.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_uint32, ctypes.c_uint32]
         get_final.restype = ctypes.c_uint32
-        handle = msvcrt.get_osfhandle(descriptor)
+        handle = msvcrt_api.get_osfhandle(descriptor)
         needed = get_final(handle, None, 0, 0)
         if needed == 0:
-            raise OSError(ctypes.get_last_error(), "final path unavailable")
+            raise OSError(ctypes_api.get_last_error(), "final path unavailable")
         buffer = ctypes.create_unicode_buffer(needed + 1)
         written = get_final(handle, buffer, len(buffer), 0)
         if written == 0 or written >= len(buffer):
-            raise OSError(ctypes.get_last_error(), "final path unavailable")
+            raise OSError(ctypes_api.get_last_error(), "final path unavailable")
         raw = buffer.value
         if raw.startswith("\\\\?\\UNC\\"):
             raw = "\\\\" + raw[8:]
