@@ -820,7 +820,7 @@ def test_shutdown_deadline_overrun_never_discards_an_unclosed_process_owner() ->
             ),
         )
         await supervisor.start()
-        report = await asyncio.wait_for(supervisor.stop(), timeout=0.25)
+        report = await asyncio.wait_for(supervisor.stop(), timeout=1.0)
         process = adapter.processes[0]
         assert not report.deadline_met
         assert report.process_close_succeeded

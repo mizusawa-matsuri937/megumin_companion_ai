@@ -293,6 +293,14 @@ unsupported。回滚是移除 `app/workers` 和 W12 测试/探针；因为本 PR
   Windows 与 Darwin strict mypy（196 个源文件）及 `git diff --check` 均通过。这些是提交前本地证据；生成新
   exact head 后仍必须重新执行 wheel/source-quarantine smoke 与 push/PR 八项 CI，不能继承 `3a73d60...` 的
   绿灯或 provenance。
+- exact head `5dc0b436d5e04f3f4c6a2b57bceb2b148f2283db` 的 push run `29683614240` 四项全部通过，
+  但 pull-request run `29683615256` 的 macOS quality 在
+  `test_shutdown_deadline_overrun_never_discards_an_unclosed_process_owner` 超过测试外层 250 ms watchdog；该 job
+  为 `1 failed, 1060 passed, 15 skipped`，raw coverage `90.23%`。同一 macOS 测试在 push run 通过，PR Windows
+  quality 与两平台 wheel 亦通过。根因是用同步 `time.sleep(0.1)` 合成不可取消 native 阻塞时，测试把 CI 调度
+  余量错误压缩到 150 ms；产品内部 shutdown budget 仍为 40 ms 且必须报告 `deadline_met=false`。只将测试
+  watchdog 放宽到 1 秒，保留 close/owner/deadline 全部断言，不修改产品 deadline 或 shutdown 实现；新 head
+  仍须从头执行本地与 push/PR 全矩阵，不继承该 run 的任何绿灯。
 - 自动无闪窗证据包括 `CREATE_NO_WINDOW` flag、helper 内 `GetConsoleWindow()==0` 与运行期
   `EnumWindows` 可见窗口数 0；离散枚举仍不能绝对证明未出现比采样更短的瞬时窗口，因此只保留一次极小人工观察。
 
