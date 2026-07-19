@@ -5,8 +5,10 @@ from __future__ import annotations
 import argparse
 import asyncio
 import ctypes
+import gc
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import threading
@@ -31,6 +33,65 @@ def _handle_count() -> int:
     if not kernel32.GetProcessHandleCount(kernel32.GetCurrentProcess(), ctypes.byref(count)):
         raise RuntimeError("handle_count_failed")
     return int(count.value)
+
+
+def _process_alive(pid: int) -> bool:
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32]
+    kernel32.OpenProcess.restype = ctypes.c_void_p
+    kernel32.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+    kernel32.WaitForSingleObject.restype = ctypes.c_uint32
+    kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+    handle = kernel32.OpenProcess(0x00100000, 0, pid)
+    if not handle:
+        return False
+    try:
+        return bool(kernel32.WaitForSingleObject(handle, 0) == 258)
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def _read_marker(marker: Path) -> tuple[int, ...]:
+    payload: object = json.loads(marker.read_text(encoding="ascii"))
+    if not isinstance(payload, dict):
+        raise RuntimeError("invalid_marker")
+    values = tuple(
+        value
+        for value in payload.values()
+        if not isinstance(value, bool) and isinstance(value, int)
+    )
+    if len(values) != len(payload):
+        raise RuntimeError("invalid_marker")
+    return values
+
+
+async def _wait_dead(pids: tuple[int, ...]) -> float:
+    started = time.monotonic()
+    async with asyncio.timeout(5):
+        while any(_process_alive(pid) for pid in pids):
+            await asyncio.sleep(0.005)
+    return time.monotonic() - started
+
+
+def _visible_window_count(pids: tuple[int, ...]) -> int:
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    callback_type = ctypes.WINFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p)
+    targets = set(pids)
+    visible: set[int] = set()
+
+    def inspect(window: int, _parameter: int) -> int:
+        pid = ctypes.c_uint32()
+        user32.GetWindowThreadProcessId(window, ctypes.byref(pid))
+        if int(pid.value) in targets and user32.IsWindowVisible(window):
+            visible.add(int(window))
+        return 1
+
+    callback = callback_type(inspect)
+    user32.EnumWindows.argtypes = [callback_type, ctypes.c_void_p]
+    user32.EnumWindows.restype = ctypes.c_int
+    if not user32.EnumWindows(callback, None):
+        raise RuntimeError("window_enumeration_failed")
+    return len(visible)
 
 
 async def _wait_marker(marker: Path) -> None:
@@ -95,13 +156,17 @@ async def _probe(helper: Path) -> dict[str, Any]:
             (sys.executable, str(helper), "--standalone-tree", str(marker))
         )
         await _wait_marker(marker)
+        process_identities = _read_marker(marker)
+        visible_window_count = _visible_window_count(process_identities)
         process_peak = await process.active_process_count()
         kill_started = time.monotonic()
         await process.terminate_tree(77)
         await process.wait()
         await _wait_job_zero(process)
         kill_latency_ms = round((time.monotonic() - kill_started) * 1000, 3)
+        child_exit_latency_ms = round((await _wait_dead(process_identities)) * 1000, 3)
         process_after = await process.active_process_count()
+        stdout_pipe_eof = await process.read_stdout(1) == b""
         await process.close()
         handle_samples.append(_handle_count())
         thread_samples.append(threading.active_count())
@@ -133,6 +198,9 @@ async def _probe(helper: Path) -> dict[str, Any]:
         deadline_marker = root / "deadline.json"
         deadline_supervisor = _supervisor(helper, "--marker", str(deadline_marker))
         await deadline_supervisor.start()
+        console_result = await deadline_supervisor.run_job(
+            job_id="console", job_kind="console.check"
+        )
         deadline_started = time.monotonic()
         try:
             await deadline_supervisor.run_job(
@@ -148,6 +216,23 @@ async def _probe(helper: Path) -> dict[str, Any]:
         handle_samples.append(_handle_count())
         thread_samples.append(threading.active_count())
 
+        parent_marker = root / "parent-crash.json"
+        with subprocess.Popen(
+            [sys.executable, str(helper), "--parent-crash-probe", str(parent_marker)],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        ) as parent:
+            await _wait_marker(parent_marker)
+            parent_identities = _read_marker(parent_marker)
+            parent_exit_code = await asyncio.to_thread(parent.wait, 10)
+        del parent
+        gc.collect()
+        parent_crash_kill_latency_ms = round((await _wait_dead(parent_identities)) * 1000, 3)
+        handle_samples.append(_handle_count())
+        thread_samples.append(threading.active_count())
+
         managed_paths = AppPaths(root=root / "managed")
         TempAssetRegistry(managed_paths, minimum_scavenge_age_seconds=0).scavenge()
         residual_files = sum(
@@ -160,9 +245,15 @@ async def _probe(helper: Path) -> dict[str, Any]:
         "schema_version": 1,
         "platform": "windows-native",
         "create_no_window": True,
+        "get_console_window": console_result["console_window"],
+        "visible_top_level_windows": visible_window_count,
         "job_processes_peak": process_peak,
         "job_processes_after_kill": process_after,
         "kill_latency_ms": kill_latency_ms,
+        "child_exit_latency_ms": child_exit_latency_ms,
+        "stdout_pipe_eof": stdout_pipe_eof,
+        "parent_probe_exit_code": parent_exit_code,
+        "parent_crash_kill_latency_ms": parent_crash_kill_latency_ms,
         "hard_deadline_requested_ms": 200,
         "hard_deadline_observed_ms": deadline_latency_ms,
         "shutdown_latency_ms": close_latency_ms,
