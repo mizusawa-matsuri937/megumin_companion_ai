@@ -10,6 +10,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePath
 from types import MappingProxyType
+from typing import Any, cast
 
 from app.windows_security import ReparsePointError, assert_no_reparse_points
 
@@ -247,8 +248,15 @@ def _final_path_from_descriptor(descriptor: int) -> Path:
     if proc_link.exists():
         return Path(os.readlink(proc_link))
     if sys.platform == "darwin":
-        import fcntl
-
-        buffer = fcntl.fcntl(descriptor, 50, b"\0" * 4096)
-        return Path(buffer.split(b"\0", 1)[0].decode())
+        return _darwin_final_path_from_descriptor(descriptor)
     raise OSError("final path unavailable")
+
+
+def _darwin_final_path_from_descriptor(descriptor: int) -> Path:
+    """Resolve a Darwin fd with F_GETPATH's fixed MAXPATHLEN buffer."""
+
+    import fcntl
+
+    resolve = cast(Any, fcntl).fcntl
+    buffer = resolve(descriptor, 50, b"\0" * 1024)
+    return Path(buffer.split(b"\0", 1)[0].decode())

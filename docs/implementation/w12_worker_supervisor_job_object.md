@@ -190,8 +190,9 @@ uv run python tools/w12_windows_probe.py --helper tests/helpers/w12_worker_helpe
 macOS 另用明确标记的 fake-kernel API 合约测试覆盖 ctypes 绑定、参数拒绝和 handle 生命周期，以避免平台专属
 代码压低跨平台 coverage；它只证明 portable 控制流契约，不证明 macOS 具有或执行了 Windows Job Object。
 
-反方审查补出的 pipe immediate-error 修复后的最终本机全仓复核为 `1049 passed, 3 skipped`，raw branch
-coverage `90.06%`；Ruff check、
+CI 平台修复与 portable fake-kernel owner 覆盖后的最终本机全仓复核为 `1055 passed, 3 skipped`，raw branch
+coverage `90.32%`；当前 W12 focused 为 `88 passed, 1 skipped`，真实 Windows 原生套件仍为 `7 passed`；
+Ruff check、
 Ruff format、strict mypy（196 个源文件）和 `git diff --check` 均通过。最终 exact-head 的
 wheel/source-quarantine 与双平台 CI 仍须逐项记录在 Draft PR #21。raw branch coverage 必须真实大于
 90.00%，不能
@@ -255,6 +256,18 @@ unsupported。回滚是移除 `app/workers` 和 W12 测试/探针；因为本 PR
   focused `78 passed, 1 skipped`、真实 Windows `7 passed`，并从头重跑全仓得到 `1049 passed, 3 skipped`、
   raw `90.06%`。一次并行 focused/native/static 编排在所有 Python 子进程退出后仍未返回可读取结果，已终止且
   不计作通过；上述三组随后均以串行完整重跑和明确退出码取证。
+- exact head `b16d0e3...` 的 push run 29677691632 和 PR run 29677692676 attempt 1 均失败并完整保留。
+  两个 macOS quality job 都因 Darwin `fcntl.fcntl` 的 bytes 参数误用 4,096 bytes（Python 上限 1,024）导致
+  2 个 access 失败及 2 个 helper 级联失败，raw 分别 89.29%/89.24%；修复改为 Darwin `F_GETPATH`
+  `MAXPATHLEN=1024` 并增加可移植契约测试。PR Windows quality 另在 orderly shutdown 中观察到已完成 wait task
+  但 soft grace 刚过，报告 `active_processes=0`、`exit_code=None`（1 failed、1050 passed、raw 90.08%）；新增
+  确定性慢返回测试先复现，再允许同步读取已完成 task 的 result，未扩张 deadline。push Windows quality 与四个
+  wheel job 在该旧 head 通过，但不能套用到修复后的新 head。
+- 为使 macOS 对新增 Windows writer 代码保持真实 raw>90，新增明确标注为 portable fake-kernel、绝不冒充
+  Job Object 真机证据的 backpressure/error/partial-owner tests，覆盖 queue-full、caller Future cancel、底层
+  write error、pending close、WinAPI 失败和 partial fd/handle cleanup。覆盖扩展首次全仓运行因 synthetic
+  last-error 未隔离而失败（1 failed、1052 passed、raw 90.20%）；显式注入 synthetic last-error 后最终全仓
+  `1055 passed, 3 skipped`、raw `90.32%`。
 - 自动无闪窗证据包括 `CREATE_NO_WINDOW` flag、helper 内 `GetConsoleWindow()==0` 与运行期
   `EnumWindows` 可见窗口数 0；离散枚举仍不能绝对证明未出现比采样更短的瞬时窗口，因此只保留一次极小人工观察。
 

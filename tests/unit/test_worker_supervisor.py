@@ -45,6 +45,7 @@ class _FakeJobProcess:
         ignore_cancel: bool = False,
         blocked_writes: frozenset[str] = frozenset(),
         failed_writes: frozenset[str] = frozenset(),
+        shutdown_return_delay: float = 0.0,
     ) -> None:
         self.pid = 1234
         self.create_no_window = create_no_window
@@ -64,6 +65,7 @@ class _FakeJobProcess:
         self._ignore_cancel = ignore_cancel
         self._blocked_writes = blocked_writes
         self._failed_writes = failed_writes
+        self._shutdown_return_delay = shutdown_return_delay
         self.write_started = asyncio.Event()
         self.write_release = asyncio.Event()
         self.terminated = False
@@ -128,6 +130,11 @@ class _FakeJobProcess:
                     encode_message(HelperMessage(message_type="stopped", payload={}))
                 )
                 self._finish(0)
+                if self._shutdown_return_delay:
+                    try:
+                        await asyncio.sleep(self._shutdown_return_delay)
+                    except asyncio.CancelledError:
+                        await asyncio.sleep(self._shutdown_return_delay)
 
     async def _heartbeats(self) -> None:
         sequence = 0
@@ -276,6 +283,28 @@ def test_successful_handshake_job_and_orderly_shutdown() -> None:
             "job.start",
             "shutdown",
         ]
+
+    asyncio.run(scenario())
+
+
+def test_shutdown_reports_already_settled_exit_after_soft_grace_expires() -> None:
+    async def scenario() -> None:
+        adapter = _FakeJobAdapter(({"shutdown_return_delay": 0.02},))
+        supervisor = WorkerSupervisor(
+            name="media-worker",
+            role="media",
+            command=("trusted-helper",),
+            adapter=adapter,
+            config=_config(soft_cancel_grace_seconds=0.005),
+        )
+        await supervisor.start()
+
+        report = await supervisor.stop()
+
+        assert not report.hard_terminated
+        assert report.active_processes == 0
+        assert report.exit_code == 0
+        assert report.deadline_met
 
     asyncio.run(scenario())
 

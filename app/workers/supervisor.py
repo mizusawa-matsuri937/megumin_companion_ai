@@ -684,12 +684,16 @@ class WorkerSupervisor:
         exit_code: int | None = None
         process = self._process
         wait_task = self._process_wait_task
-        if process is not None and wait_task is not None and loop.time() < soft_deadline:
-            try:
-                async with asyncio.timeout_at(soft_deadline):
-                    exit_code = await asyncio.shield(wait_task)
-            except TimeoutError:
-                pass
+        if process is not None and wait_task is not None:
+            if wait_task.done():
+                with suppress(OSError, ProcessAdapterError, asyncio.CancelledError):
+                    exit_code = wait_task.result()
+            elif loop.time() < soft_deadline:
+                try:
+                    async with asyncio.timeout_at(soft_deadline):
+                        exit_code = await asyncio.shield(wait_task)
+                except TimeoutError:
+                    pass
         if process is not None and (wait_task is None or not wait_task.done()):
             hard_terminated = True
             try:

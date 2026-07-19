@@ -5,7 +5,9 @@ from __future__ import annotations
 import os
 import stat
 import subprocess
+import sys
 from pathlib import Path
+from types import ModuleType
 
 import app.workers.access as worker_access
 import pytest
@@ -302,6 +304,24 @@ def test_open_and_final_handle_validation_failures_close_authority(
     monkeypatch.setattr(worker_access, "_final_path_from_descriptor", fail_final_path)
     with pytest.raises(ResourceAccessError, match="escape_or_reparse"):
         policy.authorize(reference)
+
+
+def test_darwin_final_path_uses_f_getpath_maxpathlen_buffer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[int, int, int]] = []
+    fake_fcntl = ModuleType("fcntl")
+
+    def resolve(descriptor: int, operation: int, buffer: bytes) -> bytes:
+        calls.append((descriptor, operation, len(buffer)))
+        resolved = b"/approved/input.bin\0"
+        return resolved + (b"\0" * (len(buffer) - len(resolved)))
+
+    fake_fcntl.fcntl = resolve  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "fcntl", fake_fcntl)
+
+    assert worker_access._darwin_final_path_from_descriptor(7) == Path("/approved/input.bin")
+    assert calls == [(7, 50, 1024)]
 
 
 @pytest.mark.parametrize("maximum_active_jobs", (0, 65, True))
