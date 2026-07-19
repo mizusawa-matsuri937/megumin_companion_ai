@@ -100,7 +100,12 @@ class ApprovedResourcePolicy:
             canonical_roots[root_id] = canonical
         handles: dict[str, int] = {}
         for handle_id, handle in inherited_handles.items():
-            if not _SAFE_ID.fullmatch(handle_id) or isinstance(handle, bool) or handle < 0:
+            if (
+                not _SAFE_ID.fullmatch(handle_id)
+                or isinstance(handle, bool)
+                or not isinstance(handle, int)
+                or handle < 0
+            ):
                 raise ResourceAccessError("worker_approved_handle_invalid")
             handles[handle_id] = handle
         self._roots = MappingProxyType(canonical_roots)

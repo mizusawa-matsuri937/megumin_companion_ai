@@ -98,6 +98,33 @@ def test_malformed_payloads_fail_with_content_free_codes(payload: bytes, code: s
         assert decoded_payload not in str(raised.value)
 
 
+@pytest.mark.parametrize(
+    "payload",
+    (
+        b'{"schema_version":1,"message_type":"job.completed","request_id":"x",'
+        b'"payload":{"value":' + (b"9" * 5000) + b"}}",
+        b'{"schema_version":1,"message_type":"job.completed","request_id":"x",'
+        b'"payload":{"value":' + (b"[" * 1200) + b"0" + (b"]" * 1200) + b"}}",
+    ),
+)
+def test_native_json_parser_limits_are_mapped_to_stable_protocol_errors(payload: bytes) -> None:
+    assert len(payload) < MAX_HELPER_FRAME_BYTES
+    with pytest.raises(ProtocolError, match="helper_protocol_json_invalid"):
+        decode_payload(payload)
+
+
+def test_lone_unicode_surrogates_are_rejected_on_encode_and_decode() -> None:
+    with pytest.raises(ProtocolError, match="helper_protocol_string_invalid"):
+        HelperMessage(message_type="hello", payload={"value": "\ud800"})
+
+    raw = (
+        b'{"schema_version":1,"message_type":"job.completed","request_id":"x",'
+        b'"payload":{"value":"\\ud800"}}'
+    )
+    with pytest.raises(ProtocolError, match="helper_protocol_string_invalid"):
+        decode_payload(raw)
+
+
 def test_oversized_declared_and_streamed_frames_fail_before_unbounded_buffering() -> None:
     decoder = FrameDecoder()
     with pytest.raises(ProtocolError, match="frame_size_invalid"):

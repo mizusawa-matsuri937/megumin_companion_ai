@@ -7,6 +7,7 @@ Concrete audio/STT/perception job handlers are intentionally absent in W12.
 from __future__ import annotations
 
 import asyncio
+import math
 import os
 import re
 import sys
@@ -47,8 +48,12 @@ class HelperRuntime:
     ) -> None:
         if (
             not _SAFE_CODE.fullmatch(role)
+            or isinstance(heartbeat_interval_seconds, bool)
+            or not isinstance(heartbeat_interval_seconds, (int, float))
+            or not math.isfinite(heartbeat_interval_seconds)
             or heartbeat_interval_seconds <= 0
             or isinstance(maximum_active_jobs, bool)
+            or not isinstance(maximum_active_jobs, int)
             or not 1 <= maximum_active_jobs <= 64
         ):
             raise ValueError("helper runtime configuration invalid")

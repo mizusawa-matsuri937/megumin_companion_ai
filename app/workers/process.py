@@ -339,8 +339,11 @@ class WindowsJobProcessAdapter:
         selected_handles = tuple(inherited_handles)
         if (
             len(selected_handles) > 16
+            or any(
+                isinstance(handle, bool) or not isinstance(handle, int) or handle <= 0
+                for handle in selected_handles
+            )
             or len(set(selected_handles)) != len(selected_handles)
-            or any(isinstance(handle, bool) or handle <= 0 for handle in selected_handles)
         ):
             raise ProcessAdapterError("worker_inherited_handles_invalid")
         return await asyncio.to_thread(self._spawn_sync, selected, selected_handles)

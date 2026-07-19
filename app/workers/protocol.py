@@ -71,7 +71,11 @@ def _validate_value(value: Any, *, depth: int = 0) -> None:
             raise ProtocolError("helper_protocol_non_finite_number")
         return
     if isinstance(value, str):
-        if len(value) > MAX_STRING_CHARS or "\x00" in value:
+        if (
+            len(value) > MAX_STRING_CHARS
+            or "\x00" in value
+            or any(0xD800 <= ord(character) <= 0xDFFF for character in value)
+        ):
             raise ProtocolError("helper_protocol_string_invalid")
         return
     if isinstance(value, list):
@@ -135,7 +139,7 @@ def decode_payload(raw: bytes) -> HelperMessage:
         )
     except ProtocolError:
         raise
-    except (UnicodeError, json.JSONDecodeError) as exc:
+    except (UnicodeError, ValueError, RecursionError, OverflowError) as exc:
         raise ProtocolError("helper_protocol_json_invalid") from exc
     if not isinstance(decoded, dict) or set(decoded) != _MESSAGE_FIELDS:
         raise ProtocolError("helper_protocol_envelope_invalid")

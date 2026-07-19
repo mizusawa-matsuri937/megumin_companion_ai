@@ -43,9 +43,12 @@ def test_windows_adapter_rejects_command_injection_shapes_and_unapproved_handles
         ):
             with pytest.raises(ProcessAdapterError):
                 await adapter.spawn(command)
-        for handles in ((0,), (7, 7), tuple(range(1, 18))):
+        for handles in ((0,), (7, 7), tuple(range(1, 18)), (1.5,)):
             with pytest.raises(ProcessAdapterError, match="inherited_handles_invalid"):
-                await adapter.spawn((sys.executable, "-c", "pass"), inherited_handles=handles)
+                await adapter.spawn(
+                    (sys.executable, "-c", "pass"),
+                    inherited_handles=handles,  # type: ignore[arg-type]
+                )
 
     import asyncio
 

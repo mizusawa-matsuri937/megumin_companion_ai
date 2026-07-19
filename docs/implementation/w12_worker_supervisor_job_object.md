@@ -276,6 +276,23 @@ unsupported。回滚是移除 `app/workers` 和 W12 测试/探针；因为本 PR
   不增加 ignore，不改变 final-handle 路径校验、descriptor ownership、异常语义、wire protocol 或公开接口。
   `838ed8d...` 的其余绿灯不能继承为新 head Gate 证据；修复后的本地全量、wheel smoke 与 push/PR 八项 CI
   必须从头重跑。
+- exact head `3a73d60f87fdafd0a8c35d6099dd5c0fc5148435` 的 push run `29680203877` 与
+  pull-request run `29680205013` 虽然 8/8 job 全部通过，第二轮 AI 反方审计仍真实复现五类 Gate 阻断：
+  5,000 位 JSON 整数和 1,200 层嵌套分别泄漏原生 `ValueError`/`RecursionError`；孤立 Unicode surrogate
+  在 decode 被接受且在 encode 泄漏 `UnicodeEncodeError`；17 个资源的 `job.start` 在占用 future slot 后才因
+  collection ceiling 失败，重复八次后耗尽全部容量并产生未消费 Future 异常；NaN/Infinity/boolean deadline
+  与非整数容量配置可越过构造期校验；最后，模拟 native terminate 阻塞越过 shutdown deadline 时，旧分支会在
+  未调用 `ManagedProcess.close()` 的情况下把 `_process` 清空，报告 close=false 但状态已转 disabled。
+- 对应修复把原生 JSON parser 边界统一映射为 content-free `ProtocolError`，拒绝非 Unicode scalar，要求所有
+  deadline 为有限实数、所有容量和 handle 为非 boolean 整数，并在登记 job slot 前预编码完整不变的
+  `job.start` frame。shutdown 即使超出报告 deadline 也保留唯一 process/Job owner，直到可信 adapter 的 safety
+  close 完成；不再用“按时返回”交换 handle ownership。修复没有新增公开 API、settings/config 文件字段、数据库
+  schema、迁移或新的 wire message/field，也没有接入 W13 功能。
+- 修复工作区的聚焦回归为 `113 passed, 1 skipped`；skip 仅因当前 Windows 账户无普通 symlink privilege。
+  从头全仓运行得到 `1074 passed, 2 skipped`、raw branch coverage `90.47%`；Ruff lint、203 文件 format check、
+  Windows 与 Darwin strict mypy（196 个源文件）及 `git diff --check` 均通过。这些是提交前本地证据；生成新
+  exact head 后仍必须重新执行 wheel/source-quarantine smoke 与 push/PR 八项 CI，不能继承 `3a73d60...` 的
+  绿灯或 provenance。
 - 自动无闪窗证据包括 `CREATE_NO_WINDOW` flag、helper 内 `GetConsoleWindow()==0` 与运行期
   `EnumWindows` 可见窗口数 0；离散枚举仍不能绝对证明未出现比采样更短的瞬时窗口，因此只保留一次极小人工观察。
 
@@ -283,11 +300,12 @@ unsupported。回滚是移除 `app/workers` 和 W12 测试/探针；因为本 PR
 
 W12 自身仍需：
 
-1. 并发/安全 reviewer 对 protocol、owner、handle、shutdown 顺序和残余风险签字；
-2. `CREATE_NO_WINDOW` 和 helper 内 `GetConsoleWindow()==0` 已自动证明，但“绝无肉眼可见瞬时闪窗”仍只能保留
+1. AI reviewer 在新 exact head 上读回 protocol、owner、handle、shutdown 顺序、8 项 CI、coverage 与
+   provenance；该项不再转交人工重复审代码；
+2. `CREATE_NO_WINDOW` 和 helper 内 `GetConsoleWindow()==0` 已自动证明，但“无肉眼可见瞬时闪窗”仍只能保留
    一次人工观察项；静态截图不能可靠证明短暂事件；
-3. 项目所有者已回复“W12 审计合格”，只关闭 W12 自身实现审计；只有另行收到明确的
-   “W12 / Gate W2 审计合格”后才允许请求最终合并。
+3. 项目所有者在看到 AI exact-head 审计与人工视觉结果后回复“W12 / Gate W2 审计合格”；这是合并授权，
+   不是要求所有者再做一次代码或安全技术审计。
 
 W07/W08/W09/W10 与 hotfix 现已全部进入精确综合 baseline，10k turn、慢消费者、共享 SQLite 高重复压力、
 故障风暴、native hang/parent crash、shutdown 和资源 owner 矩阵已由 AI 重跑。综合 Gate W2 仍**不由本 PR

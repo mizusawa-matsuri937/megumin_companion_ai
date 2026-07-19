@@ -4,14 +4,19 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import struct
 import threading
+import time
 from collections.abc import Sequence
 from contextlib import suppress
 from dataclasses import asdict
+from pathlib import Path
 from typing import Any
 
+import app.workers.supervisor as supervisor_module
 import pytest
+from app.workers.access import ApprovedResourcePolicy, ResourceReference
 from app.workers.process import ManagedProcess, ProcessAdapterError, UnsupportedProcessAdapter
 from app.workers.protocol import FrameDecoder, HelperMessage, ProtocolError, encode_message
 from app.workers.supervisor import (
@@ -46,6 +51,8 @@ class _FakeJobProcess:
         blocked_writes: frozenset[str] = frozenset(),
         failed_writes: frozenset[str] = frozenset(),
         shutdown_return_delay: float = 0.0,
+        terminate_block_seconds: float = 0.0,
+        terminate_completes: bool = True,
     ) -> None:
         self.pid = 1234
         self.create_no_window = create_no_window
@@ -66,6 +73,8 @@ class _FakeJobProcess:
         self._blocked_writes = blocked_writes
         self._failed_writes = failed_writes
         self._shutdown_return_delay = shutdown_return_delay
+        self._terminate_block_seconds = terminate_block_seconds
+        self._terminate_completes = terminate_completes
         self.write_started = asyncio.Event()
         self.write_release = asyncio.Event()
         self.terminated = False
@@ -161,8 +170,11 @@ class _FakeJobProcess:
         return await asyncio.shield(self._exit)
 
     async def terminate_tree(self, exit_code: int = 1) -> None:
+        if self._terminate_block_seconds:
+            time.sleep(self._terminate_block_seconds)
         self.terminated = True
-        self._finish(exit_code)
+        if self._terminate_completes:
+            self._finish(exit_code)
 
     async def active_process_count(self) -> int | None:
         if self._fail_query:
@@ -596,6 +608,108 @@ def test_explicit_zero_deadline_is_rejected_before_start_write() -> None:
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize("deadline", (math.nan, math.inf, True))
+def test_non_finite_or_boolean_job_deadline_is_rejected_before_start_write(
+    deadline: object,
+) -> None:
+    async def scenario() -> None:
+        adapter = _FakeJobAdapter()
+        supervisor = WorkerSupervisor(
+            name="media-worker",
+            role="media",
+            command=("trusted-helper",),
+            adapter=adapter,
+            config=_config(),
+        )
+        await supervisor.start()
+        with pytest.raises(WorkerError, match="worker_job_deadline_invalid"):
+            await supervisor.run_job(
+                job_id="invalid-deadline",
+                job_kind="hang",
+                hard_deadline_seconds=deadline,  # type: ignore[arg-type]
+            )
+        assert "job.start" not in adapter.processes[0].received_types
+        assert (await supervisor.snapshot()).active_jobs == 0
+        await supervisor.stop()
+
+    asyncio.run(scenario())
+
+
+def test_oversized_resource_list_is_rejected_without_consuming_job_capacity(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        root = tmp_path / "approved"
+        root.mkdir()
+        resources: list[ResourceReference] = []
+        for index in range(17):
+            relative = f"resource-{index}.bin"
+            (root / relative).write_bytes(b"synthetic")
+            resources.append(
+                ResourceReference(
+                    resource_id=f"resource-{index}",
+                    root_id="approved",
+                    relative_path=relative,
+                )
+            )
+        adapter = _FakeJobAdapter()
+        supervisor = WorkerSupervisor(
+            name="media-worker",
+            role="media",
+            command=("trusted-helper",),
+            adapter=adapter,
+            resource_policy=ApprovedResourcePolicy(roots={"approved": root}),
+            config=_config(maximum_active_jobs=1),
+        )
+        await supervisor.start()
+        with pytest.raises(WorkerError, match="worker_job_resources_invalid"):
+            await supervisor.run_job(
+                job_id="too-many-resources",
+                job_kind="complete",
+                resources=resources,
+            )
+        assert (await supervisor.snapshot()).active_jobs == 0
+        assert await supervisor.run_job(job_id="valid", job_kind="complete") == {"status": "ok"}
+        await supervisor.stop()
+
+    asyncio.run(scenario())
+
+
+def test_invalid_start_frame_is_rejected_before_reserving_job_capacity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def scenario() -> None:
+        adapter = _FakeJobAdapter()
+        supervisor = WorkerSupervisor(
+            name="media-worker",
+            role="media",
+            command=("trusted-helper",),
+            adapter=adapter,
+            config=_config(maximum_active_jobs=1),
+        )
+        await supervisor.start()
+        original_encode = encode_message
+
+        def reject_start(message: HelperMessage) -> bytes:
+            if message.message_type == "job.start":
+                raise ProtocolError("synthetic_preflight_failure")
+            return original_encode(message)
+
+        monkeypatch.setattr(supervisor_module, "encode_message", reject_start)
+        with pytest.raises(WorkerError, match="worker_job_protocol_invalid"):
+            await supervisor.run_job(
+                job_id="invalid-frame",
+                job_kind="complete",
+            )
+        assert "job.start" not in adapter.processes[0].received_types
+        assert (await supervisor.snapshot()).active_jobs == 0
+        monkeypatch.setattr(supervisor_module, "encode_message", original_encode)
+        assert await supervisor.run_job(job_id="valid", job_kind="complete") == {"status": "ok"}
+        await supervisor.stop()
+
+    asyncio.run(scenario())
+
+
 def test_job_absolute_deadline_includes_a_blocked_start_write() -> None:
     async def scenario() -> None:
         adapter = _FakeJobAdapter(({"blocked_writes": frozenset({"job.start"})},))
@@ -679,6 +793,39 @@ def test_shutdown_deadline_includes_blocked_control_writes() -> None:
         assert asyncio.get_running_loop().time() - started < 0.18
         assert report.hard_terminated
         assert process.active == 0
+        assert supervisor.actual_state is WorkerActualState.disabled
+
+    asyncio.run(scenario())
+
+
+def test_shutdown_deadline_overrun_never_discards_an_unclosed_process_owner() -> None:
+    async def scenario() -> None:
+        adapter = _FakeJobAdapter(
+            (
+                {
+                    "ignore_shutdown": True,
+                    "terminate_block_seconds": 0.1,
+                    "terminate_completes": False,
+                },
+            )
+        )
+        supervisor = WorkerSupervisor(
+            name="media-worker",
+            role="media",
+            command=("trusted-helper",),
+            adapter=adapter,
+            config=_config(
+                soft_cancel_grace_seconds=0.01,
+                terminate_wait_seconds=0.03,
+            ),
+        )
+        await supervisor.start()
+        report = await asyncio.wait_for(supervisor.stop(), timeout=0.25)
+        process = adapter.processes[0]
+        assert not report.deadline_met
+        assert report.process_close_succeeded
+        assert process.terminated and process.closed and process.active == 0
+        assert supervisor._process is None  # noqa: SLF001 - owner invariant under test
         assert supervisor.actual_state is WorkerActualState.disabled
 
     asyncio.run(scenario())
@@ -778,10 +925,16 @@ def test_scavenger_contract_rejects_sync_callables_and_bounds_async_hang() -> No
     "overrides",
     (
         {"handshake_timeout_seconds": 0},
+        {"handshake_timeout_seconds": math.nan},
+        {"heartbeat_timeout_seconds": math.inf},
         {"restart_backoff_initial_seconds": 2, "restart_backoff_max_seconds": 1},
         {"maximum_active_jobs": 0},
+        {"maximum_active_jobs": True},
+        {"maximum_active_jobs": 1.5},
         {"crash_budget": -1},
+        {"crash_budget": True},
         {"stderr_limit_bytes": MAX_STDERR_BYTES + 1},
+        {"stderr_limit_bytes": 1.5},
     ),
 )
 def test_supervisor_configuration_rejects_unbounded_or_invalid_values(

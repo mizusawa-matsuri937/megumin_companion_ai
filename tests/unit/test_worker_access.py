@@ -211,6 +211,10 @@ def test_policy_rejects_invalid_roots_handles_missing_and_non_regular_resources(
         ApprovedResourcePolicy(roots={"input": relative.relative_to(tmp_path)})
     with pytest.raises(ResourceAccessError, match="handle_invalid"):
         ApprovedResourcePolicy(inherited_handles={"handle": -1})
+    with pytest.raises(ResourceAccessError, match="handle_invalid"):
+        ApprovedResourcePolicy(
+            inherited_handles={"handle": 1.5}  # type: ignore[dict-item]
+        )
 
     root = tmp_path / "approved"
     root.mkdir()
@@ -340,4 +344,25 @@ def test_helper_capacity_configuration_is_bounded(maximum_active_jobs: object) -
             role="media",
             handler=Handler(),
             maximum_active_jobs=maximum_active_jobs,  # type: ignore[arg-type]
+        )
+
+
+@pytest.mark.parametrize("heartbeat_interval_seconds", (float("nan"), float("inf"), True))
+def test_helper_heartbeat_configuration_must_be_finite(
+    heartbeat_interval_seconds: object,
+) -> None:
+    from app.workers.helper import HelperRuntime
+
+    class Handler:
+        async def run_job(self, *_args: object) -> dict[str, object]:
+            return {}
+
+        async def close(self) -> None:
+            return None
+
+    with pytest.raises(ValueError, match="configuration invalid"):
+        HelperRuntime(
+            role="media",
+            handler=Handler(),
+            heartbeat_interval_seconds=heartbeat_interval_seconds,  # type: ignore[arg-type]
         )

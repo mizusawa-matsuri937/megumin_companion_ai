@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import math
 import re
 import time
 from collections import deque
@@ -16,7 +17,13 @@ from typing import Any, Final, Protocol
 from app.health import CapabilityCheck, CapabilityState
 from app.workers.access import ApprovedResourcePolicy, ResourceReference
 from app.workers.process import ManagedProcess, ProcessAdapter, ProcessAdapterError
-from app.workers.protocol import FrameDecoder, HelperMessage, ProtocolError, encode_message
+from app.workers.protocol import (
+    MAX_PAYLOAD_KEYS,
+    FrameDecoder,
+    HelperMessage,
+    ProtocolError,
+    encode_message,
+)
 
 MAX_STDERR_BYTES: Final = 1024 * 1024
 MAX_SUPERVISOR_EVENTS: Final = 256
@@ -71,15 +78,36 @@ class SupervisorConfig:
             self.restart_backoff_initial_seconds,
             self.restart_backoff_max_seconds,
         )
-        if any(value <= 0 for value in positive):
+        if any(
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+            or value <= 0
+            for value in positive
+        ):
             raise ValueError("worker supervisor deadlines must be positive")
         if self.restart_backoff_max_seconds < self.restart_backoff_initial_seconds:
             raise ValueError("worker supervisor backoff bounds invalid")
-        if self.maximum_active_jobs < 1 or self.maximum_active_jobs > 64:
+        if (
+            isinstance(self.maximum_active_jobs, bool)
+            or not isinstance(self.maximum_active_jobs, int)
+            or self.maximum_active_jobs < 1
+            or self.maximum_active_jobs > 64
+        ):
             raise ValueError("worker supervisor active job bound invalid")
-        if self.crash_budget < 0 or self.crash_budget > 32:
+        if (
+            isinstance(self.crash_budget, bool)
+            or not isinstance(self.crash_budget, int)
+            or self.crash_budget < 0
+            or self.crash_budget > 32
+        ):
             raise ValueError("worker supervisor crash budget invalid")
-        if self.stderr_limit_bytes < 1 or self.stderr_limit_bytes > MAX_STDERR_BYTES:
+        if (
+            isinstance(self.stderr_limit_bytes, bool)
+            or not isinstance(self.stderr_limit_bytes, int)
+            or self.stderr_limit_bytes < 1
+            or self.stderr_limit_bytes > MAX_STDERR_BYTES
+        ):
             raise ValueError("worker supervisor stderr bound invalid")
 
 
@@ -444,14 +472,32 @@ class WorkerSupervisor:
             raise WorkerError("worker_not_accepting_jobs")
         if job_id in self._jobs or len(self._jobs) >= self._config.maximum_active_jobs:
             raise WorkerError("worker_job_capacity_or_duplicate")
-        deadline = (
-            self._config.maximum_job_seconds
-            if hard_deadline_seconds is None
-            else hard_deadline_seconds
-        )
+        if hard_deadline_seconds is None:
+            deadline = self._config.maximum_job_seconds
+        elif (
+            isinstance(hard_deadline_seconds, bool)
+            or not isinstance(hard_deadline_seconds, (int, float))
+            or not math.isfinite(hard_deadline_seconds)
+        ):
+            raise WorkerError("worker_job_deadline_invalid")
+        else:
+            deadline = float(hard_deadline_seconds)
         if deadline <= 0 or deadline > self._config.maximum_job_seconds:
             raise WorkerError("worker_job_deadline_invalid")
+        if len(resources) > MAX_PAYLOAD_KEYS:
+            raise WorkerError("worker_job_resources_invalid")
         wire_resources = [self._resource_policy.wire_reference(item) for item in resources]
+        try:
+            start_message = HelperMessage(
+                message_type="job.start",
+                request_id=job_id,
+                payload={"job_kind": job_kind, "resources": wire_resources},
+            )
+            # Preflight the complete frame before reserving a job slot.  The
+            # subsequent send re-encodes the same private, unchanged shape.
+            encode_message(start_message)
+        except ProtocolError as exc:
+            raise WorkerError("worker_job_protocol_invalid") from exc
         loop = asyncio.get_running_loop()
         deadline_at = loop.time() + deadline
         termination_reserve = min(self._config.terminate_wait_seconds, deadline / 2)
@@ -462,11 +508,7 @@ class WorkerSupervisor:
             try:
                 async with asyncio.timeout_at(work_deadline):
                     await self._send(
-                        HelperMessage(
-                            message_type="job.start",
-                            request_id=job_id,
-                            payload={"job_kind": job_kind, "resources": wire_resources},
-                        ),
+                        start_message,
                         deadline_at=work_deadline,
                     )
                     return await asyncio.shield(future)
@@ -715,19 +757,19 @@ class WorkerSupervisor:
             except (TimeoutError, OSError, ProcessAdapterError):
                 active_processes = None
         process_close_succeeded = False
-        if loop.time() < deadline_at:
-            try:
+        try:
+            if loop.time() < deadline_at:
                 async with asyncio.timeout_at(deadline_at):
                     process_close_succeeded = await self._close_current_process()
-            except TimeoutError:
-                process_close_succeeded = False
-        else:
-            self._process = None
-            self._generation += 1
-            for task in tuple(self._tasks):
-                if not task.done():
-                    task.cancel()
-            self._process_wait_task = None
+            else:
+                process_close_succeeded = await self._close_current_process()
+        except TimeoutError:
+            process_close_succeeded = False
+        if self._process is not None:
+            # A missed deadline is reportable, but it must never discard the
+            # only owner of a live Job/process handle.  Trusted adapters still
+            # get one safety close after the timed phase has expired.
+            process_close_succeeded = await self._close_current_process()
         scavenge_succeeded = await self._scavenge(deadline_at)
         for future in tuple(self._jobs.values()):
             if not future.done():
@@ -780,7 +822,6 @@ class WorkerSupervisor:
         process = self._process
         if expected is not None and process is not expected:
             return True
-        self._process = None
         self._generation += 1
         current = asyncio.current_task()
         cancelled: list[asyncio.Task[Any]] = []
@@ -790,10 +831,18 @@ class WorkerSupervisor:
                 cancelled.append(task)
         close_succeeded = True
         if process is not None:
+            close_completed = False
             try:
                 await process.close()
             except Exception:
                 close_succeeded = False
+                close_completed = True
+            else:
+                close_completed = True
+            if close_completed and self._process is process:
+                self._process = None
+        else:
+            self._process = None
         if cancelled:
             await asyncio.gather(*cancelled, return_exceptions=True)
         self._process_wait_task = None
