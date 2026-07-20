@@ -49,6 +49,9 @@ data/
 *.log
 *vts*token*.json
 
+# Local, per-conversation Codex recovery state. Shared project status lives in docs/current/.
+.agents/CONTEXT_MEMORY.md
+
 # User-imported or protected assets must never be committed
 assets/user_imported/
 *.moc3

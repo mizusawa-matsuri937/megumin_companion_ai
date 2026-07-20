@@ -141,4 +141,4 @@ gh pr view 15 --repo mizusawa-matsuri937/megumin_companion_ai `
 - 没有直接修改未公开契约的内部 SQLite，也没有擅自启用全局记忆功能。
 - “新用户指令覆盖旧计划”已由系统提示词明确规定，按用户要求不重复录入。
 - 唯一新增的有效方法是“无平台强制保护时的 expected-head 受控合并流程”，已去重后写入根目录
-  `agent.md` 的 `Guarded Merge Without Platform Enforcement`，新会话会作为仓库级持久指令读取。
+  `AGENTS.md` 的 `Guarded Merge Without Platform Enforcement`，新会话会作为仓库级持久指令读取。

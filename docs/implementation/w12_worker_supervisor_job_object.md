@@ -28,7 +28,7 @@ authority 的部分结论。本节之后的契约已按测试先行修复更新�
 
 本 PR 只提供通用 worker 基座：versioned frame parser、批准资源策略、helper runtime、平台进程适配器和
 `WorkerSupervisor`。没有把 `whisper_cpp.py`、PortAudio playback、麦克风、OCR 或 perception pipeline 接到
-worker；这些仍分别属于 W17、W18、W21。根目录 `HANDOFF.md`、`agent.md`、总体 Windows 计划状态、shared
+worker；这些仍分别属于 W17、W18、W21。根目录 `HANDOFF.md`、`AGENTS.md`、总体 Windows 计划状态、shared
 settings、bootstrap、`windows_security.py` 和 W11 health/logging 实现均未修改。
 
 非 Windows 默认适配器明确返回 `worker_platform_unsupported`，`supports_job_objects=false`；测试 fake 名称和

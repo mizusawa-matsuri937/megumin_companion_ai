@@ -1,0 +1,18 @@
+# 架构与设计
+
+## 当前边界与数据流
+
+- [`windows_data_flow_inventory.md`](windows_data_flow_inventory.md)：Windows 数据流、保留清单与相关边界。
+
+## 目标/历史架构背景
+
+- [`../project_architecture.md`](../project_architecture.md)：完整目标架构与历史设计背景。其目录树、技术栈建议、
+  阶段/按日排期不自动构成当前实现事实；当前实施顺序以执行计划为准。
+
+## 已批准决策与约束
+
+- [`../adr/README.md`](../adr/README.md)：Architecture Decision Records。
+- [`../decisions/w00_owner_decisions.md`](../decisions/w00_owner_decisions.md)：所有者决定。
+- [`../security/windows_threat_model.md`](../security/windows_threat_model.md)：威胁模型。
+
+修改架构、协议、数据流或隐私边界前，先阅读上述资料和当前计划，再以当前代码/测试核验实际实现范围。
