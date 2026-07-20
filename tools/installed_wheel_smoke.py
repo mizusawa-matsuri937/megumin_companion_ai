@@ -176,9 +176,14 @@ def main() -> int:
     desktop_version, _ = _run_entry_point("megumin-companion-desktop", "--version")
     if metadata.version("megumin-companion-ai") not in desktop_version:
         raise RuntimeError("installed desktop version output is unexpected")
-    _, desktop_error = _run_entry_point("megumin-companion-desktop", expected_return=3)
-    if "desktop_unavailable" not in desktop_error:
-        raise RuntimeError("installed desktop preflight output is unexpected")
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    desktop_smoke, _ = _run_entry_point(
+        "megumin-companion-desktop",
+        "--headless-smoke",
+    )
+    desktop_payload = json.loads(desktop_smoke)
+    if desktop_payload.get("status") != "ok":
+        raise RuntimeError("installed desktop headless smoke failed")
 
     locked_status, health_status, health_state, idempotency_ok = asyncio.run(
         _health_payload(main_module, DevAPIConfig, httpx)

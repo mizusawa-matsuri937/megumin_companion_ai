@@ -32,7 +32,7 @@ def main() -> int:
     child_code = (
         "import sys,time; "
         "from desktop_client.entrypoint import main; "
-        "code=main([]); "
+        "code=main(['--headless-smoke']); "
         "print(f'desktop_return={code};uvicorn_loaded={str(\"uvicorn\" in sys.modules).lower()}', "
         "flush=True); "
         "time.sleep(10)"
@@ -49,8 +49,11 @@ def main() -> int:
     stderr = ""
     try:
         assert process.stdout is not None
+        smoke = json.loads(process.stdout.readline())
         marker = process.stdout.readline().strip()
-        if marker != "desktop_return=3;uvicorn_loaded=false":
+        if smoke.get("status") != "ok":
+            raise RuntimeError(f"desktop headless smoke failed: {smoke!r}")
+        if marker != "desktop_return=0;uvicorn_loaded=false":
             raise RuntimeError(f"unexpected desktop preflight marker: {marker!r}")
         rows = _tcp_rows_for_process(process.pid)
         if rows:
@@ -64,13 +67,11 @@ def main() -> int:
             process.kill()
             _stdout, stderr = process.communicate(timeout=5)
 
-    if "desktop_unavailable" not in stderr:
-        raise RuntimeError("desktop entry point did not report its current W13 preflight boundary")
     print(
         json.dumps(
             {
                 "status": "ok",
-                "desktop_return": 3,
+                "desktop_return": 0,
                 "uvicorn_loaded": False,
                 "tcp_socket_count": 0,
             },

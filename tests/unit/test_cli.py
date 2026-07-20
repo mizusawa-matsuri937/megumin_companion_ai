@@ -247,17 +247,32 @@ def test_app_main_exports_factory_without_global_application() -> None:
     assert "app" not in vars(main_module)
 
 
-def test_desktop_entrypoint_is_honest_preflight_only(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_desktop_entrypoint_starts_w13_shell(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(desktop_entrypoint, "check_configuration", _must_not_run)
+    calls: list[bool] = []
 
-    assert desktop_entrypoint.main([]) == 3
+    def start_desktop() -> int:
+        calls.append(True)
+        return 0
 
-    output = capsys.readouterr().err
-    assert "desktop_unavailable" in output
-    assert "W13" in output
+    monkeypatch.setattr(desktop_entrypoint, "start_desktop", start_desktop)
+
+    assert desktop_entrypoint.main([]) == 0
+    assert calls == [True]
     assert "uvicorn" not in vars(cli)
+
+
+def test_desktop_headless_smoke_is_explicit(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[bool] = []
+
+    def start_headless_smoke() -> int:
+        calls.append(True)
+        return 0
+
+    monkeypatch.setattr(desktop_entrypoint, "start_headless_smoke", start_headless_smoke)
+
+    assert desktop_entrypoint.main(["--headless-smoke"]) == 0
+    assert calls == [True]
 
 
 def test_desktop_check_config_delegates_without_starting_shell(
