@@ -143,6 +143,7 @@ class MainWindow(QMainWindow):
         self.editor = QPlainTextEdit(central)
         self.editor.setPlaceholderText("输入消息；Ctrl+Enter 发送")
         self.editor.setAccessibleName("消息编辑器")
+        self.editor.setTabChangesFocus(True)
         self.editor.setMaximumBlockCount(2_000)
         button_row = QHBoxLayout()
         self.send_button = QPushButton("发送", central)
@@ -154,9 +155,9 @@ class MainWindow(QMainWindow):
         button_row.addWidget(self.send_button)
         status_row = QHBoxLayout()
         self.connection_status = QLabel("后端：已停止", central)
-        self.connection_status.setAccessibleName("后端连接状态")
+        self.connection_status.setAccessibleName("后端：已停止")
         self.feature_status = QLabel("文字聊天：待 W14 接入", central)
-        self.feature_status.setAccessibleName("功能状态")
+        self.feature_status.setAccessibleName("文字聊天：待 W14 接入")
         status_row.addWidget(self.connection_status)
         status_row.addStretch(1)
         status_row.addWidget(self.feature_status)
@@ -226,12 +227,15 @@ class MainWindow(QMainWindow):
         if self.model.last_error_code:
             status = f"{status}（{self.model.last_error_code}）"
         self.connection_status.setText(status)
+        self.connection_status.setAccessibleName(status)
         chat_ready = (
             self.model.connection_state is BackendState.ready
             and self.model.capabilities.text_chat
             and not self._closing
         )
-        self.feature_status.setText("文字聊天：可用" if chat_ready else "文字聊天：待 W14 接入")
+        feature_status = "文字聊天：可用" if chat_ready else "文字聊天：待 W14 接入"
+        self.feature_status.setText(feature_status)
+        self.feature_status.setAccessibleName(feature_status)
         self.send_button.setEnabled(chat_ready)
         self.stop_button.setEnabled(
             chat_ready

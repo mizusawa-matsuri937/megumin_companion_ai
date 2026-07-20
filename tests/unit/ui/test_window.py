@@ -17,7 +17,8 @@ from desktop_client.ui.contracts import (
     UserMessageCommand,
 )
 from desktop_client.ui.window import DesktopViewModel, MainWindow
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
 
@@ -109,6 +110,62 @@ def test_window_has_minimum_accessible_controls_and_honest_default_state(
     assert window.editor.toPlainText() == ""
     assert bridge.command_count == 0
     assert bridge.event_count == 0
+
+
+def test_editor_tab_moves_focus_without_mutating_draft(qapp: QApplication) -> None:
+    bridge = ApplicationBridge()
+    host = BackendThreadHost(bridge, auto_restart_limit=0)
+    window = MainWindow(bridge, host)
+    window.show()
+    window.activateWindow()
+    qapp.processEvents()
+
+    window.message_view.setFocus()
+    QTest.keyClick(window.message_view, Qt.Key.Key_Tab)
+    assert qapp.focusWidget() is window.editor
+
+    window.editor.setPlainText("DRAFT_PRIVATE_SENTINEL")
+    QTest.keyClick(window.editor, Qt.Key.Key_Tab)
+    assert qapp.focusWidget() is window.message_view
+    assert window.editor.toPlainText() == "DRAFT_PRIVATE_SENTINEL"
+
+    QTest.keyClick(window.message_view, Qt.Key.Key_Backtab)
+    assert qapp.focusWidget() is window.editor
+    assert window.editor.toPlainText() == "DRAFT_PRIVATE_SENTINEL"
+    window.close()
+
+
+def test_dynamic_status_accessible_names_follow_visible_values(
+    qapp: QApplication,
+) -> None:
+    bridge = ApplicationBridge()
+    host = BackendThreadHost(bridge, auto_restart_limit=0)
+    window = MainWindow(bridge, host)
+    window.show()
+
+    assert window.connection_status.accessibleName() == "后端：已停止"
+    assert window.feature_status.accessibleName() == "文字聊天：待 W14 接入"
+
+    bridge.publish_event(
+        BackendStateEvent(
+            generation=1,
+            state=BackendState.failed,
+            reason_code="backend_crashed",
+        )
+    )
+    assert _pump_until(qapp, lambda: "backend_crashed" in window.connection_status.text())
+    assert window.connection_status.accessibleName() == window.connection_status.text()
+
+    bridge.publish_event(
+        BackendStateEvent(
+            generation=2,
+            state=BackendState.ready,
+            capabilities=BackendCapabilities(text_chat=True, turn_cancel=True),
+        )
+    )
+    assert _pump_until(qapp, lambda: window.feature_status.text() == "文字聊天：可用")
+    assert window.feature_status.accessibleName() == window.feature_status.text()
+    window.close()
 
 
 def test_window_fake_timeline_keeps_qt_responsive_and_handles_cancel(
