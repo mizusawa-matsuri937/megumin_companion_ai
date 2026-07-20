@@ -4,7 +4,7 @@
 
 > 状态：实现与本地自动化已完成；Draft PR
 > [#27](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/27) 的首次 macOS CI 类型失败已修复，
-> 最终 head CI 待重新核验。
+> 运行代码 head `ec46df9fd699af9ceb9581d96100de5d8a3dfce2` 的远端 CI 已通过。
 > 最后更新：2026-07-21（Asia/Shanghai）。
 
 W15 基于已合并的 W14 merge commit
@@ -50,7 +50,9 @@ W20 的 OS 信号或 W25 的安装器。
   `uv lock --check` 均通过。
 - PR #27 的首次 exact head 上，macOS strict mypy 因 typeshed 不公开 Windows-only `winreg` 和
   `ctypes.get/set_last_error` 而失败 16 项；Windows quality 与两个 installed-wheel 均通过。代码现在
-  使用受控动态 platform adapter，Darwin mypy 已通过；修复后的最终提交仍须以远端 CI 重新核验。
+  使用受控动态 platform adapter，Darwin mypy 已通过；修复后的运行代码 head `ec46df9` 在
+  pull-request run `29770004752` 和 push run `29770000078` 的 macOS/Windows quality 及两项
+  installed-wheel 检查全部通过。
 
 ## 残余风险与人工 Gate
 
