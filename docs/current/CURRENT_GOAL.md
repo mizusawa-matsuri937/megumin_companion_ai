@@ -1,10 +1,10 @@
 # 当前产品目标
 
-> 最后核验：2026-07-21（Asia/Shanghai）。W15 的未提交工作树已完成本地自动化核验：
-> `uv run pytest` 为 `1118 passed, 3 skipped`、总覆盖率 90.07%；严格类型、lint、格式和锁文件
-> 检查亦已通过。该证据来自 W15 首次提交前的工作树；W15 尚未推送或创建 PR，因此它不是远端
-> exact-head CI 证据。Draft PR [#27](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/27)
-> 已创建；其最终 head 的远端 CI 仍待核验。
+> 最后核验：2026-07-21（Asia/Shanghai）。W15 的最新本地工作树已完成自动化核验：
+> `uv run pytest` 为 `1118 passed, 3 skipped`、总覆盖率 90.09%；Windows 与 macOS 模拟的严格
+> 类型检查、lint、格式和锁文件检查亦已通过。Draft PR
+> [#27](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/27) 的首次 head 曾在 macOS
+> strict mypy 失败，原因和修复见下；修复后的最终 head 远端 CI 仍待重新核验。
 
 ## 已确认事实
 
@@ -42,11 +42,17 @@
   → `14 passed`。它覆盖 current-user/current-session primitive、opaque per-session marker scope、
   重复退出、关闭到托盘、hung backend deadline、固定 tray actions、safe-mode feature 状态、HKCU
   stale startup path 与配置默认值。
-- `uv run pytest` → `1118 passed, 3 skipped in 157.23s`；总覆盖率 `90.07%`（达到 90% 门槛）。
+- `uv run pytest`（跨平台 type-compatibility 修复后）→ `1118 passed, 3 skipped in 151.49s`；总覆盖率
+  `90.09%`（达到 90% 门槛）。
 - `uv run mypy app desktop_client tests tools\\installed_wheel_smoke.py tools\\w05_ci_smoke.py` →
-  `Success: no issues found in 215 source files`；`uv run ruff check .`、
+  `Success: no issues found in 215 source files`；另行执行
+  `uv run mypy --platform darwin app desktop_client tests tools\\installed_wheel_smoke.py tools\\w05_ci_smoke.py`
+  也在 215 个 source files 上通过。`uv run ruff check .`、
   `uv run ruff format --check .` 与 `uv lock --check` 均通过。
-- 上述记录对应提交前的同一工作树；提交、推送和 Draft PR 后必须重新核验远端 exact head。
+- PR #27 的首次 exact head `f53e04d241749d0a5370d05031f011e08e892c6f` 中，两个 installed-wheel
+  和 Windows quality 已通过；macOS quality 的 strict mypy 有 16 个错误，因为 macOS typeshed 不公开
+  Windows-only `winreg` 成员及 `ctypes.get/set_last_error`。W15 代码现以受控动态平台适配解决，
+  并由上述 Darwin mypy 验证；修复后最终 head 必须重新核验远端 CI。
 
 ## 未验证项与人工 Gate
 
@@ -56,7 +62,7 @@
   仍必须在真实 Windows 环境验证。模拟托盘只证明模拟条件。
 - W25 才负责真正安装器/卸载流程；W15 只提供固定 HKCU Run value 的协调与卸载清理 API，不能
   宣称已验证真实卸载。
-- 已推送并创建 W15 Draft PR #27；最终 head 的远端 exact-head CI 尚未完成/核验。
+- 已推送并创建 W15 Draft PR #27；修复 macOS mypy 后的最终 head 远端 exact-head CI 尚未完成/核验。
 
 ## 相关资料
 

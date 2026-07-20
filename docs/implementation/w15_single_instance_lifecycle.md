@@ -3,7 +3,8 @@
 ## 状态与范围
 
 > 状态：实现与本地自动化已完成；Draft PR
-> [#27](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/27) 已创建，最终 head CI 待核验。
+> [#27](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/27) 的首次 macOS CI 类型失败已修复，
+> 最终 head CI 待重新核验。
 > 最后更新：2026-07-21（Asia/Shanghai）。
 
 W15 基于已合并的 W14 merge commit
@@ -40,11 +41,16 @@ W20 的 OS 信号或 W25 的安装器。
   → `14 passed`，覆盖 crash marker、current-user Windows named primitive、同 session 次实例激活、
   opaque session marker、关闭到托盘、重复退出、hung backend deadline、固定 tray actions、safe-mode
   feature 状态、HKCU stale startup path 与配置默认值。
-- `uv run pytest` → `1118 passed, 3 skipped in 157.23s`；总覆盖率 `90.07%`，满足项目 90% 门槛。
+- `uv run pytest`（跨平台 type-compatibility 修复后）→ `1118 passed, 3 skipped in 151.49s`；总覆盖率
+  `90.09%`，满足项目 90% 门槛。
 - `uv run mypy app desktop_client tests tools\\installed_wheel_smoke.py tools\\w05_ci_smoke.py` →
-  215 source files 无类型问题；`uv run ruff check .`、`uv run ruff format --check .` 与
+  215 source files 无类型问题；`uv run mypy --platform darwin app desktop_client tests`
+  `tools\\installed_wheel_smoke.py tools\\w05_ci_smoke.py` 也通过。`uv run ruff check .`、
+  `uv run ruff format --check .` 与
   `uv lock --check` 均通过。
-- 这些是同一首次提交前工作树的本地证据；创建 Draft PR 后仍须以最终提交的远端 CI 重新核验。
+- PR #27 的首次 exact head 上，macOS strict mypy 因 typeshed 不公开 Windows-only `winreg` 和
+  `ctypes.get/set_last_error` 而失败 16 项；Windows quality 与两个 installed-wheel 均通过。代码现在
+  使用受控动态 platform adapter，Darwin mypy 已通过；修复后的最终提交仍须以远端 CI 重新核验。
 
 ## 残余风险与人工 Gate
 

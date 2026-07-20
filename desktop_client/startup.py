@@ -12,7 +12,7 @@ import sys
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 RUN_KEY_PATH = r"Software\Microsoft\Windows\CurrentVersion\Run"
 RUN_VALUE_NAME = "MeguminCompanion"
@@ -80,7 +80,11 @@ class WindowsRunValueStore:  # pragma: no cover - exercised by Windows scenario 
             import winreg
         except ImportError as exc:
             raise StartupRegistrationError("startup_platform_unsupported") from exc
-        self._winreg = winreg
+        # On macOS/Linux, typeshed intentionally exposes no Windows registry
+        # members.  Runtime construction remains guarded by ``os.name``;
+        # keeping the narrow adapter dynamic lets cross-platform strict mypy
+        # check the source without pretending this capability is portable.
+        self._winreg: Any = winreg
 
     def read(self, value_name: str) -> str | None:
         try:

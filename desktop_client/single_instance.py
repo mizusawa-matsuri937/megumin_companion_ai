@@ -141,13 +141,13 @@ class WindowsCurrentUserInstance:  # pragma: no cover - exercised on Windows sce
                 )
                 if not event:
                     raise self._native_error("single_instance_event_create_failed")
-                ctypes.set_last_error(0)
+                _set_windows_last_error(0)
                 mutex = self._kernel32.CreateMutexW(
                     ctypes.byref(attributes),
                     0,
                     self._name,
                 )
-                mutex_error = int(ctypes.get_last_error())
+                mutex_error = _windows_last_error()
                 if not mutex:
                     self._close_handle(int(event))
                     raise self._native_error("single_instance_mutex_create_failed")
@@ -355,3 +355,17 @@ def _current_windows_session_id(kernel32: Any) -> int:
     if not process_to_session(get_process_id(), ctypes.byref(session_id)):
         raise WindowsSecurityError("ProcessIdToSessionId failed")
     return int(session_id.value)
+
+
+def _set_windows_last_error(value: int) -> None:
+    setter = getattr(ctypes, "set_last_error", None)
+    if not callable(setter):
+        raise SingleInstanceError("single_instance_platform_unsupported")
+    setter(value)
+
+
+def _windows_last_error() -> int:
+    getter = getattr(ctypes, "get_last_error", None)
+    if not callable(getter):
+        raise SingleInstanceError("single_instance_platform_unsupported")
+    return int(getter())
