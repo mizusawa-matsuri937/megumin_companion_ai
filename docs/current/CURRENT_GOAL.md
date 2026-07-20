@@ -1,54 +1,69 @@
 # 当前产品目标
 
-> 最后核验：2026-07-20（Asia/Shanghai）。本快照的 PR 状态通过
-> `gh pr view 26 --repo mizusawa-matsuri937/megumin_companion_ai` 核验；执行后续动作前仍须重新核验 exact head。
+> 最后核验：2026-07-21（Asia/Shanghai）。W15 的未提交工作树已完成本地自动化核验：
+> `uv run pytest` 为 `1118 passed, 3 skipped`、总覆盖率 90.07%；严格类型、lint、格式和锁文件
+> 检查亦已通过。该证据来自 W15 首次提交前的工作树；W15 尚未推送或创建 PR，因此它不是远端
+> exact-head CI 证据。
 
 ## 已确认事实
 
-- 当前 Windows 开发主线的下一个待关闭任务是 **W14：文字对话、streaming、取消与恢复**。
-- W14 已在 Draft PR [#26](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/26) 实现并发布：
-  `codex/w14-text-chat-streaming` → `agent/windows-development-baseline`，head 为
-  `09cf81e26b23e5e2ef793e9508a8a5fa7aac6df0`。
-- PR #26 在核验时为 `OPEN`、`Draft`、`CLEAN`；两轮 macOS/Windows `quality` 与 `installed-wheel` 检查均成功。
-- W14 将既有 `TurnService` 组装到进程内 desktop backend thread，复用 W06 的幂等、取消、顺序 event replay 和
-  snapshot recovery；不启动 Uvicorn、不绑定 TCP、不创建 WebSocket client，也不新增持久化敏感数据。
-- 当前基线分支在核验时为 `agent/windows-development-baseline` / `4b0370c`。本状态不是“W14 已合并”的声明。
+- W14 的 PR [#26](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/26) 已于
+  2026-07-20 合并到 `agent/windows-development-baseline`，merge commit 为
+  `0a9f199f01201e14a342a28798a2ca86e6287e25`。本地 W15 分支从该提交创建。
+- 项目所有者已明确要求开始 **W15：单实例、托盘和统一生命周期**；这替代了本文件先前
+  “等待 W14 人工 Gate 后不得启动 W15” 的旧状态。
+- 当前实现分支为 `codex/w15-single-instance-lifecycle`，尚未创建 W15 PR，也尚未完成
+  人工 Windows Gate；不得把它表述为已关闭、已合并或可发布。
+- W15 仍受 ADR-W01、ADR-W07、ADR-W08、Windows 数据流不变量与 P0-04 风险约束：Qt
+  只拥有 UI/托盘，BackendThread 的应用 lifespan 仍拥有 turn、worker、VTS、memory 和日志。
 
 ## 当前目标与完成条件
 
-当前目标是让 W14 在**不扩大范围、不自动合并**的前提下完成所有剩余审查和人工 Gate：
+在不扩大到 W16 设置 UI、W17 音频设备或 W25 安装器的前提下交付 W15：
 
-1. 等待项目所有者的明确审计/体验结论；在此之前保持 Draft，不启动 W15。
-2. 人工只验证 AI 无法忠实复现的 Windows 真实体验：连续文字对话、中文/日文 IME composition 期间的
-   Enter/Ctrl+Enter、快速发送/重试的感知、转录滚动与选中、错误文案的主观清晰度。
-3. 收到批准后，重新核验 PR 的 base/head/diff、review、Draft 状态和**最终 head** 的全部检查，再以
-   expected-head guard 合并；合并后从远端核验 merge commit，并在最终基线重跑要求的检查。
-4. 合并完成后更新本文件、对应实现记录和执行计划，再由所有者决定是否启动 W15。
+1. 使用当前用户、当前 session 的 securable primitive 保证单实例；第二实例只能请求主窗口
+   显示，不能传入任意命令或文本。
+2. 交付托盘的显示/隐藏、停止当前 turn、静态隐私总览与退出，并将窗口关闭的默认行为明确为
+   “隐藏到托盘”；没有可用托盘时走受控退出。
+3. 将 UI 关闭、BackendThread、应用 lifespan 的 worker/VTS/memory/logs 关闭、异常标记与
+   有界进程级 deadline 纳入同一 owner graph；不得将 Python thread timeout 表述为已安全停止。
+4. 增加默认关闭的当前用户启动项、路径变更/stale value 清理 API 与 crash marker v1；异常后
+   安全模式必须不自动恢复 vision/cloud vision/proactive。
+5. 在最终 head 上完成自动化、严格类型/格式检查、聚焦审查、提交、推送与 Draft PR；随后明确
+   列出无法自动化的真实 Windows Gate。
 
-## 已完成的自动化证据范围
+## 已完成的自动化证据（提交前工作树）
 
-W14 的自动化已覆盖同一 `message_id` 的去重、副作用只执行一次、新输入抢占旧 turn、event gap 后清空并由
-snapshot 恢复、配置化生命周期重启、W13 lifecycle/有界 bridge/input/focus/accessibility/close-wipe 回归。
+- `uv run pytest --no-cov tests\\unit\\ui\\test_w15_lifecycle.py tests\\unit\\test_desktop_startup.py`
+  `tests\\unit\\test_desktop_safe_mode.py tests\\unit\\test_config.py::test_repository_config_matches_packaged_default -q`
+  → `14 passed`。它覆盖 current-user/current-session primitive、opaque per-session marker scope、
+  重复退出、关闭到托盘、hung backend deadline、固定 tray actions、safe-mode feature 状态、HKCU
+  stale startup path 与配置默认值。
+- `uv run pytest` → `1118 passed, 3 skipped in 157.23s`；总覆盖率 `90.07%`（达到 90% 门槛）。
+- `uv run mypy app desktop_client tests tools\\installed_wheel_smoke.py tools\\w05_ci_smoke.py` →
+  `Success: no issues found in 215 source files`；`uv run ruff check .`、
+  `uv run ruff format --check .` 与 `uv lock --check` 均通过。
+- 上述记录对应提交前的同一工作树；提交、推送和 Draft PR 后必须重新核验远端 exact head。
 
-这些证据仅适用于 mock/headless 条件，**不**证明真实 Windows、真实 IME、真实用户感受或屏幕阅读器听感。
-详细契约和回滚方式见 W14 分支上的 `docs/implementation/w14_text_chat_streaming.md`；该记录在合并前不应被
-误当作基线已拥有的文件。
+## 未验证项与人工 Gate
 
-## 未验证或需要重新核验的事项
+- 自动化/current-user 测试不能证明不同 Windows 用户对 kernel object 的有效访问控制，也不能
+  替代真实 RDP/快速切用户 session 行为；需要标准用户、多 session Windows Gate。
+- Explorer 重启后的实际托盘重建、锁屏/注销/关机时序、任务栏通知区可见性和冻结包的无控制台窗口
+  仍必须在真实 Windows 环境验证。模拟托盘只证明模拟条件。
+- W25 才负责真正安装器/卸载流程；W15 只提供固定 HKCU Run value 的协调与卸载清理 API，不能
+  宣称已验证真实卸载。
+- 当前尚未有 W15 推送、Draft PR 或远端 exact-head CI 证据。
 
-- 所有者尚未给出 W14 的明确人工 Gate 结论；这不是自动化可替代的步骤。
-- PR 检查、base/head、mergeability 和远端状态会随时间变化；任何合并决定都必须重新查询，而不能只引用本页。
-- 本文件是共享的产品状态快照，不记录当前聊天会话的临时命令、未提交 diff 或私密信息；这些仅可写入本地
-  `.agents/CONTEXT_MEMORY.md`。
+## 相关资料
 
-## 进入 W14 前后应读取的资料
-
-- 权威计划中的 W14/W15：[`../windows_development_plan.md`](../windows_development_plan.md)
-- W13 已交付边界：[`../implementation/w13_pyside6_desktop_skeleton.md`](../implementation/w13_pyside6_desktop_skeleton.md)
-- 幂等与恢复契约：[`../adr/ADR-W05-idempotency-replay.md`](../adr/ADR-W05-idempotency-replay.md)
-- 发布/人工 Gate 规则：[`../standards/AGENT_OPERATING_CONSTRAINTS.md`](../standards/AGENT_OPERATING_CONSTRAINTS.md)
+- 权威计划的 W15 段落：[`../windows_development_plan.md`](../windows_development_plan.md)
+- 进行中的实现记录：[`../implementation/w15_single_instance_lifecycle.md`](../implementation/w15_single_instance_lifecycle.md)
+- 运行拓扑与关闭边界：[`../adr/ADR-W01-runtime-topology.md`](../adr/ADR-W01-runtime-topology.md)、
+  [`../adr/ADR-W07-native-worker-isolation.md`](../adr/ADR-W07-native-worker-isolation.md)
+- 包装/崩溃恢复边界：[`../adr/ADR-W08-packaging-upgrade.md`](../adr/ADR-W08-packaging-upgrade.md)
 
 ## 维护规则
 
-当活动任务、PR、Gate、目标提交、下一步或已知阻塞发生实质变化时，先更新本文件的“最后核验”和对应段落，
-再报告状态。仅凭历史 handoff、旧文档或聊天摘要不得改写本页为“已完成”。
+当 W15 的目标提交、自动化结果、PR、Gate 或人工验证状态发生实质变化时，先更新本文件和对应实现记录，
+再报告状态。不得以聊天结论、模拟结果或旧 PR 状态替代最终 head 上的可复核证据。

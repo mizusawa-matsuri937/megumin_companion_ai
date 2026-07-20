@@ -3,6 +3,7 @@
 from app.config.settings import (
     CURRENT_SETTINGS_SCHEMA_VERSION,
     ConfigurationError,
+    DesktopConfig,
     Settings,
     load_settings,
 )
@@ -16,6 +17,7 @@ from app.limits import LimitsConfig
 __all__ = [
     "CURRENT_SETTINGS_SCHEMA_VERSION",
     "ConfigurationError",
+    "DesktopConfig",
     "LimitsConfig",
     "Settings",
     "UserSettingsWriteResult",

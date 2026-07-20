@@ -7,6 +7,10 @@ app:
   language: zh-CN
   log_level: INFO
 
+# W15: 开机启动默认关闭；启用时只使用当前用户的 Run 注册表项，绝不创建提权计划任务。
+desktop:
+  startup_enabled: false
+
 server:
   host: 127.0.0.1
   port: 8765
