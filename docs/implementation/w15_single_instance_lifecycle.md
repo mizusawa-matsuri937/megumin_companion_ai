@@ -2,7 +2,9 @@
 
 ## 状态与范围
 
-> 状态：实现与本地自动化已完成，尚未创建 PR。最后更新：2026-07-21（Asia/Shanghai）。
+> 状态：实现与本地自动化已完成；Draft PR
+> [#27](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/27) 已创建，最终 head CI 待核验。
+> 最后更新：2026-07-21（Asia/Shanghai）。
 
 W15 基于已合并的 W14 merge commit
 `0a9f199f01201e14a342a28798a2ca86e6287e25` 开发。它只覆盖桌面进程的单实例、托盘、

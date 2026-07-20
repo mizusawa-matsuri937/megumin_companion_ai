@@ -3,7 +3,8 @@
 > 最后核验：2026-07-21（Asia/Shanghai）。W15 的未提交工作树已完成本地自动化核验：
 > `uv run pytest` 为 `1118 passed, 3 skipped`、总覆盖率 90.07%；严格类型、lint、格式和锁文件
 > 检查亦已通过。该证据来自 W15 首次提交前的工作树；W15 尚未推送或创建 PR，因此它不是远端
-> exact-head CI 证据。
+> exact-head CI 证据。Draft PR [#27](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/27)
+> 已创建；其最终 head 的远端 CI 仍待核验。
 
 ## 已确认事实
 
@@ -12,8 +13,10 @@
   `0a9f199f01201e14a342a28798a2ca86e6287e25`。本地 W15 分支从该提交创建。
 - 项目所有者已明确要求开始 **W15：单实例、托盘和统一生命周期**；这替代了本文件先前
   “等待 W14 人工 Gate 后不得启动 W15” 的旧状态。
-- 当前实现分支为 `codex/w15-single-instance-lifecycle`，尚未创建 W15 PR，也尚未完成
-  人工 Windows Gate；不得把它表述为已关闭、已合并或可发布。
+- 当前实现分支为 `codex/w15-single-instance-lifecycle`；W15 Draft PR
+  [#27](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/27) 的目标为
+  `agent/windows-development-baseline`，尚未完成远端 exact-head CI 或人工 Windows Gate；不得把它
+  表述为已关闭、已合并或可发布。
 - W15 仍受 ADR-W01、ADR-W07、ADR-W08、Windows 数据流不变量与 P0-04 风险约束：Qt
   只拥有 UI/托盘，BackendThread 的应用 lifespan 仍拥有 turn、worker、VTS、memory 和日志。
 
@@ -53,7 +56,7 @@
   仍必须在真实 Windows 环境验证。模拟托盘只证明模拟条件。
 - W25 才负责真正安装器/卸载流程；W15 只提供固定 HKCU Run value 的协调与卸载清理 API，不能
   宣称已验证真实卸载。
-- 当前尚未有 W15 推送、Draft PR 或远端 exact-head CI 证据。
+- 已推送并创建 W15 Draft PR #27；最终 head 的远端 exact-head CI 尚未完成/核验。
 
 ## 相关资料
 
