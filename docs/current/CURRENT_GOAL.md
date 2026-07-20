@@ -1,11 +1,13 @@
 # 当前产品目标
 
 > 最后核验：2026-07-21（Asia/Shanghai）。W15 的最新本地工作树已完成自动化核验：
-> `uv run pytest` 为 `1118 passed, 3 skipped`、总覆盖率 90.09%；Windows 与 macOS 模拟的严格
+> `uv run pytest` 为 `1118 passed, 3 skipped`、总覆盖率 90.10%；Windows 与 macOS 模拟的严格
 > 类型检查、lint、格式和锁文件检查亦已通过。Draft PR
 > [#27](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/27) 的首次 head 曾在 macOS
 > strict mypy 失败，原因和修复见下；修复后的运行代码 head
 > `ec46df9fd699af9ceb9581d96100de5d8a3dfce2` 已通过 macOS/Windows quality 和两项 installed-wheel。
+> 随后的文档 head `819e782bac71e2521580be8054891963512eec08` 暴露一项既有集成测试的错误时序前提；
+> 本工作树已改为确定性门控，最终交付仍只以匹配最终 head 的远端检查为证据。
 
 ## 已确认事实
 
@@ -43,8 +45,8 @@
   → `14 passed`。它覆盖 current-user/current-session primitive、opaque per-session marker scope、
   重复退出、关闭到托盘、hung backend deadline、固定 tray actions、safe-mode feature 状态、HKCU
   stale startup path 与配置默认值。
-- `uv run pytest`（跨平台 type-compatibility 修复后）→ `1118 passed, 3 skipped in 151.49s`；总覆盖率
-  `90.09%`（达到 90% 门槛）。
+- `uv run pytest`（包含确定性取消屏障测试修复后）→ `1118 passed, 3 skipped in 151.80s`；总覆盖率
+  `90.10%`（达到 90% 门槛）。
 - `uv run mypy app desktop_client tests tools\\installed_wheel_smoke.py tools\\w05_ci_smoke.py` →
   `Success: no issues found in 215 source files`；另行执行
   `uv run mypy --platform darwin app desktop_client tests tools\\installed_wheel_smoke.py tools\\w05_ci_smoke.py`
@@ -56,6 +58,11 @@
   并由上述 Darwin mypy 验证。修复后的运行代码 head `ec46df9fd699af9ceb9581d96100de5d8a3dfce2` 的
   pull-request run `29770004752` 和 push run `29770000078` 均为 success：macOS/Windows quality 以及
   两项 installed-wheel 共八个检查全部通过。
+- 后续文档 head `819e782bac71e2521580be8054891963512eec08` 的 pull-request run `29770563063` 中，
+  Windows quality 仅在 `tests/integration/test_mock_pipeline.py::test_new_input_is_a_hard_barrier_for_old_turn_events`
+  失败：旧测试用固定 `asyncio.sleep(0.05)` 假定第一轮尚未结束，却没有建立该前提，CI 中因而未观察到
+  `turn.cancelled`。这不足以证明 W15 产品代码回归。测试现用 `FirstTurnBarrierLLM` 明确等待第一轮进入
+  可取消阻塞点；修复后的断言连续运行 20 次、受影响文件 4 项和完整套件均通过。
 
 ## 未验证项与人工 Gate
 
@@ -65,8 +72,8 @@
   仍必须在真实 Windows 环境验证。模拟托盘只证明模拟条件。
 - W25 才负责真正安装器/卸载流程；W15 只提供固定 HKCU Run value 的协调与卸载清理 API，不能
   宣称已验证真实卸载。
-- W15 Draft PR #27 的运行代码 head 已完成并通过远端 exact-head CI；PR 仍为 Draft，等待下述真实
-  Windows Gate 和评审，不能视为已合并或可发布。
+- W15 Draft PR #27 仍未合并。远端 CI 只能在其匹配当前最终 head 时作为交付证据；即使通过，仍须完成
+  下述真实 Windows Gate 和评审，不能视为已合并或可发布。
 
 ## 相关资料
 

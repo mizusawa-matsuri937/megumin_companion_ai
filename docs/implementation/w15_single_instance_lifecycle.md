@@ -4,7 +4,9 @@
 
 > 状态：实现与本地自动化已完成；Draft PR
 > [#27](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/27) 的首次 macOS CI 类型失败已修复，
-> 运行代码 head `ec46df9fd699af9ceb9581d96100de5d8a3dfce2` 的远端 CI 已通过。
+> 运行代码 head `ec46df9fd699af9ceb9581d96100de5d8a3dfce2` 的远端 CI 已通过。后续文档 head
+> `819e782bac71e2521580be8054891963512eec08` 暴露既有取消屏障测试的时序前提错误，本工作树已将其
+> 改为确定性门控；交付证据必须始终与最终 head 对应。
 > 最后更新：2026-07-21（Asia/Shanghai）。
 
 W15 基于已合并的 W14 merge commit
@@ -41,8 +43,8 @@ W20 的 OS 信号或 W25 的安装器。
   → `14 passed`，覆盖 crash marker、current-user Windows named primitive、同 session 次实例激活、
   opaque session marker、关闭到托盘、重复退出、hung backend deadline、固定 tray actions、safe-mode
   feature 状态、HKCU stale startup path 与配置默认值。
-- `uv run pytest`（跨平台 type-compatibility 修复后）→ `1118 passed, 3 skipped in 151.49s`；总覆盖率
-  `90.09%`，满足项目 90% 门槛。
+- `uv run pytest`（包含确定性取消屏障测试修复后）→ `1118 passed, 3 skipped in 151.80s`；总覆盖率
+  `90.10%`，满足项目 90% 门槛。
 - `uv run mypy app desktop_client tests tools\\installed_wheel_smoke.py tools\\w05_ci_smoke.py` →
   215 source files 无类型问题；`uv run mypy --platform darwin app desktop_client tests`
   `tools\\installed_wheel_smoke.py tools\\w05_ci_smoke.py` 也通过。`uv run ruff check .`、
@@ -53,6 +55,10 @@ W20 的 OS 信号或 W25 的安装器。
   使用受控动态 platform adapter，Darwin mypy 已通过；修复后的运行代码 head `ec46df9` 在
   pull-request run `29770004752` 和 push run `29770000078` 的 macOS/Windows quality 及两项
   installed-wheel 检查全部通过。
+- 后续文档 head `819e782bac71e2521580be8054891963512eec08` 的 pull-request run `29770563063` 中，
+  Windows quality 只失败于 `test_new_input_is_a_hard_barrier_for_old_turn_events`：固定 50 ms sleep 并不
+  保证第一轮仍处于活动状态。测试现在通过 `FirstTurnBarrierLLM` 明确等待第一轮停在可取消位置，再提交
+  第二轮；修复后的该断言连续运行 20 次、整个受影响测试文件和完整本地套件均通过。
 
 ## 残余风险与人工 Gate
 
