@@ -8,7 +8,14 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Literal, TypeAlias
 
-from app.schemas import PipelineEvent, TurnInterruptRequest, UserMessage, utc_now
+from app.schemas import (
+    PipelineEvent,
+    SessionReset,
+    SessionSnapshotChunk,
+    TurnInterruptRequest,
+    UserMessage,
+    utc_now,
+)
 from app.schemas.messages import prefixed_id
 
 BRIDGE_PROTOCOL_VERSION: Literal[1] = 1
@@ -116,7 +123,12 @@ class BridgeOverflowEvent:
 
 
 BridgeEvent: TypeAlias = (
-    PipelineEvent | BackendStateEvent | CommandRejectedEvent | BridgeOverflowEvent
+    PipelineEvent
+    | SessionReset
+    | SessionSnapshotChunk
+    | BackendStateEvent
+    | CommandRejectedEvent
+    | BridgeOverflowEvent
 )
 
 
@@ -138,5 +150,6 @@ def is_terminal_event(event: BridgeEvent) -> bool:
         "turn.completed",
         "turn.cancelled",
         "turn.failed",
+        "assistant.completed",
         "assistant.output_incomplete",
     }

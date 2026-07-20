@@ -59,16 +59,17 @@ powershell -ExecutionPolicy Bypass -File tools/setup_windows.ps1
 
 pytest 对 `app` 与 `desktop_client` 统计分支覆盖，并设置 90% 综合门槛。CI 在 GitHub `macos-latest` 与 `windows-latest` 执行同一组命令。
 
-## 启动桌面骨架（W13）
+## 启动桌面文字对话（W14）
 
 ```bash
 uv run megumin-companion-desktop
 ```
 
-当前入口会启动 PySide6 Widgets 主线程和独立 asyncio BackendThread，生产路径不启动
-Uvicorn 或 TCP listener。W13 只验证窗口、bridge、线程生命周期和内存草稿边界；真实文字
-对话、streaming、取消恢复在 W14 接入，因此发送/停止控件目前会诚实保持不可用。配置可继续
-独立预检：
+当前入口会启动 PySide6 Widgets 主线程和独立 asyncio BackendThread，并在后者直接组装
+`TurnService`；生产路径不启动 Uvicorn 或 TCP listener。默认配置仍使用离线 Mock LLM、Mock
+TTS 和静默播放，VTS、视觉、主动发言和 STT 保持关闭。文字发送、streaming、取消、新消息抢占
+和断代 snapshot 恢复已接入，草稿与可见对话仅保存在内存中。完整边界、回滚与验证说明见
+[`docs/implementation/w14_text_chat_streaming.md`](docs/implementation/w14_text_chat_streaming.md)。配置可继续独立预检：
 
 ```bash
 uv run megumin-companion-desktop --check-config

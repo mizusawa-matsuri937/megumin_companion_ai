@@ -44,6 +44,7 @@ class ApplicationBridge(QObject):
         self._events: deque[BridgeEvent] = deque()
         self._lock = Lock()
         self._event_notice_pending = False
+        self._snapshot_requested = False
 
     def submit_command(self, command: BridgeCommand) -> bool:
         """Never block the Qt thread; reject with a body-free stable code when full."""
@@ -74,6 +75,7 @@ class ApplicationBridge(QObject):
                 dropped_count = len(self._events) + 1
                 self._events.clear()
                 self._events.append(BridgeOverflowEvent(dropped_count=dropped_count))
+                self._snapshot_requested = True
                 accepted = False
             elif self._events and isinstance(event, PipelineEvent):
                 previous = self._events[-1]
@@ -87,6 +89,7 @@ class ApplicationBridge(QObject):
                     dropped_count = len(self._events)
                     self._events.clear()
                     self._events.append(BridgeOverflowEvent(dropped_count=dropped_count))
+                    self._snapshot_requested = True
                     if is_terminal_event(event):
                         self._events.append(event)
                     else:
@@ -114,6 +117,21 @@ class ApplicationBridge(QObject):
             self._commands.clear()
             self._events.clear()
             self._event_notice_pending = False
+            self._snapshot_requested = False
+
+    def request_snapshot(self) -> None:
+        """Ask the backend to replace an uncertain event stream with a snapshot."""
+
+        with self._lock:
+            self._snapshot_requested = True
+
+    def take_snapshot_request(self) -> bool:
+        """Return and clear the coalesced snapshot request without moving message bodies."""
+
+        with self._lock:
+            requested = self._snapshot_requested
+            self._snapshot_requested = False
+            return requested
 
     @property
     def command_count(self) -> int:

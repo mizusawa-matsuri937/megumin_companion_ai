@@ -12,7 +12,11 @@ from app import __version__
 from PySide6.QtCore import QCoreApplication
 from PySide6.QtWidgets import QApplication
 
-from desktop_client.ui.backend import BackendThreadHost
+from desktop_client.ui.backend import (
+    BackendRuntimeFactory,
+    BackendThreadHost,
+    DesktopChatRuntimeFactory,
+)
 from desktop_client.ui.bridge import ApplicationBridge
 from desktop_client.ui.contracts import BackendState
 from desktop_client.ui.window import MainWindow
@@ -31,12 +35,16 @@ def _application(argv: Sequence[str]) -> QApplication:
     return app
 
 
-def run_desktop(argv: Sequence[str] | None = None) -> int:
+def run_desktop(
+    argv: Sequence[str] | None = None,
+    *,
+    runtime_factory: BackendRuntimeFactory | None = None,
+) -> int:
     if threading.current_thread() is not threading.main_thread():
         raise RuntimeError("Qt desktop must start on the process main thread")
     app = _application(argv or [])
     bridge = ApplicationBridge(parent=app)
-    backend = BackendThreadHost(bridge, parent=app)
+    backend = BackendThreadHost(bridge, runtime_factory=runtime_factory, parent=app)
     window = MainWindow(bridge, backend)
     backend.start()
     window.show()
@@ -52,15 +60,26 @@ def run_desktop(argv: Sequence[str] | None = None) -> int:
     return exit_code
 
 
-def run_headless_smoke(*, timeout_seconds: float = 5.0) -> int:
+def run_headless_smoke(
+    *,
+    timeout_seconds: float = 5.0,
+    runtime_factory: BackendRuntimeFactory | None = None,
+) -> int:
     """Start the real shell offscreen, then close it through the production owner graph."""
 
     if threading.current_thread() is not threading.main_thread():
         raise RuntimeError("Qt smoke must start on the process main thread")
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    if runtime_factory is None:
+        runtime_factory = _headless_runtime_factory()
     app = _application([])
     bridge = ApplicationBridge(parent=app)
-    backend = BackendThreadHost(bridge, auto_restart_limit=0, parent=app)
+    backend = BackendThreadHost(
+        bridge,
+        runtime_factory=runtime_factory,
+        auto_restart_limit=0,
+        parent=app,
+    )
     window = MainWindow(bridge, backend)
     window.show()
     backend.start()
@@ -86,6 +105,21 @@ def run_headless_smoke(*, timeout_seconds: float = 5.0) -> int:
     }
     print(json.dumps(result, sort_keys=True))
     return 0 if ready and stopped else 4
+
+
+def _headless_runtime_factory() -> BackendRuntimeFactory:
+    """Use the normal W14 composition without mixing application logs into smoke JSON."""
+
+    from app.config import load_settings
+    from app.main import create_app
+
+    settings = load_settings()
+    settings = settings.model_copy(
+        update={
+            "logging": settings.logging.model_copy(update={"console_enabled": False}),
+        }
+    )
+    return DesktopChatRuntimeFactory(app_factory=lambda: create_app(settings))
 
 
 def _pump_until(

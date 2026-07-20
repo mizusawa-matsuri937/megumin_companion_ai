@@ -4,8 +4,8 @@ import asyncio
 import time
 from collections.abc import Callable
 
-from app.schemas import PipelineEvent
-from desktop_client.ui.backend import BackendContext, BackendThreadHost
+from app.schemas import InputMode, PipelineEvent, TurnState
+from desktop_client.ui.backend import BackendContext, BackendThreadHost, SkeletonBackendRuntime
 from desktop_client.ui.bridge import ApplicationBridge
 from desktop_client.ui.contracts import (
     BackendCapabilities,
@@ -60,6 +60,12 @@ class _TimelineRuntime:
                             type="turn.accepted",
                             turn_id="turn_ui",
                             session_id=command.session_id,
+                            payload=TurnState(
+                                turn_id="turn_ui",
+                                session_id=command.session_id,
+                                source_message_id=command.payload.message_id,
+                                input_mode=InputMode.text,
+                            ).model_dump(mode="json"),
                         )
                     )
                     for text in ("こ", "ん", "に", "ち", "は"):
@@ -89,7 +95,11 @@ def test_window_has_minimum_accessible_controls_and_honest_default_state(
     qapp: QApplication,
 ) -> None:
     bridge = ApplicationBridge()
-    host = BackendThreadHost(bridge, auto_restart_limit=0)
+    host = BackendThreadHost(
+        bridge,
+        runtime_factory=lambda _generation: SkeletonBackendRuntime(),
+        auto_restart_limit=0,
+    )
     window = MainWindow(bridge, host)
     window.show()
     host.start()
@@ -102,7 +112,7 @@ def test_window_has_minimum_accessible_controls_and_honest_default_state(
     assert window.stop_button.accessibleName() == "停止当前回复"
     assert not window.send_button.isEnabled()
     assert not window.stop_button.isEnabled()
-    assert "待 W14 接入" in window.feature_status.text()
+    assert "\u4e0d\u53ef\u7528" in window.feature_status.text()
 
     window.editor.setPlainText("DRAFT_PRIVATE_SENTINEL")
     window.close()
@@ -114,7 +124,11 @@ def test_window_has_minimum_accessible_controls_and_honest_default_state(
 
 def test_editor_tab_moves_focus_without_mutating_draft(qapp: QApplication) -> None:
     bridge = ApplicationBridge()
-    host = BackendThreadHost(bridge, auto_restart_limit=0)
+    host = BackendThreadHost(
+        bridge,
+        runtime_factory=lambda _generation: SkeletonBackendRuntime(),
+        auto_restart_limit=0,
+    )
     window = MainWindow(bridge, host)
     window.show()
     window.activateWindow()
@@ -139,12 +153,16 @@ def test_dynamic_status_accessible_names_follow_visible_values(
     qapp: QApplication,
 ) -> None:
     bridge = ApplicationBridge()
-    host = BackendThreadHost(bridge, auto_restart_limit=0)
+    host = BackendThreadHost(
+        bridge,
+        runtime_factory=lambda _generation: SkeletonBackendRuntime(),
+        auto_restart_limit=0,
+    )
     window = MainWindow(bridge, host)
     window.show()
 
     assert window.connection_status.accessibleName() == "后端：已停止"
-    assert window.feature_status.accessibleName() == "文字聊天：待 W14 接入"
+    assert window.feature_status.accessibleName() == "文字聊天：不可用"
 
     bridge.publish_event(
         BackendStateEvent(
@@ -230,6 +248,12 @@ def test_view_model_handles_empty_error_loading_and_bounded_messages() -> None:
             type="turn.accepted",
             turn_id="turn_active",
             session_id="local_session",
+            payload=TurnState(
+                turn_id="turn_active",
+                session_id="local_session",
+                source_message_id="message_active",
+                input_mode=InputMode.text,
+            ).model_dump(mode="json"),
         )
     )
     model.apply_event(
@@ -249,6 +273,12 @@ def test_view_model_handles_empty_error_loading_and_bounded_messages() -> None:
             type="turn.accepted",
             turn_id="turn_private",
             session_id="local_session",
+            payload=TurnState(
+                turn_id="turn_private",
+                session_id="local_session",
+                source_message_id="message_private",
+                input_mode=InputMode.text,
+            ).model_dump(mode="json"),
         )
     )
     model.apply_event(
@@ -263,3 +293,61 @@ def test_view_model_handles_empty_error_loading_and_bounded_messages() -> None:
     assert model.last_error_code == "turn_failed"
     model.clear_sensitive()
     assert model.transcript() == ""
+
+
+def test_view_model_applies_accepted_delta_segment_and_terminal_in_sequence() -> None:
+    model = DesktopViewModel()
+    state = TurnState(
+        turn_id="turn-sequenced",
+        session_id="local_session",
+        source_message_id="message-sequenced",
+        input_mode=InputMode.text,
+    )
+    model.apply_event(
+        PipelineEvent(
+            seq=1,
+            type="turn.accepted",
+            turn_id=state.turn_id,
+            session_id=state.session_id,
+            payload=state.model_dump(mode="json"),
+        )
+    )
+    model.apply_event(
+        PipelineEvent(
+            seq=2,
+            type="assistant.delta",
+            turn_id=state.turn_id,
+            session_id=state.session_id,
+            payload={"delta": "streamed reply"},
+        )
+    )
+    model.apply_event(
+        PipelineEvent(
+            seq=3,
+            type="assistant.segment",
+            turn_id=state.turn_id,
+            session_id=state.session_id,
+        )
+    )
+    model.apply_event(
+        PipelineEvent(
+            seq=4,
+            type="assistant.completed",
+            turn_id=state.turn_id,
+            session_id=state.session_id,
+        )
+    )
+    model.apply_event(
+        PipelineEvent(
+            seq=4,
+            type="assistant.delta",
+            turn_id=state.turn_id,
+            session_id=state.session_id,
+            payload={"delta": "must-be-ignored"},
+        )
+    )
+
+    assert model.active_turn_id is None
+    assert model.segment_count == 1
+    assert "streamed reply" in model.transcript()
+    assert "must-be-ignored" not in model.transcript()

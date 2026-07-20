@@ -1,7 +1,15 @@
-"""W13 PySide6 desktop shell and bounded in-process application bridge."""
+"""W13/W14 PySide6 desktop shell and bounded in-process application bridge."""
 
 from desktop_client.ui.application import run_desktop, run_headless_smoke
-from desktop_client.ui.backend import BackendContext, BackendThreadHost, SkeletonBackendRuntime
+from desktop_client.ui.backend import (
+    BackendContext,
+    BackendThreadHost,
+    DesktopChatRuntime,
+    DesktopChatRuntimeFactory,
+    DesktopSessionCursor,
+    SkeletonBackendRuntime,
+    TurnServiceBackendRuntime,
+)
 from desktop_client.ui.bridge import ApplicationBridge
 from desktop_client.ui.contracts import (
     BackendCapabilities,
@@ -24,9 +32,13 @@ __all__ = [
     "BridgeCommand",
     "BridgeEvent",
     "DesktopViewModel",
+    "DesktopChatRuntime",
+    "DesktopChatRuntimeFactory",
+    "DesktopSessionCursor",
     "MainWindow",
     "SkeletonBackendRuntime",
     "TurnCancelCommand",
+    "TurnServiceBackendRuntime",
     "UserMessageCommand",
     "run_desktop",
     "run_headless_smoke",

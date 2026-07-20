@@ -6,7 +6,7 @@ from collections.abc import Callable
 
 from app.schemas import UserMessage
 from desktop_client.ui import backend as backend_module
-from desktop_client.ui.backend import BackendContext, BackendThreadHost
+from desktop_client.ui.backend import BackendContext, BackendThreadHost, SkeletonBackendRuntime
 from desktop_client.ui.bridge import ApplicationBridge
 from desktop_client.ui.contracts import (
     BackendCapabilities,
@@ -40,7 +40,11 @@ def _states(bridge: ApplicationBridge) -> list[BackendStateEvent]:
 
 def test_backend_thread_starts_and_stops_one_hundred_times(qapp: QApplication) -> None:
     bridge = ApplicationBridge()
-    host = BackendThreadHost(bridge, auto_restart_limit=0)
+    host = BackendThreadHost(
+        bridge,
+        runtime_factory=lambda _generation: SkeletonBackendRuntime(),
+        auto_restart_limit=0,
+    )
 
     for cycle in range(100):
         assert host.start()
@@ -130,7 +134,11 @@ def test_unexpected_backend_return_fails_without_unbounded_restart(
 
 def test_skeleton_backend_rejects_chat_without_reflecting_body(qapp: QApplication) -> None:
     bridge = ApplicationBridge()
-    host = BackendThreadHost(bridge, auto_restart_limit=0)
+    host = BackendThreadHost(
+        bridge,
+        runtime_factory=lambda _generation: SkeletonBackendRuntime(),
+        auto_restart_limit=0,
+    )
     assert host.start()
     assert _pump_until(
         qapp,

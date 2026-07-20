@@ -1,4 +1,4 @@
-"""QThread-owned asyncio backend lifecycle for the W13 desktop spike."""
+"""QThread-owned asyncio backend lifecycle for the W13/W14 desktop runtime."""
 
 from __future__ import annotations
 
@@ -9,6 +9,13 @@ from dataclasses import dataclass
 from threading import Lock
 from typing import Protocol
 
+from app.config import Settings
+from app.core import TurnService
+from app.core.idempotency import IdempotencyError
+from app.core.turns import EventSubscription, SubscriptionClosedError, TurnAccessError
+from app.main import create_app
+from app.schemas import InputMode, PipelineEvent, SessionReset, SessionSnapshotChunk
+from fastapi import FastAPI
 from PySide6.QtCore import QObject, QThread, QTimer, Signal
 
 from desktop_client.ui.bridge import ApplicationBridge
@@ -18,7 +25,14 @@ from desktop_client.ui.contracts import (
     BackendStateEvent,
     BridgeCommand,
     CommandRejectedEvent,
+    TurnCancelCommand,
+    UserMessageCommand,
+    is_stable_reason_code,
 )
+
+DESKTOP_CLIENT_ID = "desktop_client"
+FORCE_SNAPSHOT_LAST_SEQ = 9_223_372_036_854_775_807
+EVENT_POLL_SECONDS = 0.02
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,6 +83,220 @@ class SkeletonBackendRuntime:
                         reason_code="feature_not_available",
                     )
                 )
+
+
+class DesktopSessionCursor:
+    """Keep only an event cursor across backend generations, never message bodies."""
+
+    def __init__(self, session_id: str = "local_session") -> None:
+        if not 1 <= len(session_id) <= 128:
+            raise ValueError("desktop session id is outside the bridge bound")
+        self.session_id = session_id
+        self._lock = Lock()
+        self._last_seq = 0
+
+    @property
+    def last_seq(self) -> int:
+        with self._lock:
+            return self._last_seq
+
+    def advance(self, event: PipelineEvent) -> None:
+        with self._lock:
+            self._last_seq = max(self._last_seq, event.seq)
+
+    def reset(self, event: SessionReset) -> None:
+        with self._lock:
+            self._last_seq = event.reset_to_seq
+
+
+class TurnServiceBackendRuntime:
+    """Adapt the bounded bridge to one authenticated in-process TurnService session."""
+
+    def __init__(
+        self,
+        service: TurnService,
+        cursor: DesktopSessionCursor,
+        *,
+        text_chat_available: bool,
+        client_id: str = DESKTOP_CLIENT_ID,
+    ) -> None:
+        if not 1 <= len(client_id) <= 128:
+            raise ValueError("desktop client id is outside the bridge bound")
+        self._service = service
+        self._cursor = cursor
+        self._text_chat_available = text_chat_available
+        self._client_id = client_id
+
+    async def run(self, context: BackendContext) -> None:
+        subscription = await self._subscribe(force_snapshot=False)
+        command_task = asyncio.create_task(
+            self._serve_commands(context),
+            name=f"desktop-commands-{context.generation}",
+        )
+        context.bridge.publish_event(
+            BackendStateEvent(
+                generation=context.generation,
+                state=BackendState.ready,
+                capabilities=BackendCapabilities(
+                    text_chat=self._text_chat_available,
+                    turn_cancel=self._text_chat_available,
+                ),
+            )
+        )
+        try:
+            while not context.stop_event.is_set():
+                if context.bridge.take_snapshot_request():
+                    self._service.unsubscribe(subscription)
+                    subscription = await self._subscribe(force_snapshot=True)
+                try:
+                    item = await asyncio.wait_for(subscription.get(), timeout=EVENT_POLL_SECONDS)
+                except TimeoutError:
+                    continue
+                except SubscriptionClosedError:
+                    context.bridge.request_snapshot()
+                    await asyncio.sleep(0)
+                    continue
+                try:
+                    accepted = context.bridge.publish_event(item)
+                    if accepted:
+                        self._record_delivered(item)
+                    else:
+                        context.bridge.request_snapshot()
+                finally:
+                    subscription.task_done()
+        finally:
+            self._service.unsubscribe(subscription)
+            command_task.cancel()
+            await asyncio.gather(command_task, return_exceptions=True)
+
+    async def _subscribe(self, *, force_snapshot: bool) -> EventSubscription:
+        return await self._service.subscribe(
+            self._cursor.session_id,
+            client_id=self._client_id,
+            last_seq=FORCE_SNAPSHOT_LAST_SEQ if force_snapshot else self._cursor.last_seq,
+        )
+
+    async def _serve_commands(self, context: BackendContext) -> None:
+        while not context.stop_event.is_set():
+            for command in await context.next_commands():
+                await self._dispatch_command(context, command)
+
+    async def _dispatch_command(self, context: BackendContext, command: BridgeCommand) -> None:
+        if command.session_id != self._cursor.session_id:
+            self._reject(context, command.command_id, "identity_forbidden")
+            return
+        if not self._text_chat_available:
+            self._reject(context, command.command_id, "feature_not_available")
+            return
+        try:
+            if isinstance(command, UserMessageCommand):
+                if command.payload.input_mode is not InputMode.text:
+                    self._reject(context, command.command_id, "unsupported_input_mode")
+                    return
+                await self._service.accept(command.payload, client_id=self._client_id)
+                return
+            if isinstance(command, TurnCancelCommand):
+                state = await self._service.cancel(
+                    client_id=self._client_id,
+                    session_id=command.session_id,
+                    turn_id=command.payload.turn_id,
+                )
+                if state is None:
+                    self._reject(context, command.command_id, "turn_not_found")
+                return
+        except (IdempotencyError, TurnAccessError) as exc:
+            reason_code = str(exc)
+            self._reject(
+                context,
+                command.command_id,
+                reason_code if is_stable_reason_code(reason_code) else "command_failed",
+            )
+        except Exception:
+            self._reject(context, command.command_id, "command_failed")
+
+    def _reject(self, context: BackendContext, command_id: str, reason_code: str) -> None:
+        context.bridge.publish_event(
+            CommandRejectedEvent(command_id=command_id, reason_code=reason_code)
+        )
+
+    def _record_delivered(
+        self,
+        item: PipelineEvent | SessionReset | SessionSnapshotChunk,
+    ) -> None:
+        if isinstance(item, PipelineEvent):
+            self._cursor.advance(item)
+        elif isinstance(item, SessionReset):
+            self._cursor.reset(item)
+
+
+class DesktopChatRuntime:
+    """Compose the normal application runtime without starting a network server."""
+
+    def __init__(
+        self,
+        app_factory: Callable[[], FastAPI],
+        cursor: DesktopSessionCursor,
+        *,
+        client_id: str = DESKTOP_CLIENT_ID,
+    ) -> None:
+        self._app_factory = app_factory
+        self._cursor = cursor
+        self._client_id = client_id
+
+    async def run(self, context: BackendContext) -> None:
+        try:
+            application = self._app_factory()
+            async with application.router.lifespan_context(application):
+                service = getattr(application.state, "turn_service", None)
+                settings = getattr(application.state, "settings", None)
+                if not isinstance(service, TurnService) or not isinstance(settings, Settings):
+                    raise RuntimeError("desktop_runtime_unavailable")
+                runtime = TurnServiceBackendRuntime(
+                    service,
+                    self._cursor,
+                    text_chat_available=_text_chat_available(settings),
+                    client_id=self._client_id,
+                )
+                await runtime.run(context)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            context.bridge.publish_event(
+                BackendStateEvent(
+                    generation=context.generation,
+                    state=BackendState.degraded,
+                    reason_code="desktop_runtime_unavailable",
+                )
+            )
+            await context.stop_event.wait()
+
+
+class DesktopChatRuntimeFactory:
+    """Preserve one body-free cursor while BackendThreadHost replaces generations."""
+
+    def __init__(
+        self,
+        *,
+        app_factory: Callable[[], FastAPI] = create_app,
+        session_id: str = "local_session",
+        client_id: str = DESKTOP_CLIENT_ID,
+    ) -> None:
+        self._app_factory = app_factory
+        self._cursor = DesktopSessionCursor(session_id)
+        self._client_id = client_id
+
+    def __call__(self, _generation: int) -> DesktopChatRuntime:
+        return DesktopChatRuntime(
+            self._app_factory,
+            self._cursor,
+            client_id=self._client_id,
+        )
+
+
+def _text_chat_available(settings: Settings) -> bool:
+    """Do not advertise a turn path that cannot make an idempotent claim."""
+
+    return settings.storage.enabled and settings.llm.provider.strip().lower() != "none"
 
 
 class _BackendWorker(QThread):
@@ -179,7 +407,7 @@ class BackendThreadHost(QObject):
         if not 0 <= restart_delay_ms <= 5_000:
             raise ValueError("restart delay is outside the W13 bound")
         self._bridge = bridge
-        self._runtime_factory = runtime_factory or (lambda _generation: SkeletonBackendRuntime())
+        self._runtime_factory = runtime_factory or DesktopChatRuntimeFactory()
         self._auto_restart_limit = auto_restart_limit
         self._restart_delay_ms = restart_delay_ms
         self._restart_timer = QTimer(self)
