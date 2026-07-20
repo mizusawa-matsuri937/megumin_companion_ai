@@ -59,6 +59,21 @@ powershell -ExecutionPolicy Bypass -File tools/setup_windows.ps1
 
 pytest 对 `app` 与 `desktop_client` 统计分支覆盖，并设置 90% 综合门槛。CI 在 GitHub `macos-latest` 与 `windows-latest` 执行同一组命令。
 
+## 启动桌面骨架（W13）
+
+```bash
+uv run megumin-companion-desktop
+```
+
+当前入口会启动 PySide6 Widgets 主线程和独立 asyncio BackendThread，生产路径不启动
+Uvicorn 或 TCP listener。W13 只验证窗口、bridge、线程生命周期和内存草稿边界；真实文字
+对话、streaming、取消恢复在 W14 接入，因此发送/停止控件目前会诚实保持不可用。配置可继续
+独立预检：
+
+```bash
+uv run megumin-companion-desktop --check-config
+```
+
 ## 启动后端
 
 ```bash
@@ -233,6 +248,7 @@ app/memory/ + app/storage SQLite 历史、记忆、FTS5 与管理 API
 app/perception/           视觉 Guard、OCR、脱敏与云端边界
 app/proactive/            主动评分、抑制、调度与抢占
 desktop_client/inputs/    whisper.cpp 与 push-to-talk 状态机
+desktop_client/ui/        PySide6 Widgets、bounded bridge 与 BackendThread host
 tests/                    单元、集成、属性与跨模块 E2E
 tools/                    Gate A 与 STT 人工冒烟工具
 docs/                     范围、架构、验收记录与实现报告

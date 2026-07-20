@@ -1,9 +1,9 @@
-"""Stable, side-effect-free packaging entry point for the future Windows desktop shell."""
+"""Stable, side-effect-free packaging entry point for the Windows desktop shell."""
 
 from __future__ import annotations
 
 import argparse
-import sys
+import os
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -15,8 +15,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="megumin-companion-desktop",
         description=(
-            "Windows desktop packaging preflight. The PySide6 shell is introduced by W13; "
-            "this W01 entry point only validates package and configuration availability."
+            "Windows desktop shell. Qt owns the main thread and the backend owns an "
+            "independent asyncio thread."
         ),
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
@@ -25,8 +25,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--check-config",
         action="store_true",
-        help="Validate configuration without starting a database, device, or network.",
+        help="Validate configuration without starting Qt, a database, device, or network.",
     )
+    parser.add_argument("--headless-smoke", action="store_true", help=argparse.SUPPRESS)
     return parser
 
 
@@ -35,9 +36,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.check_config:
         return check_configuration(args.config, args.env_file)
-    parser.print_usage(sys.stderr)
-    print(
-        "desktop_unavailable: the PySide6 desktop shell is intentionally deferred to W13.",
-        file=sys.stderr,
-    )
-    return 3
+    if args.headless_smoke:
+        return start_headless_smoke()
+    return start_desktop()
+
+
+def start_desktop() -> int:
+    from desktop_client.ui.application import run_desktop
+
+    return run_desktop()
+
+
+def start_headless_smoke() -> int:
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from desktop_client.ui.application import run_headless_smoke
+
+    return run_headless_smoke()

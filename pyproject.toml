@@ -11,6 +11,7 @@ requires-python = ">=3.11,<3.12"
 dependencies = [
     "fastapi>=0.115,<1",
     "httpx>=0.28,<1",
+    "pyside6-essentials==6.11.1",
     "pydantic>=2.10,<3",
     "python-dotenv>=1.1,<2",
     "pyyaml>=6,<7",
