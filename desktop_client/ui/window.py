@@ -1,10 +1,18 @@
-"""Minimal, accessible Qt Widgets shell for the W13 technical spike."""
+"""Accessible Qt Widgets shell for W14 text chat and recovery."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-from app.schemas import PipelineEvent, TurnInterruptRequest, UserMessage
+from app.schemas import (
+    PipelineEvent,
+    SessionReset,
+    SessionSnapshotChunk,
+    TurnInterruptRequest,
+    TurnState,
+    TurnStatus,
+    UserMessage,
+)
 from pydantic import ValidationError
 from PySide6.QtGui import QCloseEvent, QKeySequence, QShortcut, QTextCursor
 from PySide6.QtWidgets import (
@@ -43,19 +51,37 @@ class _VisibleMessage:
 
 
 class DesktopViewModel:
-    """In-memory-only W13 presentation state; no repository or persistence access."""
+    """In-memory-only W14 presentation state; no repository or persistence access."""
 
     def __init__(self) -> None:
         self.connection_state = BackendState.stopped
         self.capabilities = BackendCapabilities()
         self.active_turn_id: str | None = None
         self.last_error_code: str | None = None
+        self.last_seq = 0
+        self.segment_count = 0
+        self.snapshot_pending = False
+        self._snapshot_request_pending = False
+        self._snapshot_id: str | None = None
+        self._snapshot_chunk_count = 0
+        self._next_snapshot_chunk = 0
+        self._turn_states: dict[str, TurnStatus] = {}
+        self._shown_user_message_ids: set[str] = set()
         self._messages: list[_VisibleMessage] = []
 
     def add_user_message(self, message: UserMessage) -> None:
+        if message.message_id in self._shown_user_message_ids:
+            return
+        self._shown_user_message_ids.add(message.message_id)
         self._append(_VisibleMessage(role="你", text=message.text))
 
     def apply_event(self, event: BridgeEvent) -> None:
+        if isinstance(event, SessionReset):
+            self._apply_reset(event)
+            return
+        if isinstance(event, SessionSnapshotChunk):
+            self._apply_snapshot_chunk(event)
+            return
         if isinstance(event, BackendStateEvent):
             self.connection_state = event.state
             self.capabilities = event.capabilities
@@ -66,13 +92,15 @@ class DesktopViewModel:
             return
         if isinstance(event, BridgeOverflowEvent):
             self.connection_state = BackendState.degraded
-            self.last_error_code = event.reason_code
+            self._require_snapshot()
             return
         self._apply_pipeline_event(event)
 
     def _apply_pipeline_event(self, event: PipelineEvent) -> None:
-        if event.type == "turn.accepted":
-            self.active_turn_id = event.turn_id
+        if not self._accept_sequence(event):
+            return
+        if event.type in {"turn.accepted", "turn.snapshot"}:
+            self._apply_turn_payload(event)
             return
         if event.type == "assistant.delta":
             delta = event.payload.get("delta")
@@ -93,6 +121,19 @@ class DesktopViewModel:
                         )
                     )
             return
+        if event.type == "assistant.segment":
+            self.segment_count += 1
+            return
+        if event.type in {"assistant.output_incomplete", "audio.degraded", "playback.skipped"}:
+            self._apply_error_payload(event)
+            return
+        if event.type == "assistant.truncated":
+            self._apply_error_payload(event)
+            return
+        if event.type == "assistant.completed":
+            if event.turn_id == self.active_turn_id:
+                self.active_turn_id = None
+            return
         if event.type in {"turn.completed", "turn.cancelled", "turn.failed"}:
             if event.turn_id == self.active_turn_id:
                 self.active_turn_id = None
@@ -104,6 +145,97 @@ class DesktopViewModel:
                     else "turn_failed"
                 )
 
+    def _accept_sequence(self, event: PipelineEvent) -> bool:
+        if self.snapshot_pending:
+            return False
+        if event.seq <= self.last_seq:
+            return False
+        start_seq = event.payload.get("coalesced_from_seq", event.seq)
+        if (
+            not isinstance(start_seq, int)
+            or start_seq != self.last_seq + 1
+            or event.seq < start_seq
+        ):
+            self._require_snapshot()
+            return False
+        self.last_seq = event.seq
+        return True
+
+    def _apply_turn_payload(self, event: PipelineEvent) -> None:
+        try:
+            state = TurnState.model_validate(event.payload)
+        except ValidationError:
+            self.last_error_code = "invalid_turn_state"
+            return
+        self._turn_states[state.turn_id] = state.status
+        if state.status in {TurnStatus.accepted, TurnStatus.streaming, TurnStatus.speaking}:
+            self.active_turn_id = state.turn_id
+        elif state.turn_id == self.active_turn_id:
+            self.active_turn_id = None
+        if state.status is TurnStatus.failed:
+            self.last_error_code = (
+                state.error_code
+                if state.error_code is not None and is_stable_reason_code(state.error_code)
+                else "turn_failed"
+            )
+
+    def _apply_error_payload(self, event: PipelineEvent) -> None:
+        error_code = event.payload.get("error_code", event.payload.get("reason"))
+        if isinstance(error_code, str) and is_stable_reason_code(error_code):
+            self.last_error_code = error_code
+
+    def _apply_reset(self, event: SessionReset) -> None:
+        if event.snapshot.last_seq != event.reset_to_seq:
+            self._require_snapshot()
+            return
+        self._clear_visible_bodies()
+        self.last_seq = event.reset_to_seq
+        self.snapshot_pending = event.snapshot.chunk_count > 0
+        self._snapshot_id = event.reset_id if self.snapshot_pending else None
+        self._snapshot_chunk_count = event.snapshot.chunk_count
+        self._next_snapshot_chunk = 0
+        self.active_turn_id = None
+        self._turn_states.clear()
+
+    def _apply_snapshot_chunk(self, event: SessionSnapshotChunk) -> None:
+        if (
+            not self.snapshot_pending
+            or event.reset_id != self._snapshot_id
+            or event.chunk_count != self._snapshot_chunk_count
+            or event.chunk_index != self._next_snapshot_chunk
+        ):
+            self._require_snapshot()
+            return
+        for state in event.turns:
+            self._turn_states[state.turn_id] = state.status
+            if state.status in {TurnStatus.accepted, TurnStatus.streaming, TurnStatus.speaking}:
+                self.active_turn_id = state.turn_id
+            if (
+                state.status is TurnStatus.failed
+                and state.error_code is not None
+                and is_stable_reason_code(state.error_code)
+            ):
+                self.last_error_code = state.error_code
+        self._next_snapshot_chunk += 1
+        if self._next_snapshot_chunk == self._snapshot_chunk_count:
+            self.snapshot_pending = False
+            self._snapshot_id = None
+
+    def _require_snapshot(self) -> None:
+        self._clear_visible_bodies()
+        self.active_turn_id = None
+        self.snapshot_pending = True
+        self._snapshot_id = None
+        self._snapshot_chunk_count = 0
+        self._next_snapshot_chunk = 0
+        self.last_error_code = "event_snapshot_required"
+        self._snapshot_request_pending = True
+
+    def take_snapshot_request(self) -> bool:
+        requested = self._snapshot_request_pending
+        self._snapshot_request_pending = False
+        return requested
+
     def transcript(self) -> str:
         return "\n\n".join(f"{message.role}: {message.text}" for message in self._messages)
 
@@ -112,6 +244,21 @@ class DesktopViewModel:
             message.text = ""
         self._messages.clear()
         self.active_turn_id = None
+        self.last_seq = 0
+        self.segment_count = 0
+        self.snapshot_pending = False
+        self._snapshot_request_pending = False
+        self._snapshot_id = None
+        self._snapshot_chunk_count = 0
+        self._next_snapshot_chunk = 0
+        self._turn_states.clear()
+        self._shown_user_message_ids.clear()
+
+    def _clear_visible_bodies(self) -> None:
+        for message in self._messages:
+            message.text = ""
+        self._messages.clear()
+        self._shown_user_message_ids.clear()
 
     def _append(self, message: _VisibleMessage) -> None:
         self._messages.append(message)
@@ -129,6 +276,8 @@ class MainWindow(QMainWindow):
         self._bridge = bridge
         self._backend_host = backend_host
         self.model = DesktopViewModel()
+        self._pending_message: UserMessage | None = None
+        self._pending_command_ids: set[str] = set()
         self._closing = False
         self._allow_close = False
         self.setWindowTitle("Megumin Companion")
@@ -139,6 +288,9 @@ class MainWindow(QMainWindow):
         self.message_view = QPlainTextEdit(central)
         self.message_view.setReadOnly(True)
         self.message_view.setPlaceholderText("尚无消息。W13 只验证桌面骨架；真实对话在 W14 接入。")
+        self.message_view.setPlaceholderText(
+            "\u6682\u65e0\u6d88\u606f\u3002\u6587\u5b57\u5bf9\u8bdd\u5c06\u5728\u6b64\u663e\u793a\u3002"
+        )
         self.message_view.setAccessibleName("消息区")
         self.editor = QPlainTextEdit(central)
         self.editor.setPlaceholderText("输入消息；Ctrl+Enter 发送")
@@ -183,12 +335,23 @@ class MainWindow(QMainWindow):
         if not self.model.capabilities.text_chat:
             self._show_error("feature_not_available")
             return
-        try:
-            message = UserMessage(text=self.editor.toPlainText())
-        except ValidationError:
-            self._show_error("invalid_user_message")
-            return
-        if self._bridge.submit_command(UserMessageCommand(payload=message)):
+        text = self.editor.toPlainText()
+        if text.strip():
+            try:
+                message = UserMessage(text=text)
+            except ValidationError:
+                self._show_error("invalid_user_message")
+                return
+        else:
+            pending_message = self._pending_message
+            if pending_message is None:
+                self._show_error("invalid_user_message")
+                return
+            message = pending_message
+        command = UserMessageCommand(payload=message)
+        if self._bridge.submit_command(command):
+            self._pending_message = message
+            self._pending_command_ids.add(command.command_id)
             self.model.add_user_message(message)
             self.editor.clear()
             self._sync_view()
@@ -203,7 +366,27 @@ class MainWindow(QMainWindow):
     def _drain_events(self) -> None:
         for event in self._bridge.drain_events():
             self.model.apply_event(event)
+            self._settle_pending_message(event)
+        if self.model.take_snapshot_request():
+            self._bridge.request_snapshot()
         self._sync_view()
+
+    def _settle_pending_message(self, event: BridgeEvent) -> None:
+        if isinstance(event, CommandRejectedEvent):
+            self._pending_command_ids.discard(event.command_id)
+            return
+        if not isinstance(event, PipelineEvent) or event.type not in {
+            "turn.accepted",
+            "turn.snapshot",
+        }:
+            return
+        source_message_id = event.payload.get("source_message_id")
+        if (
+            self._pending_message is not None
+            and source_message_id == self._pending_message.message_id
+        ):
+            self._pending_message = None
+            self._pending_command_ids.clear()
 
     def _show_error(self, reason_code: str) -> None:
         self.model.last_error_code = reason_code
@@ -234,6 +417,7 @@ class MainWindow(QMainWindow):
             and not self._closing
         )
         feature_status = "文字聊天：可用" if chat_ready else "文字聊天：待 W14 接入"
+        feature_status = _feature_status_text(chat_ready, self.model.connection_state)
         self.feature_status.setText(feature_status)
         self.feature_status.setAccessibleName(feature_status)
         self.send_button.setEnabled(chat_ready)
@@ -268,5 +452,15 @@ class MainWindow(QMainWindow):
     def _wipe_sensitive_state(self) -> None:
         self.editor.clear()
         self.message_view.clear()
+        self._pending_message = None
+        self._pending_command_ids.clear()
         self.model.clear_sensitive()
         self._bridge.clear_sensitive()
+
+
+def _feature_status_text(available: bool, state: BackendState) -> str:
+    if available:
+        return "\u6587\u5b57\u804a\u5929\uff1a\u53ef\u7528"
+    if state in {BackendState.starting, BackendState.restarting, BackendState.stopping}:
+        return "\u6587\u5b57\u804a\u5929\uff1a\u8fde\u63a5\u4e2d"
+    return "\u6587\u5b57\u804a\u5929\uff1a\u4e0d\u53ef\u7528"

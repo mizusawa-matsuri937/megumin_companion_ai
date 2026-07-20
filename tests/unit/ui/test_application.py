@@ -4,10 +4,11 @@ import json
 import threading
 from collections.abc import Callable
 from functools import partial
+from pathlib import Path
 
 import pytest
 from desktop_client.ui import application
-from desktop_client.ui.backend import BackendThreadHost
+from desktop_client.ui.backend import BackendThreadHost, SkeletonBackendRuntime
 from desktop_client.ui.bridge import ApplicationBridge
 from desktop_client.ui.contracts import BackendState
 from desktop_client.ui.window import MainWindow
@@ -26,7 +27,33 @@ def test_real_headless_smoke_uses_production_owner_graph(
     qapp: QApplication,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    assert (
+        application.run_headless_smoke(
+            timeout_seconds=2.0,
+            runtime_factory=lambda _generation: SkeletonBackendRuntime(),
+        )
+        == 0
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert payload == {
+        "backend_ready": True,
+        "backend_stopped": True,
+        "platform": "offscreen",
+        "status": "ok",
+    }
+    qapp.processEvents()
+
+
+def test_default_headless_smoke_uses_w14_runtime_and_keeps_stdout_as_json(
+    qapp: QApplication,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "headless-local-app-data"))
+
     assert application.run_headless_smoke(timeout_seconds=2.0) == 0
+
     payload = json.loads(capsys.readouterr().out)
     assert payload == {
         "backend_ready": True,
@@ -42,7 +69,11 @@ def test_full_shell_owner_graph_starts_and_closes_one_hundred_times(
 ) -> None:
     for cycle in range(100):
         bridge = ApplicationBridge()
-        backend = BackendThreadHost(bridge, auto_restart_limit=0)
+        backend = BackendThreadHost(
+            bridge,
+            runtime_factory=lambda _generation: SkeletonBackendRuntime(),
+            auto_restart_limit=0,
+        )
         window = MainWindow(bridge, backend)
         window.show()
         assert backend.start(), cycle
