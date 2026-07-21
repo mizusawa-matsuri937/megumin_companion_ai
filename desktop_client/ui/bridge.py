@@ -139,9 +139,17 @@ class ApplicationBridge(QObject):
             return len(self._commands)
 
     @property
+    def command_capacity(self) -> int:
+        return self._command_capacity
+
+    @property
     def event_count(self) -> int:
         with self._lock:
             return len(self._events)
+
+    @property
+    def event_capacity(self) -> int:
+        return self._event_capacity
 
 
 def _merge_delta(previous: PipelineEvent, current: PipelineEvent) -> PipelineEvent | None:

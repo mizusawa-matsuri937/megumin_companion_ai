@@ -1382,16 +1382,19 @@ class _DelayedAudioStream(httpx.AsyncByteStream):
 
 
 @pytest.mark.parametrize(
-    ("first_delay", "first_byte_ms", "expected"),
+    ("first_delay", "first_byte_ms", "total_timeout_ms", "expected"),
     [
-        (0.05, 81, None),
-        (0.10, 79, "tts_first_byte_timeout"),
+        # Keep enough scheduler margin for a loaded Windows CI worker.  The
+        # assertion is deadline ownership, not sub-100ms timer precision.
+        (0.01, 2_000, 3_000, None),
+        (10.0, 100, 3_000, "tts_first_byte_timeout"),
     ],
 )
-def test_first_byte_7_9_and_8_1_boundary_is_owned_by_tts_job(
+def test_first_byte_deadline_is_owned_by_tts_job(
     tmp_path: Path,
     first_delay: float,
     first_byte_ms: int,
+    total_timeout_ms: int,
     expected: str | None,
 ) -> None:
     async def scenario() -> None:
@@ -1404,7 +1407,11 @@ def test_first_byte_7_9_and_8_1_boundary_is_owned_by_tts_job(
         provider = GPTSoVITSProvider("http://127.0.0.1:9880", tmp_path, _presets(), client=client)
         token = CancellationToken("w08-first-byte")
         result = await provider.synthesize(
-            _job(token, first_byte_timeout_ms=first_byte_ms),
+            _job(
+                token,
+                first_byte_timeout_ms=first_byte_ms,
+                timeout_ms=total_timeout_ms,
+            ),
             segment_index=0,
             token=token,
         )

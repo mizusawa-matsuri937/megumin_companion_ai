@@ -8,7 +8,10 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Literal, TypeAlias
 
+from app.memory.models import MemoryItem, MemorySensitivity, MemoryStatus, MemoryType
 from app.schemas import (
+    FeatureName,
+    FeatureState,
     PipelineEvent,
     SessionReset,
     SessionSnapshotChunk,
@@ -20,6 +23,31 @@ from app.schemas.messages import prefixed_id
 
 BRIDGE_PROTOCOL_VERSION: Literal[1] = 1
 _REASON_CODE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+_OPAQUE_ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+
+MAX_MANAGEMENT_LIST_ITEMS = 20
+MAX_MANAGEMENT_PREVIEW_CHARS = 512
+MAX_MANAGEMENT_CONTENT_CHARS = 5_000
+MAX_MANAGEMENT_PATH_CHARS = 4_096
+MAX_SECRET_CHARS = 64 * 1024
+
+
+def _validate_bounded_text(
+    value: str,
+    *,
+    field_name: str,
+    maximum: int,
+    allow_empty: bool = False,
+) -> None:
+    if not isinstance(value, str) or "\x00" in value or len(value) > maximum:
+        raise ValueError(f"{field_name} is outside the bridge bound")
+    if not allow_empty and not value.strip():
+        raise ValueError(f"{field_name} must not be empty")
+
+
+def _validate_opaque_id(value: str, *, field_name: str) -> None:
+    if not _OPAQUE_ID.fullmatch(value):
+        raise ValueError(f"{field_name} is outside the bridge bound")
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,7 +84,247 @@ class TurnCancelCommand:
         return self.payload.session_id
 
 
-BridgeCommand: TypeAlias = UserMessageCommand | TurnCancelCommand
+@dataclass(frozen=True, slots=True)
+class DesktopSettingsForm:
+    """The small, secret-free subset of settings editable by the W16 desktop UI."""
+
+    llm_provider: str
+    llm_base_url: str
+    llm_model: str
+    tts_provider: str
+    tts_base_url: str
+    vts_enabled: bool
+    vts_uri: str
+    vts_plugin_name: str
+    vts_plugin_developer: str
+    stt_enabled: bool
+    stt_executable: str
+    stt_model_path: str
+    stt_device: str
+    startup_enabled: bool
+
+    def __post_init__(self) -> None:
+        for field_name, value, maximum, allow_empty in (
+            ("llm_provider", self.llm_provider, 128, False),
+            ("llm_base_url", self.llm_base_url, 2_048, False),
+            ("llm_model", self.llm_model, 512, True),
+            ("tts_provider", self.tts_provider, 128, False),
+            ("tts_base_url", self.tts_base_url, 2_048, False),
+            ("vts_uri", self.vts_uri, 2_048, False),
+            ("vts_plugin_name", self.vts_plugin_name, 128, False),
+            ("vts_plugin_developer", self.vts_plugin_developer, 128, False),
+            ("stt_executable", self.stt_executable, MAX_MANAGEMENT_PATH_CHARS, False),
+            ("stt_model_path", self.stt_model_path, MAX_MANAGEMENT_PATH_CHARS, False),
+            ("stt_device", self.stt_device, 256, True),
+        ):
+            _validate_bounded_text(
+                value,
+                field_name=field_name,
+                maximum=maximum,
+                allow_empty=allow_empty,
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class SettingsSnapshot:
+    """Body-safe presentation state; encrypted secret values never appear here."""
+
+    form: DesktopSettingsForm
+    llm_secret_configured: bool
+    vts_secret_configured: bool
+    settings_schema_upgrade_required: bool
+
+
+@dataclass(frozen=True, slots=True)
+class ManagementRefreshCommand:
+    command_id: str = field(default_factory=lambda: prefixed_id("cmd"))
+    protocol_version: Literal[1] = field(default=BRIDGE_PROTOCOL_VERSION, init=False)
+    type: Literal["management.refresh"] = field(default="management.refresh", init=False)
+
+    def __post_init__(self) -> None:
+        _validate_command_id(self.command_id)
+
+
+@dataclass(frozen=True, slots=True)
+class SettingsSaveCommand:
+    payload: DesktopSettingsForm
+    command_id: str = field(default_factory=lambda: prefixed_id("cmd"))
+    protocol_version: Literal[1] = field(default=BRIDGE_PROTOCOL_VERSION, init=False)
+    type: Literal["settings.save"] = field(default="settings.save", init=False)
+
+    def __post_init__(self) -> None:
+        _validate_command_id(self.command_id)
+
+
+@dataclass(frozen=True, slots=True)
+class SecretStoreCommand:
+    """Write-only secret input.  No event ever echoes ``value``."""
+
+    secret_id: Literal["llm", "vts"]
+    value: str = field(repr=False)
+    command_id: str = field(default_factory=lambda: prefixed_id("cmd"))
+    protocol_version: Literal[1] = field(default=BRIDGE_PROTOCOL_VERSION, init=False)
+    type: Literal["secret.store"] = field(default="secret.store", init=False)
+
+    def __post_init__(self) -> None:
+        _validate_command_id(self.command_id)
+        _validate_bounded_text(
+            self.value,
+            field_name="secret value",
+            maximum=MAX_SECRET_CHARS,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class SecretRevokeCommand:
+    secret_id: Literal["llm", "vts"]
+    command_id: str = field(default_factory=lambda: prefixed_id("cmd"))
+    protocol_version: Literal[1] = field(default=BRIDGE_PROTOCOL_VERSION, init=False)
+    type: Literal["secret.revoke"] = field(default="secret.revoke", init=False)
+
+    def __post_init__(self) -> None:
+        _validate_command_id(self.command_id)
+
+
+@dataclass(frozen=True, slots=True)
+class FeatureSetCommand:
+    feature: FeatureName
+    enabled: bool
+    command_id: str = field(default_factory=lambda: prefixed_id("cmd"))
+    protocol_version: Literal[1] = field(default=BRIDGE_PROTOCOL_VERSION, init=False)
+    type: Literal["feature.set"] = field(default="feature.set", init=False)
+
+    def __post_init__(self) -> None:
+        _validate_command_id(self.command_id)
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryListCommand:
+    query: str = ""
+    command_id: str = field(default_factory=lambda: prefixed_id("cmd"))
+    protocol_version: Literal[1] = field(default=BRIDGE_PROTOCOL_VERSION, init=False)
+    type: Literal["memory.list"] = field(default="memory.list", init=False)
+
+    def __post_init__(self) -> None:
+        _validate_command_id(self.command_id)
+        _validate_bounded_text(
+            self.query,
+            field_name="memory query",
+            maximum=MAX_MANAGEMENT_CONTENT_CHARS,
+            allow_empty=True,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryDetailCommand:
+    memory_id: str
+    command_id: str = field(default_factory=lambda: prefixed_id("cmd"))
+    protocol_version: Literal[1] = field(default=BRIDGE_PROTOCOL_VERSION, init=False)
+    type: Literal["memory.detail"] = field(default="memory.detail", init=False)
+
+    def __post_init__(self) -> None:
+        _validate_command_id(self.command_id)
+        _validate_opaque_id(self.memory_id, field_name="memory id")
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryUpdateCommand:
+    memory_id: str
+    content: str
+    command_id: str = field(default_factory=lambda: prefixed_id("cmd"))
+    protocol_version: Literal[1] = field(default=BRIDGE_PROTOCOL_VERSION, init=False)
+    type: Literal["memory.update"] = field(default="memory.update", init=False)
+
+    def __post_init__(self) -> None:
+        _validate_command_id(self.command_id)
+        _validate_opaque_id(self.memory_id, field_name="memory id")
+        _validate_bounded_text(
+            self.content,
+            field_name="memory content",
+            maximum=MAX_MANAGEMENT_CONTENT_CHARS,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryDeleteCommand:
+    memory_id: str
+    command_id: str = field(default_factory=lambda: prefixed_id("cmd"))
+    protocol_version: Literal[1] = field(default=BRIDGE_PROTOCOL_VERSION, init=False)
+    type: Literal["memory.delete"] = field(default="memory.delete", init=False)
+
+    def __post_init__(self) -> None:
+        _validate_command_id(self.command_id)
+        _validate_opaque_id(self.memory_id, field_name="memory id")
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryClearCommand:
+    target: Literal["history", "memories"]
+    command_id: str = field(default_factory=lambda: prefixed_id("cmd"))
+    protocol_version: Literal[1] = field(default=BRIDGE_PROTOCOL_VERSION, init=False)
+    type: Literal["memory.clear"] = field(default="memory.clear", init=False)
+
+    def __post_init__(self) -> None:
+        _validate_command_id(self.command_id)
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryConfirmCommand:
+    confirmation_id: str
+    approved: bool
+    command_id: str = field(default_factory=lambda: prefixed_id("cmd"))
+    protocol_version: Literal[1] = field(default=BRIDGE_PROTOCOL_VERSION, init=False)
+    type: Literal["memory.confirm"] = field(default="memory.confirm", init=False)
+
+    def __post_init__(self) -> None:
+        _validate_command_id(self.command_id)
+        _validate_opaque_id(self.confirmation_id, field_name="confirmation id")
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryExportCommand:
+    destination: str
+    overwrite: bool = False
+    command_id: str = field(default_factory=lambda: prefixed_id("cmd"))
+    protocol_version: Literal[1] = field(default=BRIDGE_PROTOCOL_VERSION, init=False)
+    type: Literal["memory.export"] = field(default="memory.export", init=False)
+
+    def __post_init__(self) -> None:
+        _validate_command_id(self.command_id)
+        _validate_bounded_text(
+            self.destination,
+            field_name="export destination",
+            maximum=MAX_MANAGEMENT_PATH_CHARS,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ManagementDebugCommand:
+    command_id: str = field(default_factory=lambda: prefixed_id("cmd"))
+    protocol_version: Literal[1] = field(default=BRIDGE_PROTOCOL_VERSION, init=False)
+    type: Literal["management.debug"] = field(default="management.debug", init=False)
+
+    def __post_init__(self) -> None:
+        _validate_command_id(self.command_id)
+
+
+ManagementCommand: TypeAlias = (
+    ManagementRefreshCommand
+    | SettingsSaveCommand
+    | SecretStoreCommand
+    | SecretRevokeCommand
+    | FeatureSetCommand
+    | MemoryListCommand
+    | MemoryDetailCommand
+    | MemoryUpdateCommand
+    | MemoryDeleteCommand
+    | MemoryClearCommand
+    | MemoryConfirmCommand
+    | MemoryExportCommand
+    | ManagementDebugCommand
+)
+
+BridgeCommand: TypeAlias = UserMessageCommand | TurnCancelCommand | ManagementCommand
 
 
 class BackendState(StrEnum):
@@ -122,6 +390,185 @@ class BridgeOverflowEvent:
             raise ValueError("overflow must report at least one dropped event")
 
 
+@dataclass(frozen=True, slots=True)
+class SettingsSnapshotEvent:
+    snapshot: SettingsSnapshot
+    command_id: str | None = None
+    emitted_at: datetime = field(default_factory=utc_now)
+    protocol_version: Literal[1] = field(default=BRIDGE_PROTOCOL_VERSION, init=False)
+    type: Literal["settings.snapshot"] = field(default="settings.snapshot", init=False)
+
+    def __post_init__(self) -> None:
+        if self.command_id is not None:
+            _validate_command_id(self.command_id)
+
+
+@dataclass(frozen=True, slots=True)
+class FeatureStatesEvent:
+    states: tuple[FeatureState, ...]
+    command_id: str | None = None
+    emitted_at: datetime = field(default_factory=utc_now)
+    protocol_version: Literal[1] = field(default=BRIDGE_PROTOCOL_VERSION, init=False)
+    type: Literal["feature.states"] = field(default="feature.states", init=False)
+
+    def __post_init__(self) -> None:
+        if not self.states or len(self.states) > len(FeatureName):
+            raise ValueError("feature state batch is outside the bridge bound")
+        if self.command_id is not None:
+            _validate_command_id(self.command_id)
+
+
+@dataclass(frozen=True, slots=True)
+class MemorySummary:
+    memory_id: str
+    memory_type: MemoryType
+    content_preview: str
+    sensitivity: MemorySensitivity
+    status: MemoryStatus
+    updated_at: datetime
+
+    def __post_init__(self) -> None:
+        _validate_opaque_id(self.memory_id, field_name="memory id")
+        _validate_bounded_text(
+            self.content_preview,
+            field_name="memory preview",
+            maximum=MAX_MANAGEMENT_PREVIEW_CHARS,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryListEvent:
+    items: tuple[MemorySummary, ...]
+    query: str = ""
+    truncated: bool = False
+    command_id: str | None = None
+    emitted_at: datetime = field(default_factory=utc_now)
+    protocol_version: Literal[1] = field(default=BRIDGE_PROTOCOL_VERSION, init=False)
+    type: Literal["memory.list"] = field(default="memory.list", init=False)
+
+    def __post_init__(self) -> None:
+        if len(self.items) > MAX_MANAGEMENT_LIST_ITEMS:
+            raise ValueError("memory list is outside the bridge bound")
+        _validate_bounded_text(
+            self.query,
+            field_name="memory query",
+            maximum=MAX_MANAGEMENT_CONTENT_CHARS,
+            allow_empty=True,
+        )
+        if self.command_id is not None:
+            _validate_command_id(self.command_id)
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryDetailEvent:
+    memory_id: str
+    item: MemoryItem | None
+    reason_code: str | None = None
+    command_id: str | None = None
+    emitted_at: datetime = field(default_factory=utc_now)
+    protocol_version: Literal[1] = field(default=BRIDGE_PROTOCOL_VERSION, init=False)
+    type: Literal["memory.detail"] = field(default="memory.detail", init=False)
+
+    def __post_init__(self) -> None:
+        _validate_opaque_id(self.memory_id, field_name="memory id")
+        if self.item is not None and self.item.memory_id != self.memory_id:
+            raise ValueError("memory detail does not match its id")
+        if self.reason_code is not None and not is_stable_reason_code(self.reason_code):
+            raise ValueError("memory detail reason must be a stable code")
+        if self.command_id is not None:
+            _validate_command_id(self.command_id)
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryConfirmationSummary:
+    confirmation_id: str
+    content_preview: str
+    evidence_preview: str
+    expires_at: datetime
+
+    def __post_init__(self) -> None:
+        _validate_opaque_id(self.confirmation_id, field_name="confirmation id")
+        _validate_bounded_text(
+            self.content_preview,
+            field_name="confirmation preview",
+            maximum=MAX_MANAGEMENT_PREVIEW_CHARS,
+        )
+        _validate_bounded_text(
+            self.evidence_preview,
+            field_name="confirmation evidence",
+            maximum=MAX_MANAGEMENT_PREVIEW_CHARS,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryConfirmationsEvent:
+    items: tuple[MemoryConfirmationSummary, ...]
+    truncated: bool = False
+    command_id: str | None = None
+    emitted_at: datetime = field(default_factory=utc_now)
+    protocol_version: Literal[1] = field(default=BRIDGE_PROTOCOL_VERSION, init=False)
+    type: Literal["memory.confirmations"] = field(default="memory.confirmations", init=False)
+
+    def __post_init__(self) -> None:
+        if len(self.items) > MAX_MANAGEMENT_LIST_ITEMS:
+            raise ValueError("memory confirmation list is outside the bridge bound")
+        if self.command_id is not None:
+            _validate_command_id(self.command_id)
+
+
+@dataclass(frozen=True, slots=True)
+class ManagementResultEvent:
+    """One body-free terminal result for a W16 mutation or export command."""
+
+    operation: str
+    command_id: str
+    reason_code: str | None = None
+    deleted_count: int = 0
+    cleanup_pending: bool = False
+    restart_required: bool = False
+    emitted_at: datetime = field(default_factory=utc_now)
+    protocol_version: Literal[1] = field(default=BRIDGE_PROTOCOL_VERSION, init=False)
+    type: Literal["management.result"] = field(default="management.result", init=False)
+
+    def __post_init__(self) -> None:
+        _validate_command_id(self.command_id)
+        if not is_stable_reason_code(self.operation):
+            raise ValueError("management operation must be a stable code")
+        if self.reason_code is not None and not is_stable_reason_code(self.reason_code):
+            raise ValueError("management result reason must be a stable code")
+        if self.deleted_count < 0:
+            raise ValueError("management deleted count must not be negative")
+
+
+@dataclass(frozen=True, slots=True)
+class ManagementDebugEvent:
+    version: str
+    capabilities: BackendCapabilities
+    command_queue_count: int
+    command_queue_capacity: int
+    event_queue_count: int
+    event_queue_capacity: int
+    command_id: str | None = None
+    emitted_at: datetime = field(default_factory=utc_now)
+    protocol_version: Literal[1] = field(default=BRIDGE_PROTOCOL_VERSION, init=False)
+    type: Literal["management.debug"] = field(default="management.debug", init=False)
+
+    def __post_init__(self) -> None:
+        _validate_bounded_text(
+            self.version,
+            field_name="application version",
+            maximum=128,
+        )
+        for count, capacity in (
+            (self.command_queue_count, self.command_queue_capacity),
+            (self.event_queue_count, self.event_queue_capacity),
+        ):
+            if count < 0 or capacity < 1 or count > capacity:
+                raise ValueError("debug queue state is outside the bridge bound")
+        if self.command_id is not None:
+            _validate_command_id(self.command_id)
+
+
 BridgeEvent: TypeAlias = (
     PipelineEvent
     | SessionReset
@@ -129,6 +576,13 @@ BridgeEvent: TypeAlias = (
     | BackendStateEvent
     | CommandRejectedEvent
     | BridgeOverflowEvent
+    | SettingsSnapshotEvent
+    | FeatureStatesEvent
+    | MemoryListEvent
+    | MemoryDetailEvent
+    | MemoryConfirmationsEvent
+    | ManagementResultEvent
+    | ManagementDebugEvent
 )
 
 
@@ -145,6 +599,19 @@ def is_terminal_event(event: BridgeEvent) -> bool:
     if isinstance(event, BackendStateEvent):
         return event.state in {BackendState.failed, BackendState.stopped}
     if isinstance(event, CommandRejectedEvent | BridgeOverflowEvent):
+        return True
+    if isinstance(
+        event,
+        (
+            SettingsSnapshotEvent,
+            FeatureStatesEvent,
+            MemoryListEvent,
+            MemoryDetailEvent,
+            MemoryConfirmationsEvent,
+            ManagementResultEvent,
+            ManagementDebugEvent,
+        ),
+    ):
         return True
     return event.type in {
         "turn.completed",

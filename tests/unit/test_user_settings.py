@@ -5,7 +5,14 @@ from pathlib import Path
 
 import pytest
 import yaml
-from app.config import ConfigurationError, upgrade_user_settings, write_user_settings
+from app.config import (
+    ConfigurationError,
+    load_settings,
+    patch_user_settings,
+    read_user_settings,
+    upgrade_user_settings,
+    write_user_settings,
+)
 from app.paths import AppPaths
 
 
@@ -43,6 +50,27 @@ def test_identical_user_settings_write_is_noop(tmp_path: Path) -> None:
 
     assert not result.changed
     assert not paths.settings_backup.exists()
+
+
+def test_patch_user_settings_does_not_persist_development_environment_overrides(
+    tmp_path: Path,
+) -> None:
+    paths = paths_for(tmp_path)
+    write_user_settings(
+        {"schema_version": 1, "llm": {"model": "persisted-model"}},
+        app_paths=paths,
+    )
+    effective = load_settings(
+        app_paths=paths,
+        environ={"MEGUMIN_LLM_MODEL": "temporary-development-model"},
+    )
+    assert effective.llm.model == "temporary-development-model"
+
+    patch_user_settings({"desktop": {"startup_enabled": True}}, app_paths=paths)
+
+    layer = read_user_settings(app_paths=paths)
+    assert layer["llm"]["model"] == "persisted-model"
+    assert layer["desktop"]["startup_enabled"] is True
 
 
 @pytest.mark.parametrize(

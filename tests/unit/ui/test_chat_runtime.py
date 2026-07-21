@@ -43,6 +43,7 @@ from desktop_client.ui.contracts import (
     BackendStateEvent,
     BridgeEvent,
     CommandRejectedEvent,
+    SettingsSnapshotEvent,
     TurnCancelCommand,
     UserMessageCommand,
 )
@@ -393,7 +394,12 @@ def test_configured_desktop_runtime_restarts_with_a_body_free_snapshot(
             for event in first_events
         ),
     )
-
+    assert _collect_until(
+        qapp,
+        first_bridge,
+        first_events,
+        lambda: any(isinstance(event, SettingsSnapshotEvent) for event in first_events),
+    )
     message = UserMessage(message_id="message-desktop-restart", text="private restart body")
     assert first_bridge.submit_command(
         UserMessageCommand(payload=message, command_id="cmd-restart")
@@ -412,6 +418,20 @@ def test_configured_desktop_runtime_restarts_with_a_body_free_snapshot(
     for event in first_events:
         model.apply_event(event)
     assert "private restart body" in model.transcript()
+
+    initial_management_snapshots = sum(
+        isinstance(event, SettingsSnapshotEvent) for event in first_events
+    )
+    first_bridge.request_snapshot()
+    assert _collect_until(
+        qapp,
+        first_bridge,
+        first_events,
+        lambda: (
+            sum(isinstance(event, SettingsSnapshotEvent) for event in first_events)
+            > initial_management_snapshots
+        ),
+    )
     _stop_host(qapp, first_host)
 
     restarted_bridge = ApplicationBridge()

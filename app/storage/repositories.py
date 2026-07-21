@@ -547,15 +547,27 @@ class MemoryRepository:
                 ).fetchone()
         return _memory_from_row(row) if row is not None else None
 
-    def list_items(self, *, user_id: str, include_superseded: bool = False) -> list[MemoryItem]:
+    def list_items(
+        self,
+        *,
+        user_id: str,
+        include_superseded: bool = False,
+        limit: int | None = None,
+    ) -> list[MemoryItem]:
+        if limit is not None and not 1 <= limit <= 100:
+            raise ValueError("memory list limit must be between 1 and 100")
         status_clause = "" if include_superseded else "AND status = 'active'"
+        limit_clause = "LIMIT ?" if limit is not None else ""
+        parameters: tuple[str, ...] | tuple[str, int]
+        parameters = (user_id,) if limit is None else (user_id, limit)
         with self._database.connect() as connection:
             rows = connection.execute(
                 f"""
                 SELECT * FROM memories WHERE user_id = ? {status_clause}
                 ORDER BY importance_score DESC, updated_at DESC, memory_id ASC
+                {limit_clause}
                 """,
-                (user_id,),
+                parameters,
             ).fetchall()
         return [_memory_from_row(row) for row in rows]
 

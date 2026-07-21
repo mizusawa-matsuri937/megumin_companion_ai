@@ -459,7 +459,13 @@ class MemoryRuntime:
 
         return unsubscribe
 
-    async def set_feature(self, name: FeatureName, enabled: bool) -> FeatureState:
+    async def set_feature(
+        self,
+        name: FeatureName,
+        enabled: bool,
+        *,
+        on_transition: Callable[[FeatureState], Awaitable[None]] | None = None,
+    ) -> FeatureState:
         async with self._feature_update_lock:
             transition = await asyncio.to_thread(
                 self.features.request_transition,
@@ -473,6 +479,8 @@ class MemoryRuntime:
             }:
                 return transition
             try:
+                if on_transition is not None:
+                    await on_transition(transition)
                 if name is FeatureName.long_term_memory and not enabled:
                     await self.candidates.cancel_active()
                     await asyncio.to_thread(self.memory.finalize_disabled_state)
@@ -501,13 +509,18 @@ class MemoryRuntime:
             )
 
     async def list_memories(
-        self, *, user_id: str, include_superseded: bool = False
+        self,
+        *,
+        user_id: str,
+        include_superseded: bool = False,
+        limit: int | None = None,
     ) -> list[MemoryItem]:
         return await asyncio.to_thread(
             partial(
                 self.memory.list_for_management,
                 user_id=user_id,
                 include_superseded=include_superseded,
+                limit=limit,
             )
         )
 
@@ -516,6 +529,13 @@ class MemoryRuntime:
     ) -> list[MemoryItem]:
         return await asyncio.to_thread(
             partial(self.memory_repository.search, user_id=user_id, query=query, limit=limit)
+        )
+
+    async def get_memory(self, memory_id: str, *, user_id: str) -> MemoryItem | None:
+        return await asyncio.to_thread(
+            self.memory.get_for_management,
+            memory_id,
+            user_id=user_id,
         )
 
     async def update_memory(

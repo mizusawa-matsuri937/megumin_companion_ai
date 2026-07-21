@@ -141,6 +141,35 @@ def write_user_settings(
     return UserSettingsWriteResult(changed=True, backup_created=backup_created)
 
 
+def read_user_settings(*, app_paths: AppPaths | None = None) -> dict[str, Any]:
+    """Return the validated persisted user layer without consulting dev overrides.
+
+    This is intentionally separate from :func:`load_settings`: desktop settings
+    edits must merge only the user-owned YAML layer, never copy an environment
+    override or a package default back into persistent configuration.
+    """
+
+    paths = app_paths or AppPaths.discover()
+    if not paths.settings.exists():
+        return {"schema_version": CURRENT_SETTINGS_SCHEMA_VERSION}
+    raw = _read_yaml_path(paths.settings, source_label="用户设置")
+    layer, _ = _upgrade_config_data(raw, source="用户设置")
+    _validated_user_layer(layer, paths)
+    return layer
+
+
+def patch_user_settings(
+    overrides: Mapping[str, Any], *, app_paths: AppPaths | None = None
+) -> UserSettingsWriteResult:
+    """Atomically merge a validated desktop form patch into user settings."""
+
+    paths = app_paths or AppPaths.discover()
+    _reject_plaintext_secrets(overrides)
+    current = read_user_settings(app_paths=paths)
+    merged = _deep_merge(current, overrides)
+    return write_user_settings(merged, app_paths=paths)
+
+
 def upgrade_user_settings(*, app_paths: AppPaths | None = None) -> UserSettingsWriteResult:
     """Persist an in-memory schema upgrade only after an explicit user action."""
 

@@ -80,7 +80,15 @@ class MemoryStore(Protocol):
 
     def search(self, *, user_id: str, query: str, limit: int = 10) -> list[MemoryItem]: ...
 
-    def list_items(self, *, user_id: str, include_superseded: bool = False) -> list[MemoryItem]: ...
+    def get(self, memory_id: str, *, user_id: str | None = None) -> MemoryItem | None: ...
+
+    def list_items(
+        self,
+        *,
+        user_id: str,
+        include_superseded: bool = False,
+        limit: int | None = None,
+    ) -> list[MemoryItem]: ...
 
     def list_profiles(self, *, user_id: str) -> list[ProfileItem]: ...
 
@@ -298,9 +306,20 @@ class MemoryService:
             return self._store.list_profiles(user_id=user_id)
 
     def list_for_management(
-        self, *, user_id: str, include_superseded: bool = False
+        self,
+        *,
+        user_id: str,
+        include_superseded: bool = False,
+        limit: int | None = None,
     ) -> list[MemoryItem]:
-        return self._store.list_items(user_id=user_id, include_superseded=include_superseded)
+        return self._store.list_items(
+            user_id=user_id,
+            include_superseded=include_superseded,
+            limit=limit,
+        )
+
+    def get_for_management(self, memory_id: str, *, user_id: str) -> MemoryItem | None:
+        return self._store.get(memory_id, user_id=user_id)
 
     def delete_for_management(self, memory_id: str, *, user_id: str) -> bool:
         return self._store.delete(memory_id, user_id=user_id, now=self._clock.now())

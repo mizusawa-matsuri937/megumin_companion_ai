@@ -1,117 +1,113 @@
 # 当前产品目标
 
-> 最后核验：2026-07-21（Asia/Shanghai）。W15 的运行/测试 head
-> `990f45bc4942af09451548ae6903680d95662c92` 已完成 AI 优先核验：本地 `uv run pytest` 为
-> `1120 passed, 3 skipped in 155.27s`、总覆盖率 90.10%；Windows 与 macOS 模拟的严格类型检查、
-> lint、格式和锁文件检查均通过。该 head 的 pull-request run `29799617184` 与 push run
-> `29799615238` 均为 success，macOS/Windows quality 与两项 installed-wheel 共八项检查均通过。
-> 它修复的是测试同步：macOS 上的 fake `whisper-cli` 曾在注册 `SIGTERM` handler 前公布 PID，导致
-> 取消测试可能在 setup 窗口内观察不到 `.term` 标记；产品运行代码未因该问题改变。项目所有者已于
-> 2026-07-21 确认通过唯一的 W15 单用户 Explorer/托盘视觉与交互审计，并明确授权受控合并 PR #27。
-> 关闭记录 head `86ed0ff3a341741da1d597a235a9cfbf3f7c7cef` 的 pull-request run `29801772761` 与
-> push run `29801771129` 均成功；PR #27 已以 merge commit
-> `252aa49285296eeb7a7dc835fd19eea90c7f1633` 合并到 `agent/windows-development-baseline`。合并后
-> `uv sync --locked` 与 `uv run pytest` 也已通过（`1120 passed, 3 skipped in 165.95s`，90.10%）。
+> 最后核验：2026-07-21（Asia/Shanghai）。当前活跃任务是 **W16：设置、feature 与记忆管理最小 UI**，
+> 开发分支为 `codex/w16-settings-feature-memory-ui`。下方记录的历史 head 均已完成远端 CI；W16 自动交付
+> 只由 PR **当前** exact head 的必需检查全部 `success` 判定。任何新提交（包括本证据记录）都不继承旧 head 的绿灯。
 
 ## 已确认事实
 
-- W14 的 PR [#26](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/26) 已于
-  2026-07-20 合并到 `agent/windows-development-baseline`，merge commit 为
-  `0a9f199f01201e14a342a28798a2ca86e6287e25`。本地 W15 分支从该提交创建。
-- 项目所有者已明确要求开始 **W15：单实例、托盘和统一生命周期**；这替代了本文件先前
-  “等待 W14 人工 Gate 后不得启动 W15” 的旧状态。
-- W15 已由 [PR #27](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/27) 于 2026-07-21
-  合并到 `agent/windows-development-baseline`，merge commit 为
-  `252aa49285296eeb7a7dc835fd19eea90c7f1633`。合并前 closing head `86ed0ff` 的八项远端检查均成功，
-  合并后本地基线已 fast-forward 到该提交并完成全量测试。当前用户尚未授权开始 W16 或后续 W 项。
-- W15 仍受 ADR-W01、ADR-W07、ADR-W08、Windows 数据流不变量与 P0-04 风险约束：Qt
-  只拥有 UI/托盘，BackendThread 的应用 lifespan 仍拥有 turn、worker、VTS、memory 和日志。
-- 所有者已明确限定本产品为单机、单 Windows 用户、个人私用。多用户、跨用户 DACL 有效访问、
-  RDP/快速切用户和跨 session 行为均为范围外，不得写作 W15 未完成 Gate 或跨用户支持证据。
+- 所有者已明确授权开始 W16；这覆盖本文件旧版本中“尚未授权 W16”的历史状态。
+- W15 已由 PR #27 合并到 `agent/windows-development-baseline`。W16 从其后当前基线
+  `87801bc` 开始，开始前工作树干净。
+- W16 初始实现提交 [`0dfad2f`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/0dfad2f6039bc30c3273a004586fb0484f01c0d7)
+  已推送到该开发分支；[Draft PR #28](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/28) 已打开，
+  base 为 `agent/windows-development-baseline`。状态记录 head
+  [`c1cce43`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/c1cce43bfdcd5d435a9ef9d1cb2c89b53e12ed49)
+  的 [push CI #29809797158](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29809797158) 与
+  [pull-request CI #29809800285](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29809800285)
+  均为 `success`；每个 run 的 macOS/Windows quality 与 installed-wheel 均通过。核验时 PR 仍为 Draft、
+  `OPEN`、`MERGEABLE/CLEAN`，且没有 review、issue conversation 或 inline review comment。任何后续提交
+  都必须以新的精确 head 重新核验。
+- 后续 CI-evidence head [`cd56622`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/cd5662242495dfe064f30c7c34818b96fbb71c58)
+  的 [push CI #29810283413](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29810283413) 与
+  [pull-request CI #29810286263](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29810286263)
+  也均为 `success`；每个 run 的 macOS/Windows quality 与 installed-wheel 均通过。
+- 2026-07-21 的实际 Windows Qt 审阅发现：用户在 feature 启用确认框选择“是”后，界面仍显示
+  `希望停用 / 已停用 / ——`。本地 feature 元数据也未变化，证明请求没有送入后端。根因已复现：本机 PySide6
+  原生 `QMessageBox.question()` 返回底层 `int`，它与 `StandardButton.Yes` 值相等但不是同一对象；旧
+  `_confirm()` 使用 `is`，因而把明确的“是”静默当作取消。当前修复改用值比较，并加入该返回形态的回归测试；
+  修复提交 [`7175588`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/7175588ec101398b0f8ef7201f10d82c79b4abb9)
+  的 [push CI #29820123292](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29820123292) 与
+  [pull-request CI #29820126134](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29820126134)
+  均为 `success`。这只是该修复提交的历史证据，任何随后 head 仍须独立核验。
+- 修复后，用户已在实际 Windows Qt 中重新执行该精确路径并报告通过：feature 启用、确认“是”、状态更新均正常。
+  这是本次缺陷的实际桌面复测证据；它不替代历史、记忆、视觉、云端与删除语义的完整理解性审阅。
+- 后续状态记录 head [`8f87c73`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/8f87c733cd43c7d6714f26616f8542de4e53df2a)
+  的 [pull-request CI #29820584704](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29820584704)
+  已成功；[push CI #29820582676](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29820582676)
+  第一次尝试只在既有
+  `test_close_during_cache_promotion_removes_wav_and_partial_files` 的 1 秒异步等待超时。相同 SHA 的 PR Windows
+  quality 和本机聚焦复现均通过，重跑失败 job 的第二次尝试也为 `success`。现有证据**合理推测**为 CI 调度波动，
+  但不能据此宣称该既有测试已永久稳定；PR 当前 exact head 仍须现场读取检查状态。
+- W16 依赖 W10 与 W15，沿用 W03 的当前用户 DPAPI/受管路径边界、W10 的 feature 状态机和逻辑删除、
+  W13/W14 的 Qt 主线程与有界 BackendThread bridge。它不启动、暴露或复用开发 HTTP API。
+- 产品范围仍是单机、单 Windows 用户、个人私用。多用户、跨用户 DACL 有效访问、RDP、快速切用户和跨
+  session 行为均为**范围外**，不得写作已验证或待 W16 人工 Gate。
 
-## 当前目标与完成条件
+## 当前 W16 目标与完成条件
 
-在不扩大到 W16 设置 UI、W17 音频设备或 W25 安装器的前提下交付 W15：
+1. 在 Qt 桌面中提供 LLM/TTS/VTS/STT 路径/设备和启动项设置；任何密钥或 VTS 令牌只可直写当前用户的
+   DPAPI 加密存储，UI 不回填、不显示、不持久化明文。
+2. 展示 feature 的 desired、actual、过渡与 failed 状态。关闭 Vision/Proactive 必须先等待既有强屏障，
+   再报告最终状态。
+3. 提供最近历史清空、长期记忆的 list/search/confirm/edit/delete/export；所有危险操作都要在用户点击后
+   再次确认，并诚实呈现逻辑删除与底层清理待处理语义。
+4. 在视觉开关旁固定披露指定窗口范围、cloud vision 独立开关和可能的云端出口；不能暗示 W16 已实现真实
+   截图或云上传。Debug 只展示无内容 capability、稳定错误码、版本和队列占用。
+5. 以自动化验证可复现的配置写入、DPAPI 命令边界、feature 屏障、记忆操作、导出、UI 状态与隐私边界；
+   完成聚焦提交、推送、Draft PR、exact-head CI 后才可报告 W16 自动交付完成。
 
-1. 使用当前用户、当前 session 的 securable primitive 保证单实例；第二实例只能请求主窗口
-   显示，不能传入任意命令或文本。
-2. 交付托盘的显示/隐藏、停止当前 turn、静态隐私总览与退出，并将窗口关闭的默认行为明确为
-   “隐藏到托盘”；没有可用托盘时走受控退出。
-3. 将 UI 关闭、BackendThread、应用 lifespan 的 worker/VTS/memory/logs 关闭、异常标记与
-   有界进程级 deadline 纳入同一 owner graph；不得将 Python thread timeout 表述为已安全停止。
-4. 增加默认关闭的当前用户启动项、路径变更/stale value 清理 API 与 crash marker v1；异常后
-   安全模式必须不自动恢复 vision/cloud vision/proactive。
-5. 已在最终 head 上完成自动化、严格类型/格式检查、聚焦审查、提交、推送、PR 合并与合并后验证；
-   所有者已确认无法由 AI 忠实复现的单用户 Windows shell 视觉/交互 Gate 通过。
+## 已完成的本地实现与自动化证据
 
-## 已完成的自动化证据
-
-- `uv run pytest --no-cov tests\\unit\\ui\\test_w15_lifecycle.py tests\\unit\\test_desktop_startup.py`
-  `tests\\unit\\test_desktop_safe_mode.py tests\\unit\\ui\\test_application.py -q`
-  → `22 passed`。它覆盖 current-user/current-session primitive、opaque per-session marker scope、
-  重复退出、关闭到托盘、hung backend deadline、固定 tray actions、safe-mode feature 状态、HKCU
-  stale startup path，以及关闭期快捷键/托盘命令阻断、关闭期 activation request 丢弃、tray 重显计时器和
-  不触碰真实用户实例/HKCU 的桌面组合测试。
-- `uv run pytest` → `1120 passed, 3 skipped in 155.27s`；总覆盖率 `90.10%`（达到 90% 门槛）。
-- `uv run mypy app desktop_client tests tools\\installed_wheel_smoke.py tools\\w05_ci_smoke.py` →
-  `Success: no issues found in 215 source files`；另行执行
+- 已加入秘密值不可见的设置/管理 bridge 契约、BackendThread 内 `DesktopManagementRuntime`、四页 Qt
+  设置对话框和主窗口入口。文件、DPAPI、SQLite、导出均在 BackendThread；Qt 只发有界 typed command。
+- 设置写入只合并用户 YAML 层，不会把开发环境覆盖复制回持久配置；明文 secret 字段被配置写入层拒绝。
+  真实 LLM 保存前要求已存 DPAPI 密钥和模型名；GPT-SoVITS 保存前要求已有有效 preset，真实服务预检仍由
+  W19 负责。
+- feature 过渡开始时会先发布完整 desired/actual 快照，随后等待状态机 barrier 并发布最终/failed 状态。
+- `uv run pytest` → `1134 passed, 3 skipped in 154.51s`；总覆盖率 `90.37%`，达到项目 90% 门槛。三个 skip
+  分别是未安装的可选 RapidOCR/Pillow 能力与当前用户不能创建目录符号链接，均由测试框架明确标记，非 W16
+  失败。
+- `uv run mypy app desktop_client tests tools\\installed_wheel_smoke.py tools\\w05_ci_smoke.py` 和
   `uv run mypy --platform darwin app desktop_client tests tools\\installed_wheel_smoke.py tools\\w05_ci_smoke.py`
-  也在 215 个 source files 上通过。`uv run ruff check .`、
-  `uv run ruff format --check .` 与 `uv lock --check` 均通过。
-- PR #27 的首次 exact head `f53e04d241749d0a5370d05031f011e08e892c6f` 中，两个 installed-wheel
-  和 Windows quality 已通过；macOS quality 的 strict mypy 有 16 个错误，因为 macOS typeshed 不公开
-  Windows-only `winreg` 成员及 `ctypes.get/set_last_error`。W15 代码现以受控动态平台适配解决，
-  并由上述 Darwin mypy 验证。修复后的运行代码 head `ec46df9fd699af9ceb9581d96100de5d8a3dfce2` 的
-  pull-request run `29770004752` 和 push run `29770000078` 均为 success：macOS/Windows quality 以及
-  两项 installed-wheel 共八个检查全部通过。
-- 后续文档 head `819e782bac71e2521580be8054891963512eec08` 的 pull-request run `29770563063` 中，
-  Windows quality 仅在 `tests/integration/test_mock_pipeline.py::test_new_input_is_a_hard_barrier_for_old_turn_events`
-  失败：旧测试用固定 `asyncio.sleep(0.05)` 假定第一轮尚未结束，却没有建立该前提，CI 中因而未观察到
-  `turn.cancelled`。这不足以证明 W15 产品代码回归。测试现用 `FirstTurnBarrierLLM` 明确等待第一轮进入
-  可取消阻塞点；修复后的断言连续运行 20 次、受影响文件 4 项和完整套件均通过。
-- `0c902494e9880151a0b1b59d3ae0154ccd6dbf86` 的 push run `29771649297` 全部通过；同一 head 的
-  pull-request run `29771653545` 仅在 Windows quality 的
-  `tests/unit/test_gpt_sovits.py::test_uncached_audio_part_and_final_are_tracked_until_discard` 失败，结果为
-  `tts_cancel_timeout`。该测试的目标是临时资产追踪，却无意中继承 `timeout_ms=300` 和
-  `cancellation_timeout_ms=50` 的共享 deadline；同一提交的另一远端运行和 20 次本地隔离运行均通过，
-  因而这是 CI 调度敏感的合理推测，而非已证实的生产逻辑缺陷。该测试现在显式使用
-  1000/1000/3000/500 ms 的 connect/first-byte/total/cancellation deadline；专门的 deadline 边界测试
-  保持不变，整个 GPT-SoVITS 文件 57 项也通过。
-- 实现与测试变更 head `de328c402b40086a9f671d10d6c11be3b7c43d94` 的 pull-request run
-  `29793986896` 和 push run `29793985209` 均为 success；各自的 macOS/Windows quality 与两项
-  installed-wheel，共八项远端检查全部通过。该证据不替代下述真实 Windows Gate。
-- AI 优先范围补强 head `14d54056ad78de74409651ff454d134648ce1e6a` 的 push run `29799041566`
-  成功，但其 PR run `29799043005` 的 macOS quality 失败于
-  `test_repeated_cancellation_cannot_interrupt_process_reaping`。已确认这是 test fixture 的同步漏洞：
-  fake `sleep` CLI 先写 PID、后注册 `SIGTERM` handler，父任务可在两者之间取消，默认 handler 会使子
-  进程退出而没有 `.term` 标记。测试提交 `990f45b` 改为在 handler 注册后写 `.ready`，并在取消前等待
-  该 marker；聚焦断言连续 20 次通过、`test_whisper_cpp.py` 19 项通过，产品代码未改变。其 exact-head
-  pull-request run `29799617184` 与 push run `29799615238` 均成功，八项远端检查全部通过。
+  均为 `Success: no issues found in 218 source files`。
+- `uv run ruff check .`、`uv run ruff format --check .`、`uv lock --check` 和 `git diff --check` 均通过。
+- 聚焦测试覆盖了 secret 不回显、用户层写入不吸收开发覆盖、real-provider/preset 保存防线、过渡快照先于
+  强屏障最终状态、memory CRUD/export、错误码不暴露原始异常、二次确认、可访问的 Qt 表面和最终 wipe。
+- 新增 `test_w16_feature_enable_submits_when_pyside_returns_integer_yes`，并以
+  `uv run pytest --no-cov tests\\unit\\ui\\test_w16_management.py -q` 验证 `13 passed in 2.71s`；它锁定了
+  PySide6 返回 `int(Yes)` 时必须提交而非取消的行为。
+- 2026-07-21 的 Windows CI 两次在相同 W16 代码之外的真实时间边界测试失败：一次为 GPT-SoVITS cache
+  promotion 的一秒等待，另一次为首字节 50ms/81ms 边界及 mock WAV 300ms 总时限。当前修改仅扩大**测试**的
+  调度余量，未改变产品超时逻辑：首字节成功/失败分别使用 2s/100ms 与 10s 延迟，mock WAV 验证使用 3s
+  总时限。两组测试连续 20 轮、每轮 4 个断言均通过；失败 head 的
+  [PR CI #29823189335](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29823189335) 是历史
+  反例。测试稳定化 head [`523406d`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/523406dfc57bbf4e75aadfe407e5858495b4b976)
+  的 [push CI #29825077879](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29825077879) 与
+  [pull-request CI #29825080662](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29825080662)
+  均为 `success`，各自的 macOS/Windows quality 和 installed-wheel job 也均通过。现场审计时 PR #28 为
+  Draft / `OPEN` / `CLEAN`，没有 review、普通评论或 inline review comment；该 head 仍会随着后续证据提交
+  成为历史记录，不能替代下一 head 的检查。
 
-## 范围与人工 Gate 记录
+## 未完成项与真实人工 Gate
 
-- 多用户、跨用户 DACL 有效访问、RDP/快速切用户和跨 session 行为均为所有者确认的**范围外**；它们
-  既不是未通过项，也不能被表述为已验证支持。
-- W15 的配置、当前用户启动项协调、关闭/取消竞争、hard deadline、safe mode、受控 backend/worker
-  停止均已由自动化验证。锁屏/注销/关机 OS 信号属于 W20；冻结包无控制台窗口属于 W24；安装/卸载属于 W25。
-- 所有者于 2026-07-21 确认上一项单用户实际 Windows shell 审计通过：关闭到托盘、tray 的显示/隐藏/退出
-  以及 Explorer 重启后的图标恢复和“显示窗口”交互均已人工确认。这是所有者人工证据，不是 headless/mock
-  的替代声明；W15 不再有待办人工 Gate。
-- 所有者已于 2026-07-21 明确接受本记录所列单机、单 Windows 用户产品范围，并在 closing head 的
-  exact-head CI 成功后授权受控合并；PR #27 随后已合并。多用户、RDP、快速切用户、跨 session、W20 OS
-  信号、W24 冻结包与 W25 安装器边界仍为范围外/后续任务，不能因接受范围而表述为已支持。
-- W15 的实现、自动化、所有者人工 Gate、PR 合并和合并后基线测试均已完成。它不是整个产品发布完成：
-  后续 W 项仍需在获得新的明确授权后分别实施。
+- W16 自动交付的客观条件是 PR 当前 exact head 的所有必需检查均为 `success`；这项条件必须在最终报告前
+  现场核验，且任何后续提交都要重新满足它。任何客观失败必须直接记录和修复，不能转交人工确认。
+- 实际 Windows Qt 已通过本次 feature 启用/确认/状态更新路径的复测。仍保留 AI 无法忠实复现的理解性审阅：
+  用户是否正确理解历史、记忆、视觉、云端和删除语义；其余部分尚未执行，不能把整个 Gate 标记为通过。
+- 真实音频设备、麦克风、VTS/GPT-SoVITS 服务与资源预检属于 W17–W19；真实指定窗口捕获/cloud vision
+  属于 W21/W22；冻结包与安装/卸载属于 W24/W25。它们不是 W16 已实现能力。
 
 ## 相关资料
 
-- 权威计划的 W15 段落：[`../windows_development_plan.md`](../windows_development_plan.md)
-- 进行中的实现记录：[`../implementation/w15_single_instance_lifecycle.md`](../implementation/w15_single_instance_lifecycle.md)
-- 运行拓扑与关闭边界：[`../adr/ADR-W01-runtime-topology.md`](../adr/ADR-W01-runtime-topology.md)、
-  [`../adr/ADR-W07-native-worker-isolation.md`](../adr/ADR-W07-native-worker-isolation.md)
-- 包装/崩溃恢复边界：[`../adr/ADR-W08-packaging-upgrade.md`](../adr/ADR-W08-packaging-upgrade.md)
+- 权威 W16 计划：[Windows 开发计划](../windows_development_plan.md)
+- 当前实现记录：[W16 设置、feature 与记忆管理 UI](../implementation/w16_settings_feature_memory_ui.md)
+- 运行时/desktop 所有权边界：[ADR-W01](../adr/ADR-W01-runtime-topology.md)、
+  [ADR-W03](../adr/ADR-W03-windows-storage-security.md)、[ADR-W04](../adr/ADR-W04-control-protocol.md)
+- W10 feature/删除语义：[W10 实现记录](../implementation/w10_memory_state_recovery.md)
 
 ## 维护规则
 
-当 W15 的目标提交、自动化结果、PR、Gate 或人工验证状态发生实质变化时，先更新本文件和对应实现记录，
-再报告状态。不得以聊天结论、模拟结果或旧 PR 状态替代最终 head 上的可复核证据。
+W16 的验证结果、提交、PR、CI、人工 Gate 或残余风险发生实质变化时，先更新本快照及
+`implementation/w16_settings_feature_memory_ui.md`，再报告状态。计划、mock/headless 结果或旧 W15
+证据不得替代当前 head 的可复核证据。
