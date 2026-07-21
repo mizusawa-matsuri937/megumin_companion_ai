@@ -1,7 +1,7 @@
 # 当前产品目标
 
-> 最后核验：2026-07-21（Asia/Shanghai）。W15 的最新本地工作树已完成自动化核验：
-> `uv run pytest` 为 `1118 passed, 3 skipped`、总覆盖率 90.07%；Windows 与 macOS 模拟的严格
+> 最后核验：2026-07-21（Asia/Shanghai）。W15 的当前本地工作树已完成 AI 优先自动化核验：
+> `uv run pytest` 为 `1120 passed, 3 skipped`、总覆盖率 90.10%；Windows 与 macOS 模拟的严格
 > 类型检查、lint、格式和锁文件检查亦已通过。Draft PR
 > [#27](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/27) 的首次 head 曾在 macOS
 > strict mypy 失败，原因和修复见下；修复后的运行代码 head
@@ -28,6 +28,8 @@
   表述为已关闭、已合并或可发布。
 - W15 仍受 ADR-W01、ADR-W07、ADR-W08、Windows 数据流不变量与 P0-04 风险约束：Qt
   只拥有 UI/托盘，BackendThread 的应用 lifespan 仍拥有 turn、worker、VTS、memory 和日志。
+- 所有者已明确限定本产品为单机、单 Windows 用户、个人私用。多用户、跨用户 DACL 有效访问、
+  RDP/快速切用户和跨 session 行为均为范围外，不得写作 W15 未完成 Gate 或跨用户支持证据。
 
 ## 当前目标与完成条件
 
@@ -41,18 +43,18 @@
    有界进程级 deadline 纳入同一 owner graph；不得将 Python thread timeout 表述为已安全停止。
 4. 增加默认关闭的当前用户启动项、路径变更/stale value 清理 API 与 crash marker v1；异常后
    安全模式必须不自动恢复 vision/cloud vision/proactive。
-5. 在最终 head 上完成自动化、严格类型/格式检查、聚焦审查、提交、推送与 Draft PR；随后明确
-   列出无法自动化的真实 Windows Gate。
+5. 在最终 head 上完成自动化、严格类型/格式检查、聚焦审查、提交、推送与 Draft PR；随后仅保留
+   无法由 AI 忠实复现的单用户 Windows shell 视觉/交互 Gate。
 
 ## 已完成的自动化证据（提交前工作树）
 
 - `uv run pytest --no-cov tests\\unit\\ui\\test_w15_lifecycle.py tests\\unit\\test_desktop_startup.py`
-  `tests\\unit\\test_desktop_safe_mode.py tests\\unit\\test_config.py::test_repository_config_matches_packaged_default -q`
-  → `14 passed`。它覆盖 current-user/current-session primitive、opaque per-session marker scope、
+  `tests\\unit\\test_desktop_safe_mode.py tests\\unit\\ui\\test_application.py -q`
+  → `22 passed`。它覆盖 current-user/current-session primitive、opaque per-session marker scope、
   重复退出、关闭到托盘、hung backend deadline、固定 tray actions、safe-mode feature 状态、HKCU
-  stale startup path 与配置默认值。
-- `uv run pytest`（包含两项 CI 测试稳定性修复后）→ `1118 passed, 3 skipped in 128.11s`；总覆盖率
-  `90.07%`（达到 90% 门槛）。
+  stale startup path，以及关闭期快捷键/托盘命令阻断、关闭期 activation request 丢弃、tray 重显计时器和
+  不触碰真实用户实例/HKCU 的桌面组合测试。
+- `uv run pytest` → `1120 passed, 3 skipped in 144.93s`；总覆盖率 `90.10%`（达到 90% 门槛）。
 - `uv run mypy app desktop_client tests tools\\installed_wheel_smoke.py tools\\w05_ci_smoke.py` →
   `Success: no issues found in 215 source files`；另行执行
   `uv run mypy --platform darwin app desktop_client tests tools\\installed_wheel_smoke.py tools\\w05_ci_smoke.py`
@@ -83,14 +85,14 @@
 
 ## 未验证项与人工 Gate
 
-- 自动化/current-user 测试不能证明不同 Windows 用户对 kernel object 的有效访问控制，也不能
-  替代真实 RDP/快速切用户 session 行为；需要标准用户、多 session Windows Gate。
-- Explorer 重启后的实际托盘重建、锁屏/注销/关机时序、任务栏通知区可见性和冻结包的无控制台窗口
-  仍必须在真实 Windows 环境验证。模拟托盘只证明模拟条件。
-- W25 才负责真正安装器/卸载流程；W15 只提供固定 HKCU Run value 的协调与卸载清理 API，不能
-  宣称已验证真实卸载。
+- 多用户、跨用户 DACL 有效访问、RDP/快速切用户和跨 session 行为均为所有者确认的**范围外**；它们
+  既不是未通过项，也不能被表述为已验证支持。
+- W15 的配置、当前用户启动项协调、关闭/取消竞争、hard deadline、safe mode、受控 backend/worker
+  停止均已由自动化验证。锁屏/注销/关机 OS 信号属于 W20；冻结包无控制台窗口属于 W24；安装/卸载属于 W25。
+- 剩余唯一 W15 人工 Gate：同一测试账户中，确认关闭主窗口后托盘图标可见、菜单能显示/隐藏/退出；重启
+  Explorer 后确认图标恢复且“显示窗口”有效。它是单用户 Windows shell 视觉/交互检查，mock/headless 不冒充。
 - W15 Draft PR #27 仍未合并。远端 CI 只能在其匹配当前最终 head 时作为交付证据；即使通过，仍须完成
-  下述真实 Windows Gate 和评审，不能视为已合并或可发布。
+  上述单用户视觉 Gate 和评审，不能视为已合并或可发布。
 
 ## 相关资料
 

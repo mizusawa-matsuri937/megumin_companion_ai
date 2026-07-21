@@ -681,8 +681,8 @@ flowchart LR
 - 生命周期 owner graph 统一管理 UI、backend loop、workers、VTS、memory、logs；退出有进度和 hard deadline。
 - 开机启动默认关闭，使用当前用户机制；路径变更/卸载时清理；绝不创建提权计划任务。
 - crash marker 区分正常退出和异常；下次启动提供安全模式，默认不恢复 vision/proactive actual state。
-- **自动验收：** 第二实例、session 隔离、重复退出、worker hang、启动项 stale path。
-- **人工验收：** Explorer 重启、锁屏/注销/关机、托盘丢失恢复、无控制台窗口。
+- **自动验收：** 第二实例、当前 session 隔离、重复退出、worker hang、启动项 stale path、关闭期快捷键/托盘命令阻断、关闭期激活阻断、offscreen owner graph 与托盘重显计时器。
+- **人工验收（单机单用户）：** 仅在实际 Explorer 中确认托盘图标可见、主窗口关闭后可从托盘显示/隐藏/退出，以及 Explorer 重启后图标恢复。多用户/RDP/快速切用户为范围外；锁屏/注销/关机信号属于 W20；冻结包无控制台窗口属于 W24。
 
 #### PR W16：设置、feature 与记忆管理最小 UI
 
@@ -841,7 +841,7 @@ flowchart LR
 | W12 | 新 worker supervisor/helper protocol/platform process code | helper protocol v1、crash/quarantine config | hanging child/tree tests + Windows Job VM + 安全/并发 H | 禁用 native features，文字模式继续 | XL |
 | W13 | `desktop_client/ui/`、ApplicationBridge、backend thread host | command/event protocol 复用；无持久数据 | headless UI/100 次启停 + IME/DPI/许可 H | spike 可整体移除，回到 CLI/dev API | L |
 | W14 | chat presenter/models、bridge adapters | UI cursor/snapshot contract，无新敏感存储 | replay/restart/duplicate tests + 文字体验 H | 回到只读 snapshot/CLI，保留 backend v1 | L |
-| W15 | lifecycle/single-instance/tray/startup | startup setting、crash marker v1 | lifecycle tests + Explorer/lock/logoff VM/H | 禁用 startup/tray；保留统一 shutdown | L |
+| W15 | lifecycle/single-instance/tray/startup | startup setting、crash marker v1 | lifecycle/native current-session/offscreen tests + 单机单用户 Explorer/tray visual H | 禁用 startup/tray；保留统一 shutdown | L |
 | W16 | settings/feature/memory UI | config UI schema、feature actual-state 展示 | UI state tests + memory/privacy comprehension H | UI 回滚不回滚 DB/config；功能默认 disabled | L |
 | W17 | MediaWorker playback/device adapters、Gate A tool | media helper protocol、device identity config | fake device/hang tests + 多输出设备 H | `playback_mode=silent`，文字继续 | XL |
 | W18 | voice input、hotkey、whisper supervisor | STT helper protocol、device/hotkey config | callback/process tests + 多麦克风/热键/锁屏 H | `stt.enabled=false`，键盘继续 | XL |

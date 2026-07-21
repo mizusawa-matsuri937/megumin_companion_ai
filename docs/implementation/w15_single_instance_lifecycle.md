@@ -12,6 +12,9 @@
 > 实现与测试变更 head `de328c402b40086a9f671d10d6c11be3b7c43d94` 的 pull-request run
 > `29793986896` 与 push run `29793985209` 均为 success，八项 macOS/Windows quality 与 installed-wheel
 > 检查全部通过；PR 仍为 Draft，真实 Windows Gate 未完成。
+> 2026-07-21 所有者进一步限定产品为单机、单 Windows 用户、个人私用：多用户、RDP、快速切用户和
+> 跨 session 验证均为范围外，不再作为 W15 人工 Gate。AI 已补齐所有可可靠复现的关闭/托盘断言；人工
+> 只保留实际 Explorer/托盘的单用户视觉与交互确认。
 > 最后更新：2026-07-21（Asia/Shanghai）。
 
 W15 基于已合并的 W14 merge commit
@@ -44,12 +47,12 @@ W20 的 OS 信号或 W25 的安装器。
 ## 自动化证据（提交前工作树）
 
 - `uv run pytest --no-cov tests\\unit\\ui\\test_w15_lifecycle.py tests\\unit\\test_desktop_startup.py`
-  `tests\\unit\\test_desktop_safe_mode.py tests\\unit\\test_config.py::test_repository_config_matches_packaged_default -q`
-  → `14 passed`，覆盖 crash marker、current-user Windows named primitive、同 session 次实例激活、
+  `tests\\unit\\test_desktop_safe_mode.py tests\\unit\\ui\\test_application.py -q`
+  → `22 passed`。除既有 crash marker、current-user Windows named primitive、同 session 次实例激活、
   opaque session marker、关闭到托盘、重复退出、hung backend deadline、固定 tray actions、safe-mode
-  feature 状态、HKCU stale startup path 与配置默认值。
-- `uv run pytest`（包含两项 CI 测试稳定性修复后）→ `1118 passed, 3 skipped in 128.11s`；总覆盖率
-  `90.07%`，满足项目 90% 门槛。
+  feature 状态与 HKCU stale startup path 外，还覆盖关闭期 `Ctrl+Enter`/托盘停止命令阻断、关闭期
+  activation request 丢弃、Explorer 恢复用 tray 重显计时器，以及不触碰真实用户实例/HKCU 的桌面组合测试。
+- `uv run pytest` → `1120 passed, 3 skipped in 144.93s`；总覆盖率 `90.10%`，满足项目 90% 门槛。
 - `uv run mypy app desktop_client tests tools\\installed_wheel_smoke.py tools\\w05_ci_smoke.py` →
   215 source files 无类型问题；`uv run mypy --platform darwin app desktop_client tests`
   `tools\\installed_wheel_smoke.py tools\\w05_ci_smoke.py` 也通过。`uv run ruff check .`、
@@ -76,12 +79,15 @@ W20 的 OS 信号或 W25 的安装器。
 
 ## 残余风险与人工 Gate
 
-- 机器测试不能证明不同用户 SID 的有效访问控制，也无法真实模拟 RDP/快速切用户、Explorer 崩溃恢复、
-  锁屏、注销、关机、通知区行为或冻结包没有控制台窗口。
-- 在 Windows 标准用户 VM 上至少验证：第二实例只唤醒同 session 主窗口；Explorer 重启后托盘恢复；
-  锁屏/注销/关机期间不产生新 turn；托盘退出不留下 backend/worker；冻结包没有控制台窗口。
-- W15 不声称已验证安装器 path change/uninstall；W25 必须调用 `remove_for_uninstall()` 并在真实
-  安装/卸载矩阵中验证。
+- 所有者已确认本产品仅在单机、单 Windows 用户的个人使用范围内验收。不同用户 SID 的有效访问控制、
+  RDP/快速切用户和跨 session 行为均为**范围外**，不是“未通过”的人工 Gate；保留 current-user DACL
+  设计与自动化回归测试，不据此声称跨用户支持。
+- W15 的配置读取、启动项协调、单实例、关闭/取消竞争、hard deadline、safe mode 和受控 backend/worker
+  关闭均已有自动化证据。锁屏/注销/关机 OS 信号由 W20 负责，不把 W20 的未实现范围转交 W15 人工验收。
+- 剩余唯一 W15 人工项：在同一测试账户中确认主窗口关闭后托盘图标仍可见，菜单可显示/隐藏/退出；重启
+  Explorer 后确认图标恢复且“显示窗口”仍有效。这是实际 Windows shell 可见性/交互，不由 headless mock
+  冒充。
+- 冻结包无控制台窗口和真实安装/卸载属于 W24/W25，当前不能写作 W15 人工阻塞或已验证结果。
 
 ## 回滚
 

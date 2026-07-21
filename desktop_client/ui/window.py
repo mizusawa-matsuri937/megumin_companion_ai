@@ -339,6 +339,10 @@ class MainWindow(QMainWindow):
         self._sync_view()
 
     def _submit_message(self) -> None:
+        # Disabling the button is not sufficient: Ctrl+Enter is wired directly
+        # to this method and can otherwise race lifecycle shutdown.
+        if self._closing or self.model.connection_state is not BackendState.ready:
+            return
         if not self.model.capabilities.text_chat:
             self._show_error("feature_not_available")
             return
@@ -376,6 +380,8 @@ class MainWindow(QMainWindow):
         )
 
     def stop_current_turn(self) -> None:
+        if self._closing:
+            return
         turn_id = self.model.active_turn_id
         if turn_id is None or not self.model.capabilities.turn_cancel:
             return

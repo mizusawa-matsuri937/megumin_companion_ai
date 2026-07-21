@@ -286,6 +286,71 @@ def test_lifecycle_hides_window_then_performs_ordered_normal_exit(
     assert window.editor.toPlainText() == ""
 
 
+def test_lifecycle_shutdown_blocks_shortcut_and_tray_stop_commands(
+    qapp: QApplication,
+) -> None:
+    bridge = ApplicationBridge()
+    backend = _FakeBackend()
+    window = MainWindow(bridge, backend)  # type: ignore[arg-type]
+    window.model.connection_state = BackendState.ready
+    window.model.capabilities = BackendCapabilities(text_chat=True, turn_cancel=True)
+    window.model.active_turn_id = "turn-closing"
+    window.editor.setPlainText("must-not-submit-during-shutdown")
+    window._sync_view()  # noqa: SLF001 - assert the shortcut target's UI contract
+    assert window.send_button.isEnabled()
+    assert window.can_stop_current_turn
+
+    window.begin_lifecycle_shutdown()
+
+    # Ctrl+Enter invokes _submit_message directly, and the tray action calls
+    # stop_current_turn directly.  Both must become inert before backend stop.
+    window._submit_message()  # noqa: SLF001 - exercise the shortcut target
+    window.stop_current_turn()
+
+    assert not window.send_button.isEnabled()
+    assert not window.stop_button.isEnabled()
+    assert bridge.command_count == 0
+
+
+def test_lifecycle_ignores_show_requests_after_shutdown_begins(
+    qapp: QApplication,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    bridge = ApplicationBridge()
+    backend = _FakeBackend()
+    window = MainWindow(bridge, backend)  # type: ignore[arg-type]
+    tray = _FakeTray(available=True)
+    marker = _started_marker(tmp_path)
+    primary = PortableCurrentSessionInstance(instance_id="W15Lifecycle", session_key="closing")
+    secondary = PortableCurrentSessionInstance(instance_id="W15Lifecycle", session_key="closing")
+    assert primary.acquire() is InstanceRole.primary
+    assert secondary.acquire() is InstanceRole.secondary
+    lifecycle = DesktopLifecycle(
+        qapp,
+        backend,  # type: ignore[arg-type]
+        window,
+        tray,  # type: ignore[arg-type]
+        primary,
+        marker,
+        safe_mode=False,
+        shutdown_deadline_ms=1_000,
+        hard_exit=lambda _code: pytest.fail("unexpected hard exit"),
+    )
+    activated: list[bool] = []
+    monkeypatch.setattr(window, "show_and_activate", lambda: activated.append(True))
+    assert lifecycle.start()
+    assert secondary.request_show()
+
+    assert lifecycle.request_exit()
+    lifecycle._drain_show_request()  # noqa: SLF001 - verify shutdown activation guard
+
+    assert not activated
+    backend.finish()
+    assert _pump_until(qapp, lambda: lifecycle.state is LifecycleState.stopped)
+    secondary.close()
+
+
 def test_tray_exposes_only_fixed_actions_and_privacy_overview(
     qapp: QApplication,
     monkeypatch: pytest.MonkeyPatch,
@@ -310,6 +375,11 @@ def test_tray_exposes_only_fixed_actions_and_privacy_overview(
     menu = _FakeMenu.latest
     assert tray is not None and tray.show_calls >= 1
     assert menu is not None
+    recovery_timer = controller._recovery_timer  # noqa: SLF001 - test the Explorer recovery path
+    assert recovery_timer is not None
+    initial_show_calls = tray.show_calls
+    recovery_timer.timeout.emit()
+    assert tray.show_calls == initial_show_calls + 1
     assert [action.text for action in menu.actions] == [
         "显示窗口",
         "隐藏窗口",
@@ -334,6 +404,8 @@ def test_tray_exposes_only_fixed_actions_and_privacy_overview(
     controller.prepare_shutdown()
     assert not dialog.isVisible()
     assert not tray.visible
+    recovery_timer.timeout.emit()
+    assert tray.show_calls == initial_show_calls + 1
 
     window.model.connection_state = BackendState.ready
     window.model.capabilities = BackendCapabilities(text_chat=True, turn_cancel=True)
