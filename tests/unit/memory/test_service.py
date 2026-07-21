@@ -355,8 +355,19 @@ class CountingMemoryStore:
         self.calls.append("search")
         raise AssertionError("disabled service touched memory store")
 
-    def list_items(self, *, user_id: str, include_superseded: bool = False) -> list[MemoryItem]:
-        del user_id, include_superseded
+    def get(self, memory_id: str, *, user_id: str | None = None) -> MemoryItem | None:
+        del memory_id, user_id
+        self.calls.append("get")
+        raise AssertionError("unexpected management call")
+
+    def list_items(
+        self,
+        *,
+        user_id: str,
+        include_superseded: bool = False,
+        limit: int | None = None,
+    ) -> list[MemoryItem]:
+        del user_id, include_superseded, limit
         self.calls.append("list_items")
         raise AssertionError("unexpected management call")
 

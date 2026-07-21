@@ -14,6 +14,7 @@ from app.core import TurnService
 from app.core.idempotency import IdempotencyError
 from app.core.turns import EventSubscription, SubscriptionClosedError, TurnAccessError
 from app.main import create_app
+from app.memory.runtime import MemoryRuntime
 from app.schemas import InputMode, PipelineEvent, SessionReset, SessionSnapshotChunk
 from fastapi import FastAPI
 from PySide6.QtCore import QObject, QThread, QTimer, Signal
@@ -29,6 +30,7 @@ from desktop_client.ui.contracts import (
     UserMessageCommand,
     is_stable_reason_code,
 )
+from desktop_client.ui.management import DesktopManagementRuntime
 
 DESKTOP_CLIENT_ID = "desktop_client"
 FORCE_SNAPSHOT_LAST_SEQ = 9_223_372_036_854_775_807
@@ -118,6 +120,7 @@ class TurnServiceBackendRuntime:
         cursor: DesktopSessionCursor,
         *,
         text_chat_available: bool,
+        management: DesktopManagementRuntime | None = None,
         client_id: str = DESKTOP_CLIENT_ID,
     ) -> None:
         if not 1 <= len(client_id) <= 128:
@@ -125,6 +128,7 @@ class TurnServiceBackendRuntime:
         self._service = service
         self._cursor = cursor
         self._text_chat_available = text_chat_available
+        self._management = management
         self._client_id = client_id
 
     async def run(self, context: BackendContext) -> None:
@@ -133,21 +137,29 @@ class TurnServiceBackendRuntime:
             self._serve_commands(context),
             name=f"desktop-commands-{context.generation}",
         )
+        capabilities = BackendCapabilities(
+            text_chat=self._text_chat_available,
+            turn_cancel=self._text_chat_available,
+        )
         context.bridge.publish_event(
             BackendStateEvent(
                 generation=context.generation,
                 state=BackendState.ready,
-                capabilities=BackendCapabilities(
-                    text_chat=self._text_chat_available,
-                    turn_cancel=self._text_chat_available,
-                ),
+                capabilities=capabilities,
             )
         )
+        if self._management is not None:
+            await self._management.publish_initial(context.bridge, capabilities=capabilities)
         try:
             while not context.stop_event.is_set():
                 if context.bridge.take_snapshot_request():
                     self._service.unsubscribe(subscription)
                     subscription = await self._subscribe(force_snapshot=True)
+                    if self._management is not None:
+                        await self._management.publish_initial(
+                            context.bridge,
+                            capabilities=capabilities,
+                        )
                 try:
                     item = await asyncio.wait_for(subscription.get(), timeout=EVENT_POLL_SECONDS)
                 except TimeoutError:
@@ -182,6 +194,20 @@ class TurnServiceBackendRuntime:
                 await self._dispatch_command(context, command)
 
     async def _dispatch_command(self, context: BackendContext, command: BridgeCommand) -> None:
+        management = self._management
+        if management is not None and management.handles(command):
+            await management.dispatch(
+                context.bridge,
+                command,
+                capabilities=BackendCapabilities(
+                    text_chat=self._text_chat_available,
+                    turn_cancel=self._text_chat_available,
+                ),
+            )
+            return
+        if not isinstance(command, (UserMessageCommand, TurnCancelCommand)):
+            self._reject(context, command.command_id, "feature_not_available")
+            return
         if command.session_id != self._cursor.session_id:
             self._reject(context, command.command_id, "identity_forbidden")
             return
@@ -251,10 +277,15 @@ class DesktopChatRuntime:
                 settings = getattr(application.state, "settings", None)
                 if not isinstance(service, TurnService) or not isinstance(settings, Settings):
                     raise RuntimeError("desktop_runtime_unavailable")
+                memory_runtime = getattr(application.state, "memory_runtime", None)
                 runtime = TurnServiceBackendRuntime(
                     service,
                     self._cursor,
                     text_chat_available=_text_chat_available(settings),
+                    management=DesktopManagementRuntime(
+                        settings,
+                        memory_runtime if isinstance(memory_runtime, MemoryRuntime) else None,
+                    ),
                     client_id=self._client_id,
                 )
                 await runtime.run(context)

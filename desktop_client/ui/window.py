@@ -35,10 +35,13 @@ from desktop_client.ui.contracts import (
     BridgeEvent,
     BridgeOverflowEvent,
     CommandRejectedEvent,
+    ManagementRefreshCommand,
     TurnCancelCommand,
     UserMessageCommand,
     is_stable_reason_code,
 )
+from desktop_client.ui.management import ManagementViewModel
+from desktop_client.ui.settings_dialog import SettingsDialog
 
 MAX_VISIBLE_MESSAGES = 200
 MAX_VISIBLE_MESSAGE_CHARS = 100_000
@@ -94,6 +97,8 @@ class DesktopViewModel:
         if isinstance(event, BridgeOverflowEvent):
             self.connection_state = BackendState.degraded
             self._require_snapshot()
+            return
+        if not isinstance(event, PipelineEvent):
             return
         self._apply_pipeline_event(event)
 
@@ -277,6 +282,7 @@ class MainWindow(QMainWindow):
         self._bridge = bridge
         self._backend_host = backend_host
         self.model = DesktopViewModel()
+        self.management_model = ManagementViewModel()
         self._pending_message: UserMessage | None = None
         self._pending_command_ids: set[str] = set()
         self._closing = False
@@ -284,6 +290,7 @@ class MainWindow(QMainWindow):
         self._close_request_handler: Callable[[], None] | None = None
         self._safe_mode = False
         self._lifecycle_notice: str | None = None
+        self._settings_dialog: SettingsDialog | None = None
         self.setWindowTitle("Megumin Companion")
         self.resize(720, 560)
 
@@ -306,7 +313,10 @@ class MainWindow(QMainWindow):
         self.send_button.setAccessibleName("发送消息")
         self.stop_button = QPushButton("停止", central)
         self.stop_button.setAccessibleName("停止当前回复")
+        self.settings_button = QPushButton("设置与隐私", central)
+        self.settings_button.setAccessibleName("设置与隐私")
         button_row.addStretch(1)
+        button_row.addWidget(self.settings_button)
         button_row.addWidget(self.stop_button)
         button_row.addWidget(self.send_button)
         status_row = QHBoxLayout()
@@ -328,11 +338,13 @@ class MainWindow(QMainWindow):
         QWidget.setTabOrder(self.message_view, self.editor)
         QWidget.setTabOrder(self.editor, self.stop_button)
         QWidget.setTabOrder(self.stop_button, self.send_button)
+        QWidget.setTabOrder(self.send_button, self.settings_button)
 
         self._send_shortcut = QShortcut(QKeySequence("Ctrl+Return"), self)
         self._send_shortcut.activated.connect(self._submit_message)
         self.send_button.clicked.connect(self._submit_message)
         self.stop_button.clicked.connect(self._stop_turn)
+        self.settings_button.clicked.connect(self._open_settings)
         self._bridge.events_available.connect(self._drain_events)
         self._bridge.command_rejected.connect(self._show_error)
         self._backend_host.stopped.connect(self._backend_stopped)
@@ -426,10 +438,32 @@ class MainWindow(QMainWindow):
     def _drain_events(self) -> None:
         for event in self._bridge.drain_events():
             self.model.apply_event(event)
+            self.management_model.apply_event(event)
             self._settle_pending_message(event)
         if self.model.take_snapshot_request():
             self._bridge.request_snapshot()
         self._sync_view()
+        if self._settings_dialog is not None:
+            self._settings_dialog.sync_from_model()
+
+    def _open_settings(self) -> None:
+        if self._closing or self.model.connection_state is not BackendState.ready:
+            return
+        dialog = self._settings_dialog
+        if dialog is None:
+            dialog = SettingsDialog(
+                self.management_model,
+                self._bridge.submit_command,
+                self,
+            )
+            self._settings_dialog = dialog
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+        # A dialog may be opened after startup events were drained or after a
+        # backend generation replacement.  Refresh through the same bounded
+        # in-process command path rather than reading files on the Qt thread.
+        self._bridge.submit_command(ManagementRefreshCommand())
 
     def _settle_pending_message(self, event: BridgeEvent) -> None:
         if isinstance(event, CommandRejectedEvent):
@@ -482,6 +516,9 @@ class MainWindow(QMainWindow):
         self.feature_status.setAccessibleName(feature_status)
         self.send_button.setEnabled(chat_ready)
         self.stop_button.setEnabled(self.can_stop_current_turn)
+        self.settings_button.setEnabled(
+            not self._closing and self.model.connection_state is BackendState.ready
+        )
         if self._lifecycle_notice is not None:
             lifecycle_status = self._lifecycle_notice
         elif self._safe_mode:
@@ -521,11 +558,16 @@ class MainWindow(QMainWindow):
         self._wipe_sensitive_state()
 
     def _wipe_sensitive_state(self) -> None:
+        if self._settings_dialog is not None:
+            self._settings_dialog.clear_sensitive()
+            self._settings_dialog.close()
+            self._settings_dialog = None
         self.editor.clear()
         self.message_view.clear()
         self._pending_message = None
         self._pending_command_ids.clear()
         self.model.clear_sensitive()
+        self.management_model.clear_sensitive()
         self._bridge.clear_sensitive()
 
 

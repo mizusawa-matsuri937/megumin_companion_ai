@@ -9,6 +9,8 @@ from app.config.settings import (
 )
 from app.config.user_settings import (
     UserSettingsWriteResult,
+    patch_user_settings,
+    read_user_settings,
     upgrade_user_settings,
     write_user_settings,
 )
@@ -22,6 +24,8 @@ __all__ = [
     "Settings",
     "UserSettingsWriteResult",
     "load_settings",
+    "patch_user_settings",
+    "read_user_settings",
     "upgrade_user_settings",
     "write_user_settings",
 ]
