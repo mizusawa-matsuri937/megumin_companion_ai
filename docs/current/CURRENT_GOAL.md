@@ -26,7 +26,10 @@
   `希望停用 / 已停用 / ——`。本地 feature 元数据也未变化，证明请求没有送入后端。根因已复现：本机 PySide6
   原生 `QMessageBox.question()` 返回底层 `int`，它与 `StandardButton.Yes` 值相等但不是同一对象；旧
   `_confirm()` 使用 `is`，因而把明确的“是”静默当作取消。当前修复改用值比较，并加入该返回形态的回归测试；
-  这个修复提交仍须通过新的 exact-head CI。
+  修复提交 [`7175588`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/7175588ec101398b0f8ef7201f10d82c79b4abb9)
+  的 [push CI #29820123292](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29820123292) 与
+  [pull-request CI #29820126134](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29820126134)
+  均为 `success`。这只是该修复提交的历史证据，任何随后 head 仍须独立核验。
 - W16 依赖 W10 与 W15，沿用 W03 的当前用户 DPAPI/受管路径边界、W10 的 feature 状态机和逻辑删除、
   W13/W14 的 Qt 主线程与有界 BackendThread bridge。它不启动、暴露或复用开发 HTTP API。
 - 产品范围仍是单机、单 Windows 用户、个人私用。多用户、跨用户 DACL 有效访问、RDP、快速切用户和跨
