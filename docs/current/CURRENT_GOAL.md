@@ -1,14 +1,18 @@
 # 当前产品目标
 
 > 最后核验：2026-07-21（Asia/Shanghai）。当前活跃任务是 **W16：设置、feature 与记忆管理最小 UI**，
-> 开发分支为 `codex/w16-settings-feature-memory-ui`。本地实现和自动化质量门已完成；尚无 W16 commit、
-> 推送、Draft PR 或远端 CI 结果，不能写作已交付。
+> 开发分支为 `codex/w16-settings-feature-memory-ui`。初始实现提交已推送并已创建 Draft PR；PR 的当前
+> exact head 仍须完成远端 CI，不能写作已交付。
 
 ## 已确认事实
 
 - 所有者已明确授权开始 W16；这覆盖本文件旧版本中“尚未授权 W16”的历史状态。
 - W15 已由 PR #27 合并到 `agent/windows-development-baseline`。W16 从其后当前基线
-  `87801bc` 开始，开始前工作树干净；当前未提交改动均为预期 W16 改动。
+  `87801bc` 开始，开始前工作树干净。
+- W16 初始实现提交 [`0dfad2f`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/0dfad2f6039bc30c3273a004586fb0484f01c0d7)
+  已推送到该开发分支；[Draft PR #28](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/28) 已打开，
+  base 为 `agent/windows-development-baseline`。本记录提交前，初始代码 head 的 cross-platform quality gate
+  仍在运行；任何后续文档提交都会成为新的 PR head，必须重新以该精确 head 核验。
 - W16 依赖 W10 与 W15，沿用 W03 的当前用户 DPAPI/受管路径边界、W10 的 feature 状态机和逻辑删除、
   W13/W14 的 Qt 主线程与有界 BackendThread bridge。它不启动、暴露或复用开发 HTTP API。
 - 产品范围仍是单机、单 Windows 用户、个人私用。多用户、跨用户 DACL 有效访问、RDP、快速切用户和跨
@@ -47,8 +51,9 @@
 
 ## 未完成项与真实人工 Gate
 
-- 本地差异审阅和自动化质量门已完成；下一步是仅暂存 W16 预期文件、创建聚焦提交、推送、Draft PR 和
-  exact-head CI。任何后续客观失败必须直接记录和修复，不能转交人工确认。
+- W16 已完成聚焦提交、推送和 Draft PR；当前阻塞仅为 PR 当前 exact head 的远端 CI。CI 完成后必须记录
+  实际 run/head 证据、推送该文档证据更新，并再次核验新的 exact head。任何后续客观失败必须直接记录和
+  修复，不能转交人工确认。
 - 仅保留 AI 无法忠实复现的实际 Windows Qt 理解性审阅：用户是否正确理解历史、记忆、视觉、云端和
   删除语义。该 Gate 尚未执行，不能标记为通过。
 - 真实音频设备、麦克风、VTS/GPT-SoVITS 服务与资源预检属于 W17–W19；真实指定窗口捕获/cloud vision

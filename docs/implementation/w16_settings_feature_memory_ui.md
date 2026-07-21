@@ -2,8 +2,9 @@
 
 ## 状态与范围
 
-> 状态：本地实现与自动化质量门已完成，尚未提交、推送或创建 Draft PR。最后本地核验：2026-07-21
-> （Asia/Shanghai）。
+> 状态：初始实现提交 [`0dfad2f`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/0dfad2f6039bc30c3273a004586fb0484f01c0d7)
+> 已推送，[Draft PR #28](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/28) 已打开；当前
+> exact head 的远端 CI 尚在进行，不能报告自动交付完成。最后本地核验：2026-07-21（Asia/Shanghai）。
 > 本记录只描述当前工作树已实现和已验证的部分，不把计划、headless UI 或 fake DPAPI 当作真实 Windows
 > 理解性/设备验收。
 
@@ -46,8 +47,9 @@ W16 在 W10/W15 已合并基线上实现最小桌面管理面：secret-free 设�
 
 ## 未验证项、风险与人工 Gate
 
-- 本地自动化已完成；聚焦提交、推送、Draft PR 和 exact-head CI 尚未完成，因此当前不能报告 W16 自动
-  交付完成。
+- 聚焦提交、推送和 Draft PR 已完成。文档提交前，初始代码 head `0dfad2f` 的 cross-platform quality
+  gate 仍在运行；本文件的任何后续证据提交都会成为新的 PR head，必须重新完成 exact-head CI，才能报告
+  W16 自动交付完成。
 - W16 的唯一候选人工项是实际 Windows Qt 中对历史、记忆、视觉、云端和删除语义的理解性审阅。它尚未执行。
   配置写入、状态机、取消/关闭竞争和可合成故障必须先由自动化证明，不能改列人工 Gate。
 - 真实 VTS、GPT-SoVITS、音频输入/输出、屏幕捕获、cloud vision、冻结包和安装器均为后续 W 任务范围；
