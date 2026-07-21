@@ -8,6 +8,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Literal, TypeAlias
 
+from app.media.types import MAX_OUTPUT_DEVICES, AudioOutputDevice
 from app.memory.models import MemoryItem, MemorySensitivity, MemoryStatus, MemoryType
 from app.schemas import (
     FeatureName,
@@ -24,6 +25,7 @@ from app.schemas.messages import prefixed_id
 BRIDGE_PROTOCOL_VERSION: Literal[1] = 1
 _REASON_CODE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _OPAQUE_ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+_AUDIO_OUTPUT_DEVICE_ID = re.compile(r"^audio_[0-9a-f]{32}$")
 
 MAX_MANAGEMENT_LIST_ITEMS = 20
 MAX_MANAGEMENT_PREVIEW_CHARS = 512
@@ -86,7 +88,7 @@ class TurnCancelCommand:
 
 @dataclass(frozen=True, slots=True)
 class DesktopSettingsForm:
-    """The small, secret-free subset of settings editable by the W16 desktop UI."""
+    """The small, secret-free subset of settings editable by the desktop UI."""
 
     llm_provider: str
     llm_base_url: str
@@ -102,6 +104,8 @@ class DesktopSettingsForm:
     stt_model_path: str
     stt_device: str
     startup_enabled: bool
+    output_device_id: str = ""
+    system_playback_enabled: bool = False
 
     def __post_init__(self) -> None:
         for field_name, value, maximum, allow_empty in (
@@ -116,6 +120,7 @@ class DesktopSettingsForm:
             ("stt_executable", self.stt_executable, MAX_MANAGEMENT_PATH_CHARS, False),
             ("stt_model_path", self.stt_model_path, MAX_MANAGEMENT_PATH_CHARS, False),
             ("stt_device", self.stt_device, 256, True),
+            ("output_device_id", self.output_device_id, 40, True),
         ):
             _validate_bounded_text(
                 value,
@@ -123,6 +128,12 @@ class DesktopSettingsForm:
                 maximum=maximum,
                 allow_empty=allow_empty,
             )
+        if self.output_device_id and not _AUDIO_OUTPUT_DEVICE_ID.fullmatch(
+            self.output_device_id.strip()
+        ):
+            raise ValueError("output_device_id is outside the bridge bound")
+        if not isinstance(self.system_playback_enabled, bool):
+            raise ValueError("system_playback_enabled is outside the bridge bound")
 
 
 @dataclass(frozen=True, slots=True)
@@ -151,6 +162,18 @@ class SettingsSaveCommand:
     command_id: str = field(default_factory=lambda: prefixed_id("cmd"))
     protocol_version: Literal[1] = field(default=BRIDGE_PROTOCOL_VERSION, init=False)
     type: Literal["settings.save"] = field(default="settings.save", init=False)
+
+    def __post_init__(self) -> None:
+        _validate_command_id(self.command_id)
+
+
+@dataclass(frozen=True, slots=True)
+class AudioOutputDevicesCommand:
+    """Request a bounded MediaWorker output-device snapshot."""
+
+    command_id: str = field(default_factory=lambda: prefixed_id("cmd"))
+    protocol_version: Literal[1] = field(default=BRIDGE_PROTOCOL_VERSION, init=False)
+    type: Literal["audio.output_devices"] = field(default="audio.output_devices", init=False)
 
     def __post_init__(self) -> None:
         _validate_command_id(self.command_id)
@@ -311,6 +334,7 @@ class ManagementDebugCommand:
 ManagementCommand: TypeAlias = (
     ManagementRefreshCommand
     | SettingsSaveCommand
+    | AudioOutputDevicesCommand
     | SecretStoreCommand
     | SecretRevokeCommand
     | FeatureSetCommand
@@ -399,6 +423,27 @@ class SettingsSnapshotEvent:
     type: Literal["settings.snapshot"] = field(default="settings.snapshot", init=False)
 
     def __post_init__(self) -> None:
+        if self.command_id is not None:
+            _validate_command_id(self.command_id)
+
+
+@dataclass(frozen=True, slots=True)
+class AudioOutputDevicesEvent:
+    """Bounded, body-free local-device labels for the settings selector."""
+
+    devices: tuple[AudioOutputDevice, ...]
+    truncated: bool = False
+    reason_code: str | None = None
+    command_id: str | None = None
+    emitted_at: datetime = field(default_factory=utc_now)
+    protocol_version: Literal[1] = field(default=BRIDGE_PROTOCOL_VERSION, init=False)
+    type: Literal["audio.output_devices"] = field(default="audio.output_devices", init=False)
+
+    def __post_init__(self) -> None:
+        if len(self.devices) > MAX_OUTPUT_DEVICES or not isinstance(self.truncated, bool):
+            raise ValueError("audio output device batch is outside the bridge bound")
+        if self.reason_code is not None and not is_stable_reason_code(self.reason_code):
+            raise ValueError("audio output device reason must be a stable code")
         if self.command_id is not None:
             _validate_command_id(self.command_id)
 
@@ -577,6 +622,7 @@ BridgeEvent: TypeAlias = (
     | CommandRejectedEvent
     | BridgeOverflowEvent
     | SettingsSnapshotEvent
+    | AudioOutputDevicesEvent
     | FeatureStatesEvent
     | MemoryListEvent
     | MemoryDetailEvent
@@ -604,6 +650,7 @@ def is_terminal_event(event: BridgeEvent) -> bool:
         event,
         (
             SettingsSnapshotEvent,
+            AudioOutputDevicesEvent,
             FeatureStatesEvent,
             MemoryListEvent,
             MemoryDetailEvent,

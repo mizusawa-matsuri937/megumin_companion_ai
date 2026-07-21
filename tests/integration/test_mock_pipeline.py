@@ -10,6 +10,7 @@ from app.clients.llm import MockLLMProvider
 from app.clients.tts import MockTTSProvider
 from app.core import CancellationToken, TurnService
 from app.pipelines import DialoguePipeline
+from app.pipelines.audio_player import AudioPlaybackResult
 from app.schemas import (
     AudioResult,
     ChatCompletion,
@@ -43,10 +44,11 @@ class RecordingAudioPlayer:
         self.stop_count = 0
         self.close_calls = 0
 
-    async def play(self, result: AudioResult, token: CancellationToken) -> None:
+    async def play(self, result: AudioResult, token: CancellationToken) -> AudioPlaybackResult:
         token.raise_if_cancelled()
         assert result.audio_path is not None
         self.played_indices.append(int(result.audio_path.name.split("-", 1)[0]))
+        return AudioPlaybackResult(played=True)
 
     async def stop(self, *, immediate: bool = False) -> None:
         self.stop_count += 1

@@ -20,8 +20,8 @@ from app.config.settings import (
     TTSConfig,
     VTSConfig,
 )
+from app.media import MediaWorkerAudioPlayer
 from app.paths import AppPaths
-from app.pipelines.audio_player import SystemAudioPlayer
 from app.prompts import EmotionPromptContextBuilder, HistoryMessage, PromptContextSnapshot
 from app.schemas import ChatRole, ExternalContextBlock, UserMessage
 from app.schemas.ai import ContextOrigin, ContextTrust
@@ -63,7 +63,7 @@ def test_real_provider_requires_model() -> None:
         build_dialogue_pipeline(Settings(llm=LLMConfig(provider="openai", model="   ")))
 
 
-def test_real_provider_managed_cache_and_system_player(tmp_path: Path) -> None:
+def test_real_provider_managed_cache_and_media_worker_player(tmp_path: Path) -> None:
     settings = Settings(
         llm=LLMConfig(
             provider="compatible",
@@ -80,7 +80,7 @@ def test_real_provider_managed_cache_and_system_player(tmp_path: Path) -> None:
     pipeline = build_dialogue_pipeline(settings)
 
     assert pipeline is not None
-    assert isinstance(pipeline._audio_player, SystemAudioPlayer)
+    assert isinstance(pipeline._audio_player, MediaWorkerAudioPlayer)
     assert isinstance(pipeline._llm, OpenAICompatibleLLMProvider)
     assert pipeline._llm._default_temperature == 0.65
     assert pipeline._llm._default_max_tokens == 777

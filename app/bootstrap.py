@@ -17,8 +17,9 @@ from app.clients.vts import (
 )
 from app.config import ConfigurationError, Settings
 from app.emotion import EmotionEngine, EmotionSegmentDecorator, ExpressionCooldown, SystemClock
+from app.media import create_media_worker_audio_player
 from app.pipelines import DialoguePipeline
-from app.pipelines.audio_player import AudioPlayer, SilentAudioPlayer, SystemAudioPlayer
+from app.pipelines.audio_player import AudioPlayer, SilentAudioPlayer
 from app.prompts import (
     EmotionPromptContextBuilder,
     PromptBudget,
@@ -79,7 +80,7 @@ def build_dialogue_pipeline(
     tts = _build_tts(settings, temp_registry=temp_registry)
     player: AudioPlayer
     if settings.pipeline.playback_mode == "system":
-        player = SystemAudioPlayer()
+        player = create_media_worker_audio_player(settings)
     else:
         player = SilentAudioPlayer()
     clock = SystemClock()

@@ -25,6 +25,16 @@ MeguminCompanion.exe
 - worker 是同一安装包内的受监管实现细节，不是网络服务。
 - FastAPI 不作为生产桌面与后端之间的通信层。
 
+## W17 实施校准（2026-07-22）
+
+- 系统播放已按本决策落在专用 `MediaWorker`：父侧 `app.media`、bootstrap 和 BackendThread 不导入或调用
+  PortAudio / `sounddevice`，native binding 只位于 helper-side `app/media/worker.py`。
+- 父侧经既有匿名 pipe / typed JSON 提交 `media.devices`、`media.play`、`media.release`。播放请求只携带
+  W12 批准根下的 symbolic `ResourceReference`，不携带任意路径、WAV body、PCM 或 PortAudio index。
+- Qt 设置界面的设备枚举是显式用户命令，临时 worker 完成枚举即关闭；普通设置快照不会隐式接触声卡。
+- 这是当前工作树和自动化 fake 的实现状态，不代表真实内置、USB 或蓝牙设备体验已验收；这些仍属于 W17
+  人工设备 Gate。
+
 ## 备选与取舍
 
 - **可行备选：** backend 也放入独立 OS 进程并通过带 DACL 的 pipe 通信。隔离更强，但增加状态恢复、部署和调试复杂度，首版不采用。

@@ -290,6 +290,10 @@ class PipelineConfig(StrictModel):
     mock_audio_volume: float = Field(default=0.12, ge=0.0, le=1.0)
     audio_cache_path: Path = Path("data/cache/audio/mock")
     playback_mode: Literal["silent", "system"] = "silent"
+    # PortAudio indexes are intentionally never persisted: the MediaWorker
+    # stores a bounded, index-independent identity and falls back to default
+    # output when it is unavailable.
+    output_device_id: str | None = Field(default=None, pattern=r"^audio_[0-9a-f]{32}$")
 
     @model_validator(mode="after")
     def validate_segment_lengths(self) -> PipelineConfig:

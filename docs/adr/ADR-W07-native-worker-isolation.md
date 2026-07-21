@@ -18,6 +18,17 @@
 - helper protocol 不接受任意路径、reparse-point escape、Python object 或未批准 metadata；文件通过批准根或继承 handle 访问。
 - worker stderr 使用 1 MiB 无内容诊断 ring；禁止记录 transcript、OCR、窗口标题、图像或用户路径。
 
+## W17 MediaWorker 落地（2026-07-22）
+
+- `media.play` 只接受一个 W12 已授权的 WAV descriptor。父侧把 TTS asset 转为批准根下的相对
+  `ResourceReference`；helper policy 负责打开、最终路径复核和 terminal close，handler 只从 descriptor
+  复制私有 fd 后读取受限 PCM WAV。
+- 设备枚举和播放结果只返回有界 device identity / clean label / stable error code。wire 上不传绝对路径、
+  PCM、WAV 内容或 native device index；重复 stable ID 不能被选择，避免碰撞时误播到错误设备。
+- cancellation 时 handler abort/drop stream；若 native write 不响应，不能把 Python task cancellation 误称为
+  native 停止，仍由 `WorkerSupervisor` 的 deadline / Job Object 终止 helper。自动化覆盖该控制流，真实驱动
+  卡死与设备体验仍须人工 Gate。
+
 ## 云视觉边界
 
 项目所有者允许云视觉，但仅能在指定窗口捕获、本地 Guard、全 OCR bbox 遮挡和最终隐私检查全部成功后，由用户显式启用的路径上传脱敏图像。任一检查未知、错误、超时或 worker 重启都必须跳过上传；不得回退到全屏截图。实际启用仍受 W21/W22 隐私 Gate 约束。

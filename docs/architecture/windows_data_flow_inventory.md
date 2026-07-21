@@ -39,7 +39,7 @@ flowchart LR
 | API key/VTS token | Secret store | provider adapter 只在使用时读取 | DPAPI current-user 密文文件 | 仅发给对应 endpoint/协议 | replace/revoke/reset；普通卸载默认删除 | 不记录值、密文、header 或路径 |
 | 用户设置 | Config owner | UI command → config service | `config/settings.yaml`，带 schema version | 无，除非对应 provider 请求需要最小配置 | 升级迁移/卸载选择 | 只记 schema/version/字段类别 |
 | 日志/健康/诊断 | 单 writer/exporter | allowlist event | `logs`，10 MiB × 5 且最多 14 天 | 用户显式导出脱敏诊断包 | rotation + retention | 禁止正文、截图、OCR、音频、secret、完整路径 |
-| TTS 临时音频 | TTS owner/MediaWorker | handle/批准路径交给播放 worker | `temp/<run-id>`；持久 cache 默认关闭 | 本地播放 | 取消/消费后删除；总量 256 MiB 上限与 scavenger | 只记 job id、bytes、duration |
+| TTS 临时 WAV | TTS owner；播放期间由 MediaWorker 独占消费 | 父侧只提交批准根下的 `ResourceReference`；helper 打开/复核 descriptor，wire 不含绝对路径、PCM、WAV body 或 native device index | `temp/audio`；可选 `cache/audio` 默认关闭 | 本地 MediaWorker playback | 取消/消费后 release；W12 terminal cleanup 与 scavenger；受 W07 在途音频预算约束 | 只记 job id、bytes、duration、稳定 error/notice code |
 | 模型/角色/参考音频 | 用户/外部路径 | worker/provider 读取批准路径 | 安装包外；只记录路径和 fingerprint | 只发给用户明确配置的本地/远端服务 | 用户管理；卸载不复制或删除原资产 | 不记录完整路径或内容 |
 
 ## 云视觉序列

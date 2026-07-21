@@ -9,7 +9,7 @@ from app.clients.tts import MockTTSProvider
 from app.core import CancellationToken
 from app.limits import LimitsConfig
 from app.pipelines import DialoguePipeline
-from app.pipelines.audio_player import SilentAudioPlayer
+from app.pipelines.audio_player import AudioPlaybackResult, SilentAudioPlayer
 from app.pipelines.dialogue import PipelineResourceReport
 from app.schemas import (
     AudioResult,
@@ -70,11 +70,12 @@ class _BlockedAudioPlayer:
         self.started = asyncio.Event()
         self.stop_calls = 0
 
-    async def play(self, result: AudioResult, token: CancellationToken) -> None:
+    async def play(self, result: AudioResult, token: CancellationToken) -> AudioPlaybackResult:
         del result
         token.raise_if_cancelled()
         self.started.set()
         await asyncio.Event().wait()
+        raise AssertionError("blocked audio player unexpectedly resumed")
 
     async def stop(self, *, immediate: bool = False) -> None:
         del immediate

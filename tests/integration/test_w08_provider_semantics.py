@@ -27,7 +27,7 @@ from app.diagnostics import DiagnosticExporter
 from app.memory.runtime import MemoryRuntime, create_memory_runtime
 from app.paths import AppPaths
 from app.pipelines import DialoguePipeline
-from app.pipelines.audio_player import SilentAudioPlayer
+from app.pipelines.audio_player import AudioPlaybackResult, SilentAudioPlayer
 from app.schemas import AudioResult, ChatCompletion, ChatRequest, InputMode, TurnState, UserMessage
 
 
@@ -67,9 +67,10 @@ class _RecordingAudioPlayer:
         self._playback_started = playback_started
         self.play_calls = 0
 
-    async def play(self, _result: AudioResult, _token: CancellationToken) -> None:
+    async def play(self, _result: AudioResult, _token: CancellationToken) -> AudioPlaybackResult:
         self.play_calls += 1
         self._playback_started.set()
+        return AudioPlaybackResult(played=True)
 
     async def stop(self, *, immediate: bool = True) -> None:
         del immediate

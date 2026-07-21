@@ -145,8 +145,10 @@ pipeline:
   mock_audio_duration_ms: 180
   mock_audio_volume: 0.12
   audio_cache_path: mock
-  # 默认静默模拟播放，避免后端启动后意外发声；Gate A 人工工具显式使用系统播放器。
+  # 默认静默，避免后端启动后意外发声；Gate A 人工工具显式使用受监管的 MediaWorker。
   playback_mode: silent
+  # W17：仅保存 MediaWorker 枚举产生的稳定设备标识；null 表示系统默认输出。
+  output_device_id: null
 
 # W07 集中硬上限；provider/功能配置只允许低于这些值，不能绕过。
 limits:
