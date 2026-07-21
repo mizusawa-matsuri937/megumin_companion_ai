@@ -22,6 +22,11 @@
   的 [push CI #29810283413](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29810283413) 与
   [pull-request CI #29810286263](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29810286263)
   也均为 `success`；每个 run 的 macOS/Windows quality 与 installed-wheel 均通过。
+- 2026-07-21 的实际 Windows Qt 审阅发现：用户在 feature 启用确认框选择“是”后，界面仍显示
+  `希望停用 / 已停用 / ——`。本地 feature 元数据也未变化，证明请求没有送入后端。根因已复现：本机 PySide6
+  原生 `QMessageBox.question()` 返回底层 `int`，它与 `StandardButton.Yes` 值相等但不是同一对象；旧
+  `_confirm()` 使用 `is`，因而把明确的“是”静默当作取消。当前修复改用值比较，并加入该返回形态的回归测试；
+  这个修复提交仍须通过新的 exact-head CI。
 - W16 依赖 W10 与 W15，沿用 W03 的当前用户 DPAPI/受管路径边界、W10 的 feature 状态机和逻辑删除、
   W13/W14 的 Qt 主线程与有界 BackendThread bridge。它不启动、暴露或复用开发 HTTP API。
 - 产品范围仍是单机、单 Windows 用户、个人私用。多用户、跨用户 DACL 有效访问、RDP、快速切用户和跨
@@ -48,7 +53,7 @@
   真实 LLM 保存前要求已存 DPAPI 密钥和模型名；GPT-SoVITS 保存前要求已有有效 preset，真实服务预检仍由
   W19 负责。
 - feature 过渡开始时会先发布完整 desired/actual 快照，随后等待状态机 barrier 并发布最终/failed 状态。
-- `uv run pytest` → `1133 passed, 3 skipped in 177.36s`；总覆盖率 `90.37%`，达到项目 90% 门槛。三个 skip
+- `uv run pytest` → `1134 passed, 3 skipped in 161.77s`；总覆盖率 `90.37%`，达到项目 90% 门槛。三个 skip
   分别是未安装的可选 RapidOCR/Pillow 能力与当前用户不能创建目录符号链接，均由测试框架明确标记，非 W16
   失败。
 - `uv run mypy app desktop_client tests tools\\installed_wheel_smoke.py tools\\w05_ci_smoke.py` 和
@@ -57,6 +62,9 @@
 - `uv run ruff check .`、`uv run ruff format --check .`、`uv lock --check` 和 `git diff --check` 均通过。
 - 聚焦测试覆盖了 secret 不回显、用户层写入不吸收开发覆盖、real-provider/preset 保存防线、过渡快照先于
   强屏障最终状态、memory CRUD/export、错误码不暴露原始异常、二次确认、可访问的 Qt 表面和最终 wipe。
+- 新增 `test_w16_feature_enable_submits_when_pyside_returns_integer_yes`，并以
+  `uv run pytest --no-cov tests\\unit\\ui\\test_w16_management.py -q` 验证 `13 passed in 2.71s`；它锁定了
+  PySide6 返回 `int(Yes)` 时必须提交而非取消的行为。
 
 ## 未完成项与真实人工 Gate
 

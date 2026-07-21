@@ -79,7 +79,7 @@ from desktop_client.ui.management import (
 from desktop_client.ui.settings_dialog import SettingsDialog
 from desktop_client.ui.window import MainWindow
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication, QFileDialog
+from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox
 
 
 class _Secrets(DesktopSecretStore):
@@ -1284,6 +1284,38 @@ def test_w16_feature_enable_requires_a_second_confirmation(qapp: QApplication) -
     assert dialog._feature_buttons[FeatureName.cloud_vision].isEnabled()
 
     dialog._toggle_feature(FeatureName.cloud_vision)
+    assert len(submitted) == 1
+    command = submitted[0]
+    assert isinstance(command, FeatureSetCommand)
+    assert command.feature is FeatureName.cloud_vision
+    assert command.enabled is True
+    dialog.close()
+    qapp.processEvents()
+
+
+def test_w16_feature_enable_submits_when_pyside_returns_integer_yes(
+    qapp: QApplication, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    model = ManagementViewModel()
+    model.apply_event(
+        FeatureStatesEvent(states=(FeatureState(name=FeatureName.cloud_vision, enabled=False),))
+    )
+    submitted: list[ManagementCommand] = []
+
+    def submit(command: ManagementCommand) -> bool:
+        submitted.append(command)
+        return True
+
+    dialog = SettingsDialog(model, submit)
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        staticmethod(lambda *_args, **_kwargs: int(QMessageBox.StandardButton.Yes)),
+    )
+
+    dialog.sync_from_model()
+    dialog._toggle_feature(FeatureName.cloud_vision)
+
     assert len(submitted) == 1
     command = submitted[0]
     assert isinstance(command, FeatureSetCommand)

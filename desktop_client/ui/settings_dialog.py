@@ -565,16 +565,17 @@ class SettingsDialog(QDialog):
         self._submit(MemoryExportCommand(destination=destination, overwrite=True))
 
     def _confirm(self, title: str, message: str) -> bool:
-        return (
-            QMessageBox.question(
-                self,
-                title,
-                message,
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No,
-            )
-            is QMessageBox.StandardButton.Yes
+        response = QMessageBox.question(
+            self,
+            title,
+            message,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
         )
+        # PySide6's native dialog path may return the underlying integer rather
+        # than the enum singleton, so identity comparison would turn an explicit
+        # Yes click into a silent cancellation.
+        return response == QMessageBox.StandardButton.Yes
 
     def sync_from_model(self) -> None:
         self._sync_settings()

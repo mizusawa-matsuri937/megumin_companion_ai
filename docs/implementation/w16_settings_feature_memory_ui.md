@@ -5,7 +5,8 @@
 > 状态：初始实现提交 [`0dfad2f`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/0dfad2f6039bc30c3273a004586fb0484f01c0d7)
 > 已推送，[Draft PR #28](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/28) 已打开；历史 head
 > `c1cce43` 与 `cd56622` 的远端 CI 已全绿。自动交付只由 PR 当前 exact head 的必需检查全部 `success`
-> 判定，任何新提交均不继承旧 head 结果。最后本地核验：2026-07-21（Asia/Shanghai）。
+> 判定，任何新提交均不继承旧 head 结果。最后本地核验：2026-07-21（Asia/Shanghai）；本次修复仍待新的
+> exact-head CI。
 > 本记录只描述当前工作树已实现和已验证的部分，不把计划、headless UI 或 fake DPAPI 当作真实 Windows
 > 理解性/设备验收。
 
@@ -30,12 +31,15 @@ W16 在 W10/W15 已合并基线上实现最小桌面管理面：secret-free 设�
   完成。删除/清空结果显式带 `cleanup_pending`，不承诺 SSD、备份或快照物理擦除。
 - 启用任何 feature，以及删除、清空、导出、编辑、secret revoke、记忆建议批准/拒绝都要求第二次确认。视觉
   文案固定说明指定窗口范围、cloud vision 独立开关与可能云端出口，并明确 W16 未接入真实截图/云上传。
+- 2026-07-21 实际 Windows Qt 审阅发现，PySide6 原生确认框会返回底层 `int`；旧 `_confirm()` 用枚举对象
+  身份比较，把用户明确选择的“是”当作取消，feature 元数据因而完全不变。该客观失败已由本机复现，并将比较
+  改为值比较；相同确认辅助方法覆盖的删除、清空、导出、编辑和 secret 操作也一并获得修复。
 - Debug 页只显示版本、capability、稳定错误码和 bridge 队列计数/容量；不显示消息、记忆、路径、原始异常或
   secret 内容。
 
 ## 自动化证据（本地当前工作树）
 
-- `uv run pytest` → `1133 passed, 3 skipped in 177.36s`，总覆盖率 `90.37%`（项目要求为 90%）。三个 skip
+- `uv run pytest` → `1134 passed, 3 skipped in 161.77s`，总覆盖率 `90.37%`（项目要求为 90%）。三个 skip
   是未安装的可选 RapidOCR/Pillow 能力与当前用户不能创建目录符号链接，均为环境能力缺口，不是 W16
   断言失败。
 - `uv run mypy app desktop_client tests tools\\installed_wheel_smoke.py tools\\w05_ci_smoke.py` 和
@@ -53,6 +57,8 @@ W16 在 W10/W15 已合并基线上实现最小桌面管理面：secret-free 设�
 - W16 的聚焦覆盖包括 secret 不回显、用户层写入不吸收开发覆盖、真实 provider/preset 保存防线、过渡快照
   先于强屏障最终状态、memory CRUD/export、稳定错误码不回显后端异常、二次确认、可访问 Qt 表面、空态/边界
   输入和最终敏感状态 wipe；同时将既有 `CountingMemoryStore` 测试替身同步到 W16 新增的 get/limit 协议。
+- 新增 `test_w16_feature_enable_submits_when_pyside_returns_integer_yes`，以真实运行时相同的 `int(Yes)` 返回形态覆盖该修复；
+  `uv run pytest --no-cov tests\\unit\\ui\\test_w16_management.py -q` 为 `13 passed in 2.71s`。
 
 ## 未验证项、风险与人工 Gate
 
