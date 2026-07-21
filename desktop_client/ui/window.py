@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from app.schemas import (
@@ -280,6 +281,9 @@ class MainWindow(QMainWindow):
         self._pending_command_ids: set[str] = set()
         self._closing = False
         self._allow_close = False
+        self._close_request_handler: Callable[[], None] | None = None
+        self._safe_mode = False
+        self._lifecycle_notice: str | None = None
         self.setWindowTitle("Megumin Companion")
         self.resize(720, 560)
 
@@ -310,9 +314,12 @@ class MainWindow(QMainWindow):
         self.connection_status.setAccessibleName("后端：已停止")
         self.feature_status = QLabel("文字聊天：待 W14 接入", central)
         self.feature_status.setAccessibleName("文字聊天：待 W14 接入")
+        self.lifecycle_status = QLabel("运行模式：正常", central)
+        self.lifecycle_status.setAccessibleName("运行模式：正常")
         status_row.addWidget(self.connection_status)
         status_row.addStretch(1)
         status_row.addWidget(self.feature_status)
+        status_row.addWidget(self.lifecycle_status)
         layout.addWidget(self.message_view, 1)
         layout.addWidget(self.editor)
         layout.addLayout(button_row)
@@ -332,6 +339,10 @@ class MainWindow(QMainWindow):
         self._sync_view()
 
     def _submit_message(self) -> None:
+        # Disabling the button is not sufficient: Ctrl+Enter is wired directly
+        # to this method and can otherwise race lifecycle shutdown.
+        if self._closing or self.model.connection_state is not BackendState.ready:
+            return
         if not self.model.capabilities.text_chat:
             self._show_error("feature_not_available")
             return
@@ -357,11 +368,60 @@ class MainWindow(QMainWindow):
             self._sync_view()
 
     def _stop_turn(self) -> None:
+        self.stop_current_turn()
+
+    @property
+    def can_stop_current_turn(self) -> bool:
+        return (
+            not self._closing
+            and self.model.connection_state is BackendState.ready
+            and self.model.capabilities.turn_cancel
+            and self.model.active_turn_id is not None
+        )
+
+    def stop_current_turn(self) -> None:
+        if self._closing:
+            return
         turn_id = self.model.active_turn_id
         if turn_id is None or not self.model.capabilities.turn_cancel:
             return
         request = TurnInterruptRequest(turn_id=turn_id)
         self._bridge.submit_command(TurnCancelCommand(payload=request))
+
+    def show_and_activate(self) -> None:
+        """Restore the primary window for a tray or single-instance activation."""
+
+        if self.isMinimized():
+            self.showNormal()
+        else:
+            self.show()
+        self.raise_()
+        self.activateWindow()
+
+    def set_close_request_handler(self, handler: Callable[[], None]) -> None:
+        """Install the W15 process lifecycle owner for user window-close requests."""
+
+        self._close_request_handler = handler
+
+    def set_safe_mode(self, enabled: bool) -> None:
+        self._safe_mode = enabled
+        self._sync_view()
+
+    def set_lifecycle_notice(self, value: str | None) -> None:
+        self._lifecycle_notice = value
+        self._sync_view()
+
+    def begin_lifecycle_shutdown(self) -> None:
+        """Freeze UI input while the external lifecycle owner stops the backend."""
+
+        if self._closing:
+            return
+        self._closing = True
+        self.model.connection_state = BackendState.stopping
+        self._sync_view()
+
+    def allow_final_close(self) -> None:
+        self._allow_close = True
 
     def _drain_events(self) -> None:
         for event in self._bridge.drain_events():
@@ -421,26 +481,37 @@ class MainWindow(QMainWindow):
         self.feature_status.setText(feature_status)
         self.feature_status.setAccessibleName(feature_status)
         self.send_button.setEnabled(chat_ready)
-        self.stop_button.setEnabled(
-            chat_ready
-            and self.model.capabilities.turn_cancel
-            and self.model.active_turn_id is not None
-        )
+        self.stop_button.setEnabled(self.can_stop_current_turn)
+        if self._lifecycle_notice is not None:
+            lifecycle_status = self._lifecycle_notice
+        elif self._safe_mode:
+            lifecycle_status = "运行模式：安全模式（视觉和主动功能已停用）"
+        else:
+            lifecycle_status = "运行模式：正常"
+        self.lifecycle_status.setText(lifecycle_status)
+        self.lifecycle_status.setAccessibleName(lifecycle_status)
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802 - Qt API name
-        if self._allow_close or not self._backend_host.has_active_generation:
+        if self._allow_close:
+            self._wipe_sensitive_state()
+            event.accept()
+            return
+        close_request_handler = self._close_request_handler
+        if close_request_handler is not None:
+            event.ignore()
+            close_request_handler()
+            return
+        if not self._backend_host.has_active_generation:
             self._wipe_sensitive_state()
             event.accept()
             return
         event.ignore()
         if not self._closing:
-            self._closing = True
-            self.model.connection_state = BackendState.stopping
-            self._sync_view()
+            self.begin_lifecycle_shutdown()
             self._backend_host.request_stop()
 
     def _backend_stopped(self) -> None:
-        if self._closing:
+        if self._closing and self._close_request_handler is None:
             self._allow_close = True
             self.close()
 

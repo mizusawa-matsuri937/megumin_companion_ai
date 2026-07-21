@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import platform
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from importlib import resources
@@ -17,6 +18,7 @@ from pathlib import Path, PurePath
 
 APP_DIRECTORY_NAME = "MeguminCompanion"
 RESOURCE_PACKAGE = "app.resources"
+_RECOVERY_MARKER_SCOPE = re.compile(r"^[0-9a-f]{32}$")
 
 
 def _default_non_windows_data_home(home: Path, platform_name: str) -> Path:
@@ -95,6 +97,19 @@ class AppPaths:
     @property
     def state(self) -> Path:
         return self.root / "state"
+
+    def desktop_crash_marker_for_scope(self, scope: str) -> Path:
+        """Return a per-session, opaque W15 crash marker path.
+
+        ``scope`` is a fixed-length digest created by the desktop
+        single-instance boundary.  Rejecting arbitrary filenames keeps marker
+        lookup inside the protected state directory and prevents a session ID
+        or user SID from becoming filesystem metadata.
+        """
+
+        if not _RECOVERY_MARKER_SCOPE.fullmatch(scope):
+            raise AppPathError("desktop crash marker scope is invalid")
+        return self.state / f"desktop-crash-marker-v1-{scope}.json"
 
     @property
     def secrets(self) -> Path:

@@ -391,6 +391,40 @@ class WindowsDirectorySecurity:  # pragma: no cover - exercised by required Wind
             self._kernel32.CloseHandle(token)
 
 
+def current_user_sid() -> str:  # pragma: no cover - native Windows scenario gate
+    """Return the interactive process user's SID without exposing a token handle.
+
+    Kernel objects used by the desktop shell need the same current-user
+    boundary as the protected data tree, but they do not inherit file ACLs.
+    Keeping SID discovery here prevents each caller from reimplementing token
+    handling or accidentally falling back to a world-accessible object.
+    """
+
+    return WindowsDirectorySecurity().current_user_sid
+
+
+@contextmanager
+def current_user_kernel_object_security_attributes() -> Iterator[_SecurityAttributes]:
+    """Yield non-inheritable attributes for a current-user-only kernel object.
+
+    The caller must create the named object while this context is active.  The
+    Windows kernel copies the supplied security descriptor during creation, so
+    it is safe to release the descriptor once the API call returns.
+    """
+
+    sid = current_user_sid()
+    # ``GA`` is deliberate: a single named event/mutex is not a file tree, so
+    # OI/CI inheritance flags used by ``WindowsDirectorySecurity`` are neither
+    # meaningful nor safe here.  SYSTEM remains available for OS cleanup.
+    sddl = f"D:P(A;;GA;;;{sid})(A;;GA;;;SY)"
+    with _converted_security_descriptor(sddl) as descriptor:
+        yield _SecurityAttributes(
+            nLength=ctypes.sizeof(_SecurityAttributes),
+            lpSecurityDescriptor=descriptor,
+            bInheritHandle=0,
+        )
+
+
 class PortableDirectorySecurity:
     """Non-Windows test fallback; never valid as Windows DACL evidence."""
 

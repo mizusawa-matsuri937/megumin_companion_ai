@@ -38,6 +38,9 @@ if mode == "sleep":
     def ignore_term(*_args):
         audit.with_suffix(".term").write_text("term", encoding="utf-8")
     signal.signal(signal.SIGTERM, ignore_term)
+    # Publish readiness only after the SIGTERM handler is installed.  Tests
+    # which need the grace period must not race the child process setup.
+    audit.with_suffix(".ready").write_text("ready", encoding="utf-8")
     time.sleep(60)
     raise SystemExit(0)
 
@@ -332,10 +335,12 @@ def test_repeated_cancellation_cannot_interrupt_process_reaping(tmp_path: Path) 
         task = asyncio.create_task(
             provider.transcribe(TranscriptionRequest(audio_path=audio, timeout_seconds=30))
         )
+        ready_file = pid_file.with_suffix(".ready")
         for _ in range(100):
-            if pid_file.exists():
+            if ready_file.exists():
                 break
             await asyncio.sleep(0.005)
+        assert ready_file.exists()
         task.cancel()
         term_file = pid_file.with_suffix(".term")
         if os.name == "nt":

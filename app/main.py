@@ -41,7 +41,7 @@ from app.memory.analyzer import LLMMemoryCandidateAnalyzer
 from app.memory.runtime import MemoryRuntime, SafeModeMemoryRuntime, create_memory_runtime
 from app.proactive import ProactivePolicy, ProactiveRuntime
 from app.runtime_storage import prepare_runtime_storage
-from app.schemas import utc_now
+from app.schemas import FeatureName, utc_now
 from app.storage import SQLiteIdempotencyStore
 
 
@@ -113,6 +113,7 @@ def create_app(
     *,
     dev_api: DevAPIConfig | None = None,
     health_providers: Sequence[HealthProvider] = (),
+    safe_mode: bool = False,
 ) -> FastAPI:
     resolved_settings = settings or load_settings()
     resolved_settings.validate_runtime_limits()
@@ -162,6 +163,17 @@ def create_app(
                 )
                 standalone_analyzer_provider = None
             app.state.memory_runtime = memory_runtime
+            if isinstance(memory_runtime, MemoryRuntime) and safe_mode:
+                # An interrupted desktop lifetime must never silently restore
+                # capture/proactive work.  Persisting ``disabled`` makes the
+                # recovery state explicit; a later settings UI can require an
+                # affirmative user action before either feature runs again.
+                for feature_name in (
+                    FeatureName.vision,
+                    FeatureName.cloud_vision,
+                    FeatureName.proactive,
+                ):
+                    await memory_runtime.set_feature(feature_name, False)
             idempotency_store = (
                 SQLiteIdempotencyStore(memory_runtime.database)
                 if isinstance(memory_runtime, MemoryRuntime)

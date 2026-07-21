@@ -56,6 +56,12 @@ class AppConfig(StrictModel):
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
 
 
+class DesktopConfig(StrictModel):
+    """Per-user desktop-shell policy, intentionally small before the W16 UI."""
+
+    startup_enabled: bool = False
+
+
 class ServerConfig(StrictModel):
     host: str = "127.0.0.1"
     port: int = Field(default=8765, ge=1, le=65535)
@@ -299,6 +305,7 @@ class Settings(StrictModel):
         le=CURRENT_SETTINGS_SCHEMA_VERSION,
     )
     app: AppConfig = Field(default_factory=AppConfig)
+    desktop: DesktopConfig = Field(default_factory=DesktopConfig)
     server: ServerConfig = Field(default_factory=ServerConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)

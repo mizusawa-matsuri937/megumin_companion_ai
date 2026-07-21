@@ -1334,7 +1334,17 @@ def test_uncached_audio_part_and_final_are_tracked_until_discard(tmp_path: Path)
         )
         token = CancellationToken("turn_registry")
 
-        result = await provider.synthesize(_job(token), segment_index=0, token=token)
+        # This test owns only temp-asset bookkeeping. Deadline boundary behavior
+        # is covered separately, so do not make registry assertions depend on a
+        # loaded Windows runner completing local file cleanup within 300 ms.
+        tracking_job = _job(
+            token,
+            connect_timeout_ms=1_000,
+            first_byte_timeout_ms=1_000,
+            timeout_ms=3_000,
+            cancellation_timeout_ms=500,
+        )
+        result = await provider.synthesize(tracking_job, segment_index=0, token=token)
 
         assert result.success
         assert result.audio_path is not None and result.audio_path.exists()

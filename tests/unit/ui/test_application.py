@@ -7,6 +7,9 @@ from functools import partial
 from pathlib import Path
 
 import pytest
+from app.paths import AppPaths
+from desktop_client.single_instance import PortableCurrentSessionInstance
+from desktop_client.startup import UnsupportedStartupRegistration
 from desktop_client.ui import application
 from desktop_client.ui.backend import BackendThreadHost, SkeletonBackendRuntime
 from desktop_client.ui.bridge import ApplicationBridge
@@ -95,6 +98,7 @@ def test_full_shell_owner_graph_starts_and_closes_one_hundred_times(
 def test_run_desktop_composes_shell_without_network(
     qapp: QApplication,
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     calls: list[str] = []
 
@@ -109,7 +113,20 @@ def test_run_desktop_composes_shell_without_network(
     monkeypatch.setattr(MainWindow, "show", show)
     monkeypatch.setattr(QApplication, "exec", lambda _app: 17)
 
-    assert application.run_desktop([]) == 17
+    # This composition test must not observe a real user desktop instance or
+    # mutate HKCU while running in CI/a developer session.
+    assert (
+        application.run_desktop(
+            [],
+            app_paths=AppPaths(root=tmp_path / "MeguminCompanion"),
+            instance=PortableCurrentSessionInstance(
+                instance_id="W15ApplicationComposition",
+                session_key="isolated-test",
+            ),
+            startup_registration=UnsupportedStartupRegistration(),
+        )
+        == 17
+    )
     assert calls == ["start", "show"]
     assert "uvicorn" not in vars(application)
     qapp.processEvents()

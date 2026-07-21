@@ -74,6 +74,26 @@ class CapturingLLM:
         self.close_calls += 1
 
 
+class FirstTurnBarrierLLM(CapturingLLM):
+    """Keep the first stream active until the test submits a replacement turn."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.first_turn_blocked = asyncio.Event()
+        self._stream_count = 0
+
+    async def stream(self, request: ChatRequest, token: CancellationToken) -> AsyncIterator[str]:
+        token.raise_if_cancelled()
+        self.requests.append(request)
+        self._stream_count += 1
+        if self._stream_count == 1:
+            yield "old turn remains active."
+            self.first_turn_blocked.set()
+            await asyncio.Event().wait()
+            return
+        yield "replacement turn completed."
+
+
 def test_out_of_order_tts_is_played_in_segment_order_and_cleaned(tmp_path: Path) -> None:
     async def scenario() -> tuple[list[int], list[int], dict[str, object]]:
         player = RecordingAudioPlayer()
@@ -127,11 +147,9 @@ def test_out_of_order_tts_is_played_in_segment_order_and_cleaned(tmp_path: Path)
 
 def test_new_input_is_a_hard_barrier_for_old_turn_events(tmp_path: Path) -> None:
     async def scenario() -> tuple[str, str, list[tuple[str, str]]]:
+        llm = FirstTurnBarrierLLM()
         pipeline = DialoguePipeline(
-            MockLLMProvider(
-                deltas=["旧回复仍在生成。", "这部分绝不能混入新轮次。"],
-                token_delay_seconds=0.04,
-            ),
+            llm,
             MockTTSProvider(tmp_path, duration_ms=100, synthesis_delay_seconds=0.01),
             RecordingAudioPlayer(),
             **_TTS_DEADLINES,
@@ -140,21 +158,23 @@ def test_new_input_is_a_hard_barrier_for_old_turn_events(tmp_path: Path) -> None
         logger.addHandler(logging.NullHandler())
         service = TurnService(logger, pipeline)
         queue = await service.subscribe("local_session")
-        first = await service.accept(UserMessage(text="第一次", input_mode=InputMode.text))
-        await asyncio.sleep(0.05)
-        second = await service.accept(UserMessage(text="第二次", input_mode=InputMode.voice))
+        try:
+            first = await service.accept(UserMessage(text="第一次", input_mode=InputMode.text))
+            await asyncio.wait_for(llm.first_turn_blocked.wait(), timeout=2)
+            second = await service.accept(UserMessage(text="第二次", input_mode=InputMode.voice))
 
-        observed: list[tuple[str, str]] = []
-        while True:
-            event = await asyncio.wait_for(queue.get(), timeout=2)
-            assert isinstance(event, PipelineEvent)
-            assert event.turn_id is not None
-            observed.append((event.type, event.turn_id))
-            queue.task_done()
-            if event.type == "assistant.completed" and event.turn_id == second.turn_id:
-                break
-        await service.shutdown()
-        return first.turn_id, second.turn_id, observed
+            observed: list[tuple[str, str]] = []
+            while True:
+                event = await asyncio.wait_for(queue.get(), timeout=2)
+                assert isinstance(event, PipelineEvent)
+                assert event.turn_id is not None
+                observed.append((event.type, event.turn_id))
+                queue.task_done()
+                if event.type == "assistant.completed" and event.turn_id == second.turn_id:
+                    break
+            return first.turn_id, second.turn_id, observed
+        finally:
+            await service.shutdown()
 
     first_id, second_id, observed = asyncio.run(scenario())
     new_accepted_index = observed.index(("turn.accepted", second_id))

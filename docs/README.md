@@ -67,3 +67,8 @@
 - 风险审计、阶段报告、对外 handoff 分别进入 `audits/`、`reports/`、`pro_handoff/`。
 
 新增或显著修改文档后，更新本页的分类入口；链接必须使用仓库内相对路径，并在提交前做本地链接检查。
+
+## 当前 Wxx 实现记录
+
+- [W14：文字对话、streaming、取消与恢复](implementation/w14_text_chat_streaming.md)
+- [W15：单实例、托盘和统一生命周期（进行中）](implementation/w15_single_instance_lifecycle.md)
