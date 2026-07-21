@@ -1,8 +1,8 @@
 # 当前产品目标
 
 > 最后核验：2026-07-21（Asia/Shanghai）。当前活跃任务是 **W16：设置、feature 与记忆管理最小 UI**，
-> 开发分支为 `codex/w16-settings-feature-memory-ui`。初始实现与状态记录 head 均已完成远端 CI；本次证据
-> 更新推送后会成为新的 PR head，仍须完成它自己的 exact-head CI，不能写作已交付。
+> 开发分支为 `codex/w16-settings-feature-memory-ui`。下方记录的历史 head 均已完成远端 CI；W16 自动交付
+> 只由 PR **当前** exact head 的必需检查全部 `success` 判定。任何新提交（包括本证据记录）都不继承旧 head 的绿灯。
 
 ## 已确认事实
 
@@ -16,8 +16,12 @@
   的 [push CI #29809797158](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29809797158) 与
   [pull-request CI #29809800285](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29809800285)
   均为 `success`；每个 run 的 macOS/Windows quality 与 installed-wheel 均通过。核验时 PR 仍为 Draft、
-  `OPEN`、`MERGEABLE/CLEAN`，且没有 review、issue conversation 或 inline review comment。本次证据提交
-  推送后必须以新的精确 head 重新核验。
+  `OPEN`、`MERGEABLE/CLEAN`，且没有 review、issue conversation 或 inline review comment。任何后续提交
+  都必须以新的精确 head 重新核验。
+- 后续 CI-evidence head [`cd56622`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/cd5662242495dfe064f30c7c34818b96fbb71c58)
+  的 [push CI #29810283413](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29810283413) 与
+  [pull-request CI #29810286263](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29810286263)
+  也均为 `success`；每个 run 的 macOS/Windows quality 与 installed-wheel 均通过。
 - W16 依赖 W10 与 W15，沿用 W03 的当前用户 DPAPI/受管路径边界、W10 的 feature 状态机和逻辑删除、
   W13/W14 的 Qt 主线程与有界 BackendThread bridge。它不启动、暴露或复用开发 HTTP API。
 - 产品范围仍是单机、单 Windows 用户、个人私用。多用户、跨用户 DACL 有效访问、RDP、快速切用户和跨
@@ -56,8 +60,8 @@
 
 ## 未完成项与真实人工 Gate
 
-- `c1cce43` 的远端 CI 已完成且全绿；现在需推送这次 run/head 证据更新，并等待该更新形成的新 PR exact
-  head CI。任何后续客观失败必须直接记录和修复，不能转交人工确认。
+- W16 自动交付的客观条件是 PR 当前 exact head 的所有必需检查均为 `success`；这项条件必须在最终报告前
+  现场核验，且任何后续提交都要重新满足它。任何客观失败必须直接记录和修复，不能转交人工确认。
 - 仅保留 AI 无法忠实复现的实际 Windows Qt 理解性审阅：用户是否正确理解历史、记忆、视觉、云端和
   删除语义。该 Gate 尚未执行，不能标记为通过。
 - 真实音频设备、麦克风、VTS/GPT-SoVITS 服务与资源预检属于 W17–W19；真实指定窗口捕获/cloud vision

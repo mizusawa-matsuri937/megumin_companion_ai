@@ -3,9 +3,9 @@
 ## 状态与范围
 
 > 状态：初始实现提交 [`0dfad2f`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/0dfad2f6039bc30c3273a004586fb0484f01c0d7)
-> 已推送，[Draft PR #28](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/28) 已打开；状态记录
-> head `c1cce43` 的远端 CI 已全绿。本次证据更新推送后会成为新的 exact head，仍不能报告自动交付完成。
-> 最后本地核验：2026-07-21（Asia/Shanghai）。
+> 已推送，[Draft PR #28](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/28) 已打开；历史 head
+> `c1cce43` 与 `cd56622` 的远端 CI 已全绿。自动交付只由 PR 当前 exact head 的必需检查全部 `success`
+> 判定，任何新提交均不继承旧 head 结果。最后本地核验：2026-07-21（Asia/Shanghai）。
 > 本记录只描述当前工作树已实现和已验证的部分，不把计划、headless UI 或 fake DPAPI 当作真实 Windows
 > 理解性/设备验收。
 
@@ -46,14 +46,18 @@ W16 在 W10/W15 已合并基线上实现最小桌面管理面：secret-free 设�
   [push CI #29809797158](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29809797158) 与
   [pull-request CI #29809800285](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29809800285)
   均为 `success`；每个 run 的 macOS/Windows quality 和 installed-wheel job 均通过。
+- 后续 CI-evidence head `cd56622` 的
+  [push CI #29810283413](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29810283413) 与
+  [pull-request CI #29810286263](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29810286263)
+  也均为 `success`；每个 run 的 macOS/Windows quality 和 installed-wheel job 均通过。
 - W16 的聚焦覆盖包括 secret 不回显、用户层写入不吸收开发覆盖、真实 provider/preset 保存防线、过渡快照
   先于强屏障最终状态、memory CRUD/export、稳定错误码不回显后端异常、二次确认、可访问 Qt 表面、空态/边界
   输入和最终敏感状态 wipe；同时将既有 `CountingMemoryStore` 测试替身同步到 W16 新增的 get/limit 协议。
 
 ## 未验证项、风险与人工 Gate
 
-- 聚焦提交、推送、Draft PR 与状态记录 head `c1cce43` 的 CI 已完成。现在需推送本次证据更新，并等待它
-  形成的新 PR head 完成 exact-head CI，才能报告 W16 自动交付完成。
+- 聚焦提交、推送、Draft PR 和已记录的历史 head CI 均已完成；W16 自动交付仍只在 PR 当前 exact head
+  全部必需检查为 `success` 时成立。最终报告必须现场确认该动态状态，不能把旧 head 或 headless 结果替代它。
 - W16 的唯一候选人工项是实际 Windows Qt 中对历史、记忆、视觉、云端和删除语义的理解性审阅。它尚未执行。
   配置写入、状态机、取消/关闭竞争和可合成故障必须先由自动化证明，不能改列人工 Gate。
 - 真实 VTS、GPT-SoVITS、音频输入/输出、屏幕捕获、cloud vision、冻结包和安装器均为后续 W 任务范围；
