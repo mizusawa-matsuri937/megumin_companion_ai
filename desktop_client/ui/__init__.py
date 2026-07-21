@@ -1,5 +1,13 @@
 """W13/W14 PySide6 desktop shell and bounded in-process application bridge."""
 
+from desktop_client.ui.appearance import (
+    ChatAppearance,
+    ChatMessageRole,
+    ChatMessageView,
+    ChatTranscriptSurface,
+    ChatUiParts,
+    DefaultChatAppearance,
+)
 from desktop_client.ui.application import run_desktop, run_headless_smoke
 from desktop_client.ui.backend import (
     BackendContext,
@@ -24,6 +32,11 @@ from desktop_client.ui.window import DesktopViewModel, MainWindow
 
 __all__ = [
     "ApplicationBridge",
+    "ChatAppearance",
+    "ChatMessageRole",
+    "ChatMessageView",
+    "ChatTranscriptSurface",
+    "ChatUiParts",
     "BackendCapabilities",
     "BackendContext",
     "BackendState",
@@ -35,6 +48,7 @@ __all__ = [
     "DesktopChatRuntime",
     "DesktopChatRuntimeFactory",
     "DesktopSessionCursor",
+    "DefaultChatAppearance",
     "MainWindow",
     "SkeletonBackendRuntime",
     "TurnCancelCommand",

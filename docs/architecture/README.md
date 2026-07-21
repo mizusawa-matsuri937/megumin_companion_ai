@@ -3,6 +3,7 @@
 ## 当前边界与数据流
 
 - [`windows_data_flow_inventory.md`](windows_data_flow_inventory.md)：Windows 数据流、保留清单与相关边界。
+- [`chat_appearance_presentation_layer.md`](chat_appearance_presentation_layer.md)：聊天窗口的纯表现层主题与可替换消息渲染接口。
 
 ## 目标/历史架构背景
 
