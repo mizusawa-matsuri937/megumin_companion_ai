@@ -2,8 +2,10 @@
 
 > 最后核验：2026-07-22（Asia/Shanghai）。用户已明确授权 W17。当前分支
 > `codex/w17-media-worker-audio` 从 `agent/windows-development-baseline` 的
-> `5df2fb2ad9c4402b674dfff7138c30880ac2c853` 开始；W17 的本地实现和自动化验证已完成，
-> 正在进行提交、推送与 Draft PR 交付。没有把尚未创建的 PR、远端 CI 或真实声卡体验写成已完成。
+> `5df2fb2ad9c4402b674dfff7138c30880ac2c853` 开始；W17 的初始实现提交为
+> [`3d76b0b`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/3d76b0bc31214dfbd7f8423b287d096182629b8a)，
+> [Draft PR #30](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/30) 已以
+> `agent/windows-development-baseline` 为 base 创建。远端 CI 与真实声卡体验尚未核验，不能写成已完成。
 
 ## 已确认事实
 
@@ -49,8 +51,8 @@
 ## 回滚与下一步
 
 - 将 `playback_mode` 设为 `silent` 即可关闭本地播放；文字对话继续。无法恢复或异常设备不应触发无限重试。
-- 完成最终 diff/static 审查后，只暂存 W17 预期改动，创建聚焦提交、推送分支并打开/更新 W17 Draft PR；远端 CI
-  和人工设备 Gate 将在 exact head 上另行记录。
+- Draft PR #30 已打开；等待其最终 exact head 的远端 CI，并在该 head 上完成上列真实设备 Gate。任何后续
+  文档/修复提交都必须重新核验 PR head，不得继承初始提交的本地结果。
 
 ## 相关资料
 

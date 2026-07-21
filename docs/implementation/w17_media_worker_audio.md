@@ -2,8 +2,10 @@
 
 ## 状态与范围
 
-> 状态：本地实现与自动化验证完成，尚待本任务的聚焦提交、推送和 Draft PR。最后本地核验：2026-07-22
-> （Asia/Shanghai）。基线为 `agent/windows-development-baseline` 的
+> 状态：初始实现提交 [`3d76b0b`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/3d76b0bc31214dfbd7f8423b287d096182629b8a)
+> 已推送；[Draft PR #30](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/30) 已以
+> `agent/windows-development-baseline` 为 base 创建。最后本地核验：2026-07-22（Asia/Shanghai）。基线为
+> `agent/windows-development-baseline` 的
 > `5df2fb2ad9c4402b674dfff7138c30880ac2c853`；工作分支为
 > `codex/w17-media-worker-audio`。
 >
@@ -91,5 +93,5 @@ RDP、快速切用户、跨 session 与跨用户 DACL 有效访问为当前单�
 
 ## 发布状态
 
-W17 的本地自动化 Gate 已达到项目门槛；在本记录写入时，聚焦提交、推送、Draft PR、远端 CI 和上列真实设备
-Gate 均尚未发生。它们必须在最终 exact head 上补记，不能继承 W16 或更早 PR 的结果。
+W17 的初始聚焦提交、推送和 Draft PR 已完成。远端 CI 与上列真实设备 Gate 尚未发生；它们必须在最终 exact
+head 上补记，不能继承 W16、初始实现提交或更早 PR 的结果。
