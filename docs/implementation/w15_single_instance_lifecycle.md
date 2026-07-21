@@ -9,6 +9,9 @@
 > 改为确定性门控；交付证据必须始终与最终 head 对应。
 > 后续 `0c902494e9880151a0b1b59d3ae0154ccd6dbf86` 的 push CI 通过，但 PR CI 在 Windows 暴露另一项
 > 非 deadline 测试对紧 deadline 的偶发依赖；本工作树仅放宽该测试 fixture，未改变产品超时行为。
+> 实现与测试变更 head `de328c402b40086a9f671d10d6c11be3b7c43d94` 的 pull-request run
+> `29793986896` 与 push run `29793985209` 均为 success，八项 macOS/Windows quality 与 installed-wheel
+> 检查全部通过；PR 仍为 Draft，真实 Windows Gate 未完成。
 > 最后更新：2026-07-21（Asia/Shanghai）。
 
 W15 基于已合并的 W14 merge commit
@@ -67,6 +70,9 @@ W20 的 OS 信号或 W25 的安装器。
   无意中使用了共享的 300 ms total 与 50 ms cancellation deadline。由于相同 head 的 push 运行及 20 次
   本地隔离运行通过，CI 调度敏感是合理推测，而不是产品缺陷的已证实结论。测试现显式使用
   1000/1000/3000/500 ms deadline，所有 deadline 边界测试保持原样；`test_gpt_sovits.py` 57 项通过。
+- 实现与测试变更 head `de328c402b40086a9f671d10d6c11be3b7c43d94` 的 pull-request run `29793986896`
+  与 push run `29793985209` 均成功；各自的 macOS/Windows quality 与两项 installed-wheel，共八项
+  远端检查全部通过。该 CI 证据不替代残余风险段列出的真实 Windows 验证。
 
 ## 残余风险与人工 Gate
 

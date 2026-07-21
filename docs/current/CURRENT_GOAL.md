@@ -11,6 +11,9 @@
 > `0c902494e9880151a0b1b59d3ae0154ccd6dbf86` 的 push CI 全部通过，但同一 head 的 PR CI 在 Windows
 > 暴露另一项既有 GPT-SoVITS 资源追踪测试的意外 deadline 依赖；本工作树只为该非 deadline 测试设置
 > 明确且仍有界的宽松 deadline，生产逻辑与 deadline 边界测试均未改变。
+> 实现与测试变更 head `de328c402b40086a9f671d10d6c11be3b7c43d94` 的 pull-request run
+> `29793986896` 与 push run `29793985209` 均为 success，八项 macOS/Windows quality 与
+> installed-wheel 检查全部通过；PR 仍为 Draft，真实 Windows Gate 尚未完成。
 
 ## 已确认事实
 
@@ -74,6 +77,9 @@
   因而这是 CI 调度敏感的合理推测，而非已证实的生产逻辑缺陷。该测试现在显式使用
   1000/1000/3000/500 ms 的 connect/first-byte/total/cancellation deadline；专门的 deadline 边界测试
   保持不变，整个 GPT-SoVITS 文件 57 项也通过。
+- 实现与测试变更 head `de328c402b40086a9f671d10d6c11be3b7c43d94` 的 pull-request run
+  `29793986896` 和 push run `29793985209` 均为 success；各自的 macOS/Windows quality 与两项
+  installed-wheel，共八项远端检查全部通过。该证据不替代下述真实 Windows Gate。
 
 ## 未验证项与人工 Gate
 
