@@ -30,6 +30,13 @@
   的 [push CI #29820123292](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29820123292) 与
   [pull-request CI #29820126134](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29820126134)
   均为 `success`。这只是该修复提交的历史证据，任何随后 head 仍须独立核验。
+- 后续状态记录 head [`8f87c73`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/8f87c733cd43c7d6714f26616f8542de4e53df2a)
+  的 [pull-request CI #29820584704](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29820584704)
+  已成功；[push CI #29820582676](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29820582676)
+  第一次尝试只在既有
+  `test_close_during_cache_promotion_removes_wav_and_partial_files` 的 1 秒异步等待超时。相同 SHA 的 PR Windows
+  quality 和本机聚焦复现均通过，重跑失败 job 的第二次尝试也为 `success`。现有证据**合理推测**为 CI 调度波动，
+  但不能据此宣称该既有测试已永久稳定；PR 当前 exact head 仍须现场读取检查状态。
 - W16 依赖 W10 与 W15，沿用 W03 的当前用户 DPAPI/受管路径边界、W10 的 feature 状态机和逻辑删除、
   W13/W14 的 Qt 主线程与有界 BackendThread bridge。它不启动、暴露或复用开发 HTTP API。
 - 产品范围仍是单机、单 Windows 用户、个人私用。多用户、跨用户 DACL 有效访问、RDP、快速切用户和跨

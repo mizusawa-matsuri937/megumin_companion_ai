@@ -57,6 +57,11 @@ W16 在 W10/W15 已合并基线上实现最小桌面管理面：secret-free 设�
   的 [push CI #29820123292](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29820123292) 与
   [pull-request CI #29820126134](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29820126134)
   均为 `success`；此证据不替代任何后来 exact head 的检查。
+- 后续状态记录 head `8f87c73` 的
+  [push CI #29820582676](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29820582676) 首次尝试在既有
+  `test_close_during_cache_promotion_removes_wav_and_partial_files` 的 `promotion_started.wait()` 一秒等待超时；相同
+  SHA 的 PR Windows quality 和本机聚焦测试均通过，`gh run rerun --failed` 的第二次尝试为 `success`。现有证据
+  **合理推测**为已记录、未被掩盖的 CI 调度波动，不能把一次重跑成功误写为该既有测试永久稳定。
 - W16 的聚焦覆盖包括 secret 不回显、用户层写入不吸收开发覆盖、真实 provider/preset 保存防线、过渡快照
   先于强屏障最终状态、memory CRUD/export、稳定错误码不回显后端异常、二次确认、可访问 Qt 表面、空态/边界
   输入和最终敏感状态 wipe；同时将既有 `CountingMemoryStore` 测试替身同步到 W16 新增的 get/limit 协议。
