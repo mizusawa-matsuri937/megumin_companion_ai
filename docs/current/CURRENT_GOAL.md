@@ -65,7 +65,7 @@
   真实 LLM 保存前要求已存 DPAPI 密钥和模型名；GPT-SoVITS 保存前要求已有有效 preset，真实服务预检仍由
   W19 负责。
 - feature 过渡开始时会先发布完整 desired/actual 快照，随后等待状态机 barrier 并发布最终/failed 状态。
-- `uv run pytest` → `1134 passed, 3 skipped in 161.77s`；总覆盖率 `90.37%`，达到项目 90% 门槛。三个 skip
+- `uv run pytest` → `1134 passed, 3 skipped in 154.51s`；总覆盖率 `90.37%`，达到项目 90% 门槛。三个 skip
   分别是未安装的可选 RapidOCR/Pillow 能力与当前用户不能创建目录符号链接，均由测试框架明确标记，非 W16
   失败。
 - `uv run mypy app desktop_client tests tools\\installed_wheel_smoke.py tools\\w05_ci_smoke.py` 和
@@ -77,6 +77,12 @@
 - 新增 `test_w16_feature_enable_submits_when_pyside_returns_integer_yes`，并以
   `uv run pytest --no-cov tests\\unit\\ui\\test_w16_management.py -q` 验证 `13 passed in 2.71s`；它锁定了
   PySide6 返回 `int(Yes)` 时必须提交而非取消的行为。
+- 2026-07-21 的 Windows CI 两次在相同 W16 代码之外的真实时间边界测试失败：一次为 GPT-SoVITS cache
+  promotion 的一秒等待，另一次为首字节 50ms/81ms 边界及 mock WAV 300ms 总时限。当前修改仅扩大**测试**的
+  调度余量，未改变产品超时逻辑：首字节成功/失败分别使用 2s/100ms 与 10s 延迟，mock WAV 验证使用 3s
+  总时限。两组测试连续 20 轮、每轮 4 个断言均通过；失败 head 的
+  [PR CI #29823189335](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29823189335) 是历史
+  反例，当前候选 head 仍须重新获得 exact-head CI。
 
 ## 未完成项与真实人工 Gate
 

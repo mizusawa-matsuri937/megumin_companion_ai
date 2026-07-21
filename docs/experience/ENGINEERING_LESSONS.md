@@ -35,3 +35,11 @@
 - **已确认：** 根目录 `HANDOFF.md` 停在 W05，而已核验的当前目标是 W14 Draft PR；两者并不等价。
 - **来源：** [`../current/CURRENT_GOAL.md`](../current/CURRENT_GOAL.md) 和根目录 `HANDOFF.md`。
 - **行动：** 新会话先读 `AGENTS.md`、`docs/README.md` 和 `docs/current/CURRENT_GOAL.md`，再按任务路由读取历史资料。
+
+## 6. 并发 deadline 测试不能把 runner 调度精度当作产品语义
+
+- **已确认：** W16 PR 的 Windows CI 曾在未改动的 GPT-SoVITS/mock TTS 测试中，把 50ms/81ms、300ms 和一秒
+  的测试等待误报为产品失败；相同 W16 代码在其他 exact-head job 与本地聚焦运行中可通过。
+- **来源：** [W16 实现记录](../implementation/w16_settings_feature_memory_ui.md)及其中记录的 PR #28 CI 证据。
+- **行动：** 需要验证 deadline ownership、取消或异常清理时，使用可控时钟；若必须使用真实 asyncio 调度，给
+  成功与失败路径留出数量级的余量。不要为了让测试通过而放宽产品 deadline；应只调整测试 fixture 的时间和断言。

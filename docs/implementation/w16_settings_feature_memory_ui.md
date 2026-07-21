@@ -40,7 +40,7 @@ W16 在 W10/W15 已合并基线上实现最小桌面管理面：secret-free 设�
 
 ## 自动化证据（本地当前工作树）
 
-- `uv run pytest` → `1134 passed, 3 skipped in 161.77s`，总覆盖率 `90.37%`（项目要求为 90%）。三个 skip
+- `uv run pytest` → `1134 passed, 3 skipped in 154.51s`，总覆盖率 `90.37%`（项目要求为 90%）。三个 skip
   是未安装的可选 RapidOCR/Pillow 能力与当前用户不能创建目录符号链接，均为环境能力缺口，不是 W16
   断言失败。
 - `uv run mypy app desktop_client tests tools\\installed_wheel_smoke.py tools\\w05_ci_smoke.py` 和
@@ -69,6 +69,12 @@ W16 在 W10/W15 已合并基线上实现最小桌面管理面：secret-free 设�
   输入和最终敏感状态 wipe；同时将既有 `CountingMemoryStore` 测试替身同步到 W16 新增的 get/limit 协议。
 - 新增 `test_w16_feature_enable_submits_when_pyside_returns_integer_yes`，以真实运行时相同的 `int(Yes)` 返回形态覆盖该修复；
   `uv run pytest --no-cov tests\\unit\\ui\\test_w16_management.py -q` 为 `13 passed in 2.71s`。
+- 后续 Windows CI 两次暴露了 W16 代码之外的时间敏感测试波动：一秒 cache promotion 等待、50ms/81ms
+  首字节边界和 mock WAV 300ms 总时限会将 runner 调度延迟误报为产品失败。只修改
+  `tests/unit/test_gpt_sovits.py` 和 `tests/unit/test_mock_clients.py` 的测试余量，保留首字节 deadline
+  ownership 与非法 WAV 拒绝断言；相关 4 个参数化测试连续 20 轮全通过，随后完整本地 suite 通过。此前失败的
+  [PR CI #29823189335](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29823189335) 保留为
+  历史证据，当前候选 head 必须重新验证。
 
 ## 未验证项、风险与人工 Gate
 

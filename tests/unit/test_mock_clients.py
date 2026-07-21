@@ -306,7 +306,10 @@ def test_mock_tts_invalid_generated_wave_is_rejected_and_cleaned(
                     text="synthetic",
                     connect_timeout_ms=80,
                     first_byte_timeout_ms=80,
-                    timeout_ms=300,
+                    # The validation path uses owned worker threads.  Leave
+                    # scheduler headroom; this test asserts invalid WAV
+                    # rejection, not a sub-second total deadline.
+                    timeout_ms=3_000,
                     cancellation_timeout_ms=50,
                     cancellation_token_id=token.token_id,
                 ),
