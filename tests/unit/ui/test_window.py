@@ -19,7 +19,7 @@ from desktop_client.ui.contracts import (
 from desktop_client.ui.window import DesktopViewModel, MainWindow
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QPlainTextEdit
 
 
 def _pump_until(
@@ -105,6 +105,7 @@ def test_window_has_minimum_accessible_controls_and_honest_default_state(
     host.start()
     assert _pump_until(qapp, lambda: window.model.connection_state is BackendState.ready)
 
+    assert isinstance(window.message_view, QPlainTextEdit)
     assert window.message_view.isReadOnly()
     assert window.message_view.accessibleName() == "消息区"
     assert window.editor.accessibleName() == "消息编辑器"
@@ -199,6 +200,8 @@ def test_window_fake_timeline_keeps_qt_responsive_and_handles_cancel(
     window.show()
     host.start()
     assert _pump_until(qapp, lambda: window.send_button.isEnabled())
+    message_view = window.message_view
+    assert isinstance(message_view, QPlainTextEdit)
 
     window.editor.setPlainText("中文输入テスト")
     timer_fired: list[bool] = []
@@ -208,8 +211,8 @@ def test_window_fake_timeline_keeps_qt_responsive_and_handles_cancel(
     assert time.monotonic() - click_started < 0.1
     assert _pump_until(qapp, lambda: bool(timer_fired), timeout=0.1)
     assert window.editor.toPlainText() == ""
-    assert _pump_until(qapp, lambda: "こんにちは" in window.message_view.toPlainText())
-    assert "你: 中文输入テスト" in window.message_view.toPlainText()
+    assert _pump_until(qapp, lambda: "こんにちは" in message_view.toPlainText())
+    assert "你: 中文输入テスト" in message_view.toPlainText()
     assert window.stop_button.isEnabled()
 
     window.stop_button.click()

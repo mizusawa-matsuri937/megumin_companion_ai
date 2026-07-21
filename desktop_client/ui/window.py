@@ -15,7 +15,7 @@ from app.schemas import (
     UserMessage,
 )
 from pydantic import ValidationError
-from PySide6.QtGui import QCloseEvent, QKeySequence, QShortcut, QTextCursor
+from PySide6.QtGui import QCloseEvent, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -26,6 +26,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from desktop_client.ui.appearance import (
+    ChatAppearance,
+    ChatMessageRole,
+    ChatMessageView,
+    ChatUiParts,
+    DefaultChatAppearance,
+    plain_text_transcript,
+)
 from desktop_client.ui.backend import BackendThreadHost
 from desktop_client.ui.bridge import ApplicationBridge
 from desktop_client.ui.contracts import (
@@ -49,7 +57,7 @@ MAX_VISIBLE_MESSAGE_CHARS = 100_000
 
 @dataclass(slots=True)
 class _VisibleMessage:
-    role: str
+    role: ChatMessageRole
     text: str
     turn_id: str | None = None
 
@@ -77,7 +85,7 @@ class DesktopViewModel:
         if message.message_id in self._shown_user_message_ids:
             return
         self._shown_user_message_ids.add(message.message_id)
-        self._append(_VisibleMessage(role="你", text=message.text))
+        self._append(_VisibleMessage(role="user", text=message.text))
 
     def apply_event(self, event: BridgeEvent) -> None:
         if isinstance(event, SessionReset):
@@ -113,7 +121,7 @@ class DesktopViewModel:
             if isinstance(delta, str) and delta:
                 if (
                     self._messages
-                    and self._messages[-1].role == "助手"
+                    and self._messages[-1].role == "assistant"
                     and self._messages[-1].turn_id == event.turn_id
                 ):
                     message = self._messages[-1]
@@ -121,7 +129,7 @@ class DesktopViewModel:
                 else:
                     self._append(
                         _VisibleMessage(
-                            role="助手",
+                            role="assistant",
                             text=delta[-MAX_VISIBLE_MESSAGE_CHARS:],
                             turn_id=event.turn_id,
                         )
@@ -243,7 +251,21 @@ class DesktopViewModel:
         return requested
 
     def transcript(self) -> str:
-        return "\n\n".join(f"{message.role}: {message.text}" for message in self._messages)
+        """Return the legacy plain-text rendering for existing callers and tests."""
+
+        return plain_text_transcript(self.display_messages())
+
+    def display_messages(self) -> tuple[ChatMessageView, ...]:
+        """Return a read-only snapshot for a presentation-only transcript surface."""
+
+        return tuple(
+            ChatMessageView(
+                role=message.role,
+                text=message.text,
+                turn_id=message.turn_id,
+            )
+            for message in self._messages
+        )
 
     def clear_sensitive(self) -> None:
         for message in self._messages:
@@ -277,6 +299,8 @@ class MainWindow(QMainWindow):
         self,
         bridge: ApplicationBridge,
         backend_host: BackendThreadHost,
+        *,
+        appearance: ChatAppearance | None = None,
     ) -> None:
         super().__init__()
         self._bridge = bridge
@@ -291,29 +315,32 @@ class MainWindow(QMainWindow):
         self._safe_mode = False
         self._lifecycle_notice: str | None = None
         self._settings_dialog: SettingsDialog | None = None
+        self._appearance = appearance or DefaultChatAppearance()
         self.setWindowTitle("Megumin Companion")
         self.resize(720, 560)
 
         central = QWidget(self)
+        central.setObjectName("chatRoot")
         layout = QVBoxLayout(central)
-        self.message_view = QPlainTextEdit(central)
-        self.message_view.setReadOnly(True)
-        self.message_view.setPlaceholderText("尚无消息。W13 只验证桌面骨架；真实对话在 W14 接入。")
-        self.message_view.setPlaceholderText(
-            "\u6682\u65e0\u6d88\u606f\u3002\u6587\u5b57\u5bf9\u8bdd\u5c06\u5728\u6b64\u663e\u793a\u3002"
-        )
+        self._transcript_surface = self._appearance.create_transcript_surface(central)
+        self.message_view = self._transcript_surface.widget
+        self.message_view.setObjectName("chatTranscript")
         self.message_view.setAccessibleName("消息区")
         self.editor = QPlainTextEdit(central)
+        self.editor.setObjectName("chatEditor")
         self.editor.setPlaceholderText("输入消息；Ctrl+Enter 发送")
         self.editor.setAccessibleName("消息编辑器")
         self.editor.setTabChangesFocus(True)
         self.editor.setMaximumBlockCount(2_000)
         button_row = QHBoxLayout()
         self.send_button = QPushButton("发送", central)
+        self.send_button.setObjectName("chatSendButton")
         self.send_button.setAccessibleName("发送消息")
         self.stop_button = QPushButton("停止", central)
+        self.stop_button.setObjectName("chatStopButton")
         self.stop_button.setAccessibleName("停止当前回复")
         self.settings_button = QPushButton("设置与隐私", central)
+        self.settings_button.setObjectName("chatSettingsButton")
         self.settings_button.setAccessibleName("设置与隐私")
         button_row.addStretch(1)
         button_row.addWidget(self.settings_button)
@@ -321,10 +348,13 @@ class MainWindow(QMainWindow):
         button_row.addWidget(self.send_button)
         status_row = QHBoxLayout()
         self.connection_status = QLabel("后端：已停止", central)
+        self.connection_status.setObjectName("chatConnectionStatus")
         self.connection_status.setAccessibleName("后端：已停止")
         self.feature_status = QLabel("文字聊天：待 W14 接入", central)
+        self.feature_status.setObjectName("chatFeatureStatus")
         self.feature_status.setAccessibleName("文字聊天：待 W14 接入")
         self.lifecycle_status = QLabel("运行模式：正常", central)
+        self.lifecycle_status.setObjectName("chatLifecycleStatus")
         self.lifecycle_status.setAccessibleName("运行模式：正常")
         status_row.addWidget(self.connection_status)
         status_row.addStretch(1)
@@ -335,6 +365,22 @@ class MainWindow(QMainWindow):
         layout.addLayout(button_row)
         layout.addLayout(status_row)
         self.setCentralWidget(central)
+        self._appearance.apply(
+            ChatUiParts(
+                root=central,
+                main_layout=layout,
+                action_layout=button_row,
+                status_layout=status_row,
+                transcript=self.message_view,
+                editor=self.editor,
+                send_button=self.send_button,
+                stop_button=self.stop_button,
+                settings_button=self.settings_button,
+                connection_status=self.connection_status,
+                feature_status=self.feature_status,
+                lifecycle_status=self.lifecycle_status,
+            )
+        )
         QWidget.setTabOrder(self.message_view, self.editor)
         QWidget.setTabOrder(self.editor, self.stop_button)
         QWidget.setTabOrder(self.stop_button, self.send_button)
@@ -487,10 +533,7 @@ class MainWindow(QMainWindow):
         self._sync_view()
 
     def _sync_view(self) -> None:
-        transcript = self.model.transcript()
-        if self.message_view.toPlainText() != transcript:
-            self.message_view.setPlainText(transcript)
-            self.message_view.moveCursor(QTextCursor.MoveOperation.End)
+        self._transcript_surface.render(self.model.display_messages())
         labels = {
             BackendState.starting: "启动中",
             BackendState.ready: "已连接",
@@ -563,7 +606,7 @@ class MainWindow(QMainWindow):
             self._settings_dialog.close()
             self._settings_dialog = None
         self.editor.clear()
-        self.message_view.clear()
+        self._transcript_surface.clear_sensitive()
         self._pending_message = None
         self._pending_command_ids.clear()
         self.model.clear_sensitive()
