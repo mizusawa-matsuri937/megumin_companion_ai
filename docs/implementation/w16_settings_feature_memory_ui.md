@@ -3,8 +3,9 @@
 ## 状态与范围
 
 > 状态：初始实现提交 [`0dfad2f`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/0dfad2f6039bc30c3273a004586fb0484f01c0d7)
-> 已推送，[Draft PR #28](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/28) 已打开；当前
-> exact head 的远端 CI 尚在进行，不能报告自动交付完成。最后本地核验：2026-07-21（Asia/Shanghai）。
+> 已推送，[Draft PR #28](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/28) 已打开；状态记录
+> head `c1cce43` 的远端 CI 已全绿。本次证据更新推送后会成为新的 exact head，仍不能报告自动交付完成。
+> 最后本地核验：2026-07-21（Asia/Shanghai）。
 > 本记录只描述当前工作树已实现和已验证的部分，不把计划、headless UI 或 fake DPAPI 当作真实 Windows
 > 理解性/设备验收。
 
@@ -41,15 +42,18 @@ W16 在 W10/W15 已合并基线上实现最小桌面管理面：secret-free 设�
   `uv run mypy --platform darwin app desktop_client tests tools\\installed_wheel_smoke.py tools\\w05_ci_smoke.py`
   均为 `Success: no issues found in 218 source files`。
 - `uv run ruff check .`、`uv run ruff format --check .`、`uv lock --check`、`git diff --check` 已通过。
+- 当前 PR status-record head `c1cce43` 的 cross-platform quality gate 在
+  [push CI #29809797158](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29809797158) 与
+  [pull-request CI #29809800285](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29809800285)
+  均为 `success`；每个 run 的 macOS/Windows quality 和 installed-wheel job 均通过。
 - W16 的聚焦覆盖包括 secret 不回显、用户层写入不吸收开发覆盖、真实 provider/preset 保存防线、过渡快照
   先于强屏障最终状态、memory CRUD/export、稳定错误码不回显后端异常、二次确认、可访问 Qt 表面、空态/边界
   输入和最终敏感状态 wipe；同时将既有 `CountingMemoryStore` 测试替身同步到 W16 新增的 get/limit 协议。
 
 ## 未验证项、风险与人工 Gate
 
-- 聚焦提交、推送和 Draft PR 已完成。文档提交前，初始代码 head `0dfad2f` 的 cross-platform quality
-  gate 仍在运行；本文件的任何后续证据提交都会成为新的 PR head，必须重新完成 exact-head CI，才能报告
-  W16 自动交付完成。
+- 聚焦提交、推送、Draft PR 与状态记录 head `c1cce43` 的 CI 已完成。现在需推送本次证据更新，并等待它
+  形成的新 PR head 完成 exact-head CI，才能报告 W16 自动交付完成。
 - W16 的唯一候选人工项是实际 Windows Qt 中对历史、记忆、视觉、云端和删除语义的理解性审阅。它尚未执行。
   配置写入、状态机、取消/关闭竞争和可合成故障必须先由自动化证明，不能改列人工 Gate。
 - 真实 VTS、GPT-SoVITS、音频输入/输出、屏幕捕获、cloud vision、冻结包和安装器均为后续 W 任务范围；

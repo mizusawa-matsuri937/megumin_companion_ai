@@ -1,8 +1,8 @@
 # 当前产品目标
 
 > 最后核验：2026-07-21（Asia/Shanghai）。当前活跃任务是 **W16：设置、feature 与记忆管理最小 UI**，
-> 开发分支为 `codex/w16-settings-feature-memory-ui`。初始实现提交已推送并已创建 Draft PR；PR 的当前
-> exact head 仍须完成远端 CI，不能写作已交付。
+> 开发分支为 `codex/w16-settings-feature-memory-ui`。初始实现与状态记录 head 均已完成远端 CI；本次证据
+> 更新推送后会成为新的 PR head，仍须完成它自己的 exact-head CI，不能写作已交付。
 
 ## 已确认事实
 
@@ -11,8 +11,13 @@
   `87801bc` 开始，开始前工作树干净。
 - W16 初始实现提交 [`0dfad2f`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/0dfad2f6039bc30c3273a004586fb0484f01c0d7)
   已推送到该开发分支；[Draft PR #28](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/28) 已打开，
-  base 为 `agent/windows-development-baseline`。本记录提交前，初始代码 head 的 cross-platform quality gate
-  仍在运行；任何后续文档提交都会成为新的 PR head，必须重新以该精确 head 核验。
+  base 为 `agent/windows-development-baseline`。状态记录 head
+  [`c1cce43`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/c1cce43bfdcd5d435a9ef9d1cb2c89b53e12ed49)
+  的 [push CI #29809797158](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29809797158) 与
+  [pull-request CI #29809800285](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29809800285)
+  均为 `success`；每个 run 的 macOS/Windows quality 与 installed-wheel 均通过。核验时 PR 仍为 Draft、
+  `OPEN`、`MERGEABLE/CLEAN`，且没有 review、issue conversation 或 inline review comment。本次证据提交
+  推送后必须以新的精确 head 重新核验。
 - W16 依赖 W10 与 W15，沿用 W03 的当前用户 DPAPI/受管路径边界、W10 的 feature 状态机和逻辑删除、
   W13/W14 的 Qt 主线程与有界 BackendThread bridge。它不启动、暴露或复用开发 HTTP API。
 - 产品范围仍是单机、单 Windows 用户、个人私用。多用户、跨用户 DACL 有效访问、RDP、快速切用户和跨
@@ -51,9 +56,8 @@
 
 ## 未完成项与真实人工 Gate
 
-- W16 已完成聚焦提交、推送和 Draft PR；当前阻塞仅为 PR 当前 exact head 的远端 CI。CI 完成后必须记录
-  实际 run/head 证据、推送该文档证据更新，并再次核验新的 exact head。任何后续客观失败必须直接记录和
-  修复，不能转交人工确认。
+- `c1cce43` 的远端 CI 已完成且全绿；现在需推送这次 run/head 证据更新，并等待该更新形成的新 PR exact
+  head CI。任何后续客观失败必须直接记录和修复，不能转交人工确认。
 - 仅保留 AI 无法忠实复现的实际 Windows Qt 理解性审阅：用户是否正确理解历史、记忆、视觉、云端和
   删除语义。该 Gate 尚未执行，不能标记为通过。
 - 真实音频设备、麦克风、VTS/GPT-SoVITS 服务与资源预检属于 W17–W19；真实指定窗口捕获/cloud vision
