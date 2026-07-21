@@ -7,6 +7,8 @@
 > 运行代码 head `ec46df9fd699af9ceb9581d96100de5d8a3dfce2` 的远端 CI 已通过。后续文档 head
 > `819e782bac71e2521580be8054891963512eec08` 暴露既有取消屏障测试的时序前提错误，本工作树已将其
 > 改为确定性门控；交付证据必须始终与最终 head 对应。
+> 后续 `0c902494e9880151a0b1b59d3ae0154ccd6dbf86` 的 push CI 通过，但 PR CI 在 Windows 暴露另一项
+> 非 deadline 测试对紧 deadline 的偶发依赖；本工作树仅放宽该测试 fixture，未改变产品超时行为。
 > 最后更新：2026-07-21（Asia/Shanghai）。
 
 W15 基于已合并的 W14 merge commit
@@ -43,8 +45,8 @@ W20 的 OS 信号或 W25 的安装器。
   → `14 passed`，覆盖 crash marker、current-user Windows named primitive、同 session 次实例激活、
   opaque session marker、关闭到托盘、重复退出、hung backend deadline、固定 tray actions、safe-mode
   feature 状态、HKCU stale startup path 与配置默认值。
-- `uv run pytest`（包含确定性取消屏障测试修复后）→ `1118 passed, 3 skipped in 151.80s`；总覆盖率
-  `90.10%`，满足项目 90% 门槛。
+- `uv run pytest`（包含两项 CI 测试稳定性修复后）→ `1118 passed, 3 skipped in 128.11s`；总覆盖率
+  `90.07%`，满足项目 90% 门槛。
 - `uv run mypy app desktop_client tests tools\\installed_wheel_smoke.py tools\\w05_ci_smoke.py` →
   215 source files 无类型问题；`uv run mypy --platform darwin app desktop_client tests`
   `tools\\installed_wheel_smoke.py tools\\w05_ci_smoke.py` 也通过。`uv run ruff check .`、
@@ -59,6 +61,12 @@ W20 的 OS 信号或 W25 的安装器。
   Windows quality 只失败于 `test_new_input_is_a_hard_barrier_for_old_turn_events`：固定 50 ms sleep 并不
   保证第一轮仍处于活动状态。测试现在通过 `FirstTurnBarrierLLM` 明确等待第一轮停在可取消位置，再提交
   第二轮；修复后的该断言连续运行 20 次、整个受影响测试文件和完整本地套件均通过。
+- `0c902494e9880151a0b1b59d3ae0154ccd6dbf86` 的 push run `29771649297` 全部通过，但同一 head 的
+  pull-request run `29771653545` 仅在 Windows quality 的 GPT-SoVITS 临时资产追踪测试失败，返回
+  `tts_cancel_timeout`。该测试只验证 `.part`/最终文件的 registry 生命周期，不验证 deadline；它先前
+  无意中使用了共享的 300 ms total 与 50 ms cancellation deadline。由于相同 head 的 push 运行及 20 次
+  本地隔离运行通过，CI 调度敏感是合理推测，而不是产品缺陷的已证实结论。测试现显式使用
+  1000/1000/3000/500 ms deadline，所有 deadline 边界测试保持原样；`test_gpt_sovits.py` 57 项通过。
 
 ## 残余风险与人工 Gate
 

@@ -1,13 +1,16 @@
 # 当前产品目标
 
 > 最后核验：2026-07-21（Asia/Shanghai）。W15 的最新本地工作树已完成自动化核验：
-> `uv run pytest` 为 `1118 passed, 3 skipped`、总覆盖率 90.10%；Windows 与 macOS 模拟的严格
+> `uv run pytest` 为 `1118 passed, 3 skipped`、总覆盖率 90.07%；Windows 与 macOS 模拟的严格
 > 类型检查、lint、格式和锁文件检查亦已通过。Draft PR
 > [#27](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/27) 的首次 head 曾在 macOS
 > strict mypy 失败，原因和修复见下；修复后的运行代码 head
 > `ec46df9fd699af9ceb9581d96100de5d8a3dfce2` 已通过 macOS/Windows quality 和两项 installed-wheel。
 > 随后的文档 head `819e782bac71e2521580be8054891963512eec08` 暴露一项既有集成测试的错误时序前提；
 > 本工作树已改为确定性门控，最终交付仍只以匹配最终 head 的远端检查为证据。
+> `0c902494e9880151a0b1b59d3ae0154ccd6dbf86` 的 push CI 全部通过，但同一 head 的 PR CI 在 Windows
+> 暴露另一项既有 GPT-SoVITS 资源追踪测试的意外 deadline 依赖；本工作树只为该非 deadline 测试设置
+> 明确且仍有界的宽松 deadline，生产逻辑与 deadline 边界测试均未改变。
 
 ## 已确认事实
 
@@ -45,8 +48,8 @@
   → `14 passed`。它覆盖 current-user/current-session primitive、opaque per-session marker scope、
   重复退出、关闭到托盘、hung backend deadline、固定 tray actions、safe-mode feature 状态、HKCU
   stale startup path 与配置默认值。
-- `uv run pytest`（包含确定性取消屏障测试修复后）→ `1118 passed, 3 skipped in 151.80s`；总覆盖率
-  `90.10%`（达到 90% 门槛）。
+- `uv run pytest`（包含两项 CI 测试稳定性修复后）→ `1118 passed, 3 skipped in 128.11s`；总覆盖率
+  `90.07%`（达到 90% 门槛）。
 - `uv run mypy app desktop_client tests tools\\installed_wheel_smoke.py tools\\w05_ci_smoke.py` →
   `Success: no issues found in 215 source files`；另行执行
   `uv run mypy --platform darwin app desktop_client tests tools\\installed_wheel_smoke.py tools\\w05_ci_smoke.py`
@@ -63,6 +66,14 @@
   失败：旧测试用固定 `asyncio.sleep(0.05)` 假定第一轮尚未结束，却没有建立该前提，CI 中因而未观察到
   `turn.cancelled`。这不足以证明 W15 产品代码回归。测试现用 `FirstTurnBarrierLLM` 明确等待第一轮进入
   可取消阻塞点；修复后的断言连续运行 20 次、受影响文件 4 项和完整套件均通过。
+- `0c902494e9880151a0b1b59d3ae0154ccd6dbf86` 的 push run `29771649297` 全部通过；同一 head 的
+  pull-request run `29771653545` 仅在 Windows quality 的
+  `tests/unit/test_gpt_sovits.py::test_uncached_audio_part_and_final_are_tracked_until_discard` 失败，结果为
+  `tts_cancel_timeout`。该测试的目标是临时资产追踪，却无意中继承 `timeout_ms=300` 和
+  `cancellation_timeout_ms=50` 的共享 deadline；同一提交的另一远端运行和 20 次本地隔离运行均通过，
+  因而这是 CI 调度敏感的合理推测，而非已证实的生产逻辑缺陷。该测试现在显式使用
+  1000/1000/3000/500 ms 的 connect/first-byte/total/cancellation deadline；专门的 deadline 边界测试
+  保持不变，整个 GPT-SoVITS 文件 57 项也通过。
 
 ## 未验证项与人工 Gate
 
