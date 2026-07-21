@@ -30,6 +30,8 @@
   的 [push CI #29820123292](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29820123292) 与
   [pull-request CI #29820126134](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29820126134)
   均为 `success`。这只是该修复提交的历史证据，任何随后 head 仍须独立核验。
+- 修复后，用户已在实际 Windows Qt 中重新执行该精确路径并报告通过：feature 启用、确认“是”、状态更新均正常。
+  这是本次缺陷的实际桌面复测证据；它不替代历史、记忆、视觉、云端与删除语义的完整理解性审阅。
 - 后续状态记录 head [`8f87c73`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/8f87c733cd43c7d6714f26616f8542de4e53df2a)
   的 [pull-request CI #29820584704](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29820584704)
   已成功；[push CI #29820582676](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29820582676)
@@ -80,8 +82,8 @@
 
 - W16 自动交付的客观条件是 PR 当前 exact head 的所有必需检查均为 `success`；这项条件必须在最终报告前
   现场核验，且任何后续提交都要重新满足它。任何客观失败必须直接记录和修复，不能转交人工确认。
-- 仅保留 AI 无法忠实复现的实际 Windows Qt 理解性审阅：用户是否正确理解历史、记忆、视觉、云端和
-  删除语义。该 Gate 尚未执行，不能标记为通过。
+- 实际 Windows Qt 已通过本次 feature 启用/确认/状态更新路径的复测。仍保留 AI 无法忠实复现的理解性审阅：
+  用户是否正确理解历史、记忆、视觉、云端和删除语义；其余部分尚未执行，不能把整个 Gate 标记为通过。
 - 真实音频设备、麦克风、VTS/GPT-SoVITS 服务与资源预检属于 W17–W19；真实指定窗口捕获/cloud vision
   属于 W21/W22；冻结包与安装/卸载属于 W24/W25。它们不是 W16 已实现能力。
 
