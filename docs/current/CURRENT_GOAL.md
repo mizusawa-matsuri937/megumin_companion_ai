@@ -1,8 +1,11 @@
 # 当前产品目标
 
-> 最后核验：2026-07-21（Asia/Shanghai）。当前活跃任务是 **W16：设置、feature 与记忆管理最小 UI**，
-> 开发分支为 `codex/w16-settings-feature-memory-ui`。下方记录的历史 head 均已完成远端 CI；W16 自动交付
-> 只由 PR **当前** exact head 的必需检查全部 `success` 判定。任何新提交（包括本证据记录）都不继承旧 head 的绿灯。
+> 最后核验：2026-07-21（Asia/Shanghai）。**W16：设置、feature 与记忆管理最小 UI** 已由
+> [PR #28](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/28) 合并到
+> `agent/windows-development-baseline`，merge commit 为 `dc84319d13e0330321a9f284d4b4685a12615a0f`。关闭 head
+> `6c5fd83c5d3aff3f2fe58b584a456754564b89a6` 的 pull-request run `29825814677` 与 push run `29825811679`
+> 均为 `success`；合并后 `uv sync --locked` 和 `uv run pytest` 也通过（`1134 passed, 3 skipped in 157.59s`，
+> 总覆盖率 90.39%）。当前尚未收到 W17 或后续 W 项的实施授权。
 
 ## 已确认事实
 
@@ -32,6 +35,9 @@
   均为 `success`。这只是该修复提交的历史证据，任何随后 head 仍须独立核验。
 - 修复后，用户已在实际 Windows Qt 中重新执行该精确路径并报告通过：feature 启用、确认“是”、状态更新均正常。
   这是本次缺陷的实际桌面复测证据；它不替代历史、记忆、视觉、云端与删除语义的完整理解性审阅。
+- 所有者已于 2026-07-21 授权受控合并 PR #28。closing head `6c5fd83` 的八项远端 macOS/Windows quality 与
+  installed-wheel 检查均成功后，PR #28 于 2026-07-21T11:30:59Z 合并；合并后的本地基线已 fast-forward 到
+  `dc84319` 并完成 `uv sync --locked` 和全量测试。该事实不把仍未执行的隐私语义理解性审阅写成已通过。
 - 后续状态记录 head [`8f87c73`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/8f87c733cd43c7d6714f26616f8542de4e53df2a)
   的 [pull-request CI #29820584704](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29820584704)
   已成功；[push CI #29820582676](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29820582676)
@@ -44,7 +50,7 @@
 - 产品范围仍是单机、单 Windows 用户、个人私用。多用户、跨用户 DACL 有效访问、RDP、快速切用户和跨
   session 行为均为**范围外**，不得写作已验证或待 W16 人工 Gate。
 
-## 当前 W16 目标与完成条件
+## W16 完成状态与边界
 
 1. 在 Qt 桌面中提供 LLM/TTS/VTS/STT 路径/设备和启动项设置；任何密钥或 VTS 令牌只可直写当前用户的
    DPAPI 加密存储，UI 不回填、不显示、不持久化明文。
@@ -54,8 +60,8 @@
    再次确认，并诚实呈现逻辑删除与底层清理待处理语义。
 4. 在视觉开关旁固定披露指定窗口范围、cloud vision 独立开关和可能的云端出口；不能暗示 W16 已实现真实
    截图或云上传。Debug 只展示无内容 capability、稳定错误码、版本和队列占用。
-5. 以自动化验证可复现的配置写入、DPAPI 命令边界、feature 屏障、记忆操作、导出、UI 状态与隐私边界；
-   完成聚焦提交、推送、Draft PR、exact-head CI 后才可报告 W16 自动交付完成。
+5. 已以自动化验证可复现的配置写入、DPAPI 命令边界、feature 屏障、记忆操作、导出、UI 状态与隐私边界，
+   并完成聚焦提交、推送、PR exact-head CI、受控合并与合并后基线验证。
 
 ## 已完成的本地实现与自动化证据
 
@@ -91,8 +97,9 @@
 
 ## 未完成项与真实人工 Gate
 
-- W16 自动交付的客观条件是 PR 当前 exact head 的所有必需检查均为 `success`；这项条件必须在最终报告前
-  现场核验，且任何后续提交都要重新满足它。任何客观失败必须直接记录和修复，不能转交人工确认。
+- W16 的自动交付、PR 合并和合并后基线验证均已完成。closing head `6c5fd83` 的远端检查和 merge commit
+  `dc84319` 上的本地全量测试是可复核证据；任何后续 W 项仍须在自己的 exact head 上独立验证。客观失败
+  必须直接记录和修复，不能转交人工确认。
 - 实际 Windows Qt 已通过本次 feature 启用/确认/状态更新路径的复测。仍保留 AI 无法忠实复现的理解性审阅：
   用户是否正确理解历史、记忆、视觉、云端和删除语义；其余部分尚未执行，不能把整个 Gate 标记为通过。
 - 真实音频设备、麦克风、VTS/GPT-SoVITS 服务与资源预检属于 W17–W19；真实指定窗口捕获/cloud vision

@@ -3,9 +3,12 @@
 ## 状态与范围
 
 > 状态：初始实现提交 [`0dfad2f`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/0dfad2f6039bc30c3273a004586fb0484f01c0d7)
-> 已推送，[Draft PR #28](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/28) 已打开；历史 head
-> `c1cce43` 与 `cd56622` 的远端 CI 已全绿。自动交付只由 PR 当前 exact head 的必需检查全部 `success`
-> 判定，任何新提交均不继承旧 head 结果。最后本地核验：2026-07-21（Asia/Shanghai）。
+> 已由 [PR #28](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/28) 合并到
+> `agent/windows-development-baseline`，merge commit 为 `dc84319d13e0330321a9f284d4b4685a12615a0f`。closing head
+> `6c5fd83c5d3aff3f2fe58b584a456754564b89a6` 的 pull-request run `29825814677` 与 push run `29825811679`
+> 均为 `success`，八项 macOS/Windows quality 与 installed-wheel 检查均通过；合并后 `uv sync --locked` 和
+> `uv run pytest` 通过（`1134 passed, 3 skipped in 157.59s`，总覆盖率 90.39%）。最后本地核验：2026-07-21
+> （Asia/Shanghai）。
 > 本记录只描述当前工作树已实现和已验证的部分，不把计划、headless UI 或 fake DPAPI 当作真实 Windows
 > 理解性/设备验收。
 
@@ -82,8 +85,9 @@ W16 在 W10/W15 已合并基线上实现最小桌面管理面：secret-free 设�
 
 ## 未验证项、风险与人工 Gate
 
-- 聚焦提交、推送、Draft PR 和已记录的历史 head CI 均已完成；W16 自动交付仍只在 PR 当前 exact head
-  全部必需检查为 `success` 时成立。最终报告必须现场确认该动态状态，不能把旧 head 或 headless 结果替代它。
+- 聚焦提交、推送、closing head CI、PR 合并和合并后基线测试均已完成。PR #28 以 merge commit `dc84319`
+  合并；closing head `6c5fd83` 的八项远端检查与合并后 `uv run pytest` 是可复核证据，不能以旧 head 或
+  headless 结果替代后续 W 项的验证。
 - 实际 Windows Qt 中的 feature 启用、确认“是”和状态更新路径已复测通过。其余候选人工项仍是用户对历史、
   记忆、视觉、云端和删除语义的理解性审阅，尚未执行。配置写入、状态机、取消/关闭竞争和可合成故障必须先由
   自动化证明，不能改列人工 Gate。
