@@ -74,7 +74,11 @@ W16 在 W10/W15 已合并基线上实现最小桌面管理面：secret-free 设�
   `tests/unit/test_gpt_sovits.py` 和 `tests/unit/test_mock_clients.py` 的测试余量，保留首字节 deadline
   ownership 与非法 WAV 拒绝断言；相关 4 个参数化测试连续 20 轮全通过，随后完整本地 suite 通过。此前失败的
   [PR CI #29823189335](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29823189335) 保留为
-  历史证据，当前候选 head 必须重新验证。
+  历史证据。测试稳定化 head [`523406d`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/523406dfc57bbf4e75aadfe407e5858495b4b976)
+  的 [push CI #29825077879](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29825077879) 与
+  [pull-request CI #29825080662](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29825080662)
+  均为 `success`，每个 run 的 macOS/Windows quality 和 installed-wheel job 均通过；现场审计时 PR #28 为
+  Draft / `OPEN` / `CLEAN`，没有 review、普通评论或 inline review comment。该证据不替代任何后来 exact head。
 
 ## 未验证项、风险与人工 Gate
 

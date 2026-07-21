@@ -82,7 +82,12 @@
   调度余量，未改变产品超时逻辑：首字节成功/失败分别使用 2s/100ms 与 10s 延迟，mock WAV 验证使用 3s
   总时限。两组测试连续 20 轮、每轮 4 个断言均通过；失败 head 的
   [PR CI #29823189335](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29823189335) 是历史
-  反例，当前候选 head 仍须重新获得 exact-head CI。
+  反例。测试稳定化 head [`523406d`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/523406dfc57bbf4e75aadfe407e5858495b4b976)
+  的 [push CI #29825077879](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29825077879) 与
+  [pull-request CI #29825080662](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29825080662)
+  均为 `success`，各自的 macOS/Windows quality 和 installed-wheel job 也均通过。现场审计时 PR #28 为
+  Draft / `OPEN` / `CLEAN`，没有 review、普通评论或 inline review comment；该 head 仍会随着后续证据提交
+  成为历史记录，不能替代下一 head 的检查。
 
 ## 未完成项与真实人工 Gate
 
