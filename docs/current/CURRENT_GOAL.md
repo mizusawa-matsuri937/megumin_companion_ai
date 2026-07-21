@@ -8,7 +8,10 @@
 > 它修复的是测试同步：macOS 上的 fake `whisper-cli` 曾在注册 `SIGTERM` handler 前公布 PID，导致
 > 取消测试可能在 setup 窗口内观察不到 `.term` 标记；产品运行代码未因该问题改变。项目所有者已于
 > 2026-07-21 确认通过唯一的 W15 单用户 Explorer/托盘视觉与交互审计，并明确授权受控合并 PR #27。
-> 本关闭记录推送后的 exact-head CI 是合并前的最后自动化前提；尚未发生合并。
+> 关闭记录 head `86ed0ff3a341741da1d597a235a9cfbf3f7c7cef` 的 pull-request run `29801772761` 与
+> push run `29801771129` 均成功；PR #27 已以 merge commit
+> `252aa49285296eeb7a7dc835fd19eea90c7f1633` 合并到 `agent/windows-development-baseline`。合并后
+> `uv sync --locked` 与 `uv run pytest` 也已通过（`1120 passed, 3 skipped in 165.95s`，90.10%）。
 
 ## 已确认事实
 
@@ -17,11 +20,10 @@
   `0a9f199f01201e14a342a28798a2ca86e6287e25`。本地 W15 分支从该提交创建。
 - 项目所有者已明确要求开始 **W15：单实例、托盘和统一生命周期**；这替代了本文件先前
   “等待 W14 人工 Gate 后不得启动 W15” 的旧状态。
-- 当前实现分支为 `codex/w15-single-instance-lifecycle`；W15 Draft PR
-  [#27](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/27) 的目标为
-  `agent/windows-development-baseline`。运行/测试 head `990f45b` 的远端 exact-head CI 已通过，且所有者
-  已确认单用户 Windows shell Gate 通过并明确授权受控合并。此关闭记录的 exact-head CI 尚待确认；在此之前
-  不得表述为已关闭、已合并或可发布。
+- W15 已由 [PR #27](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/27) 于 2026-07-21
+  合并到 `agent/windows-development-baseline`，merge commit 为
+  `252aa49285296eeb7a7dc835fd19eea90c7f1633`。合并前 closing head `86ed0ff` 的八项远端检查均成功，
+  合并后本地基线已 fast-forward 到该提交并完成全量测试。当前用户尚未授权开始 W16 或后续 W 项。
 - W15 仍受 ADR-W01、ADR-W07、ADR-W08、Windows 数据流不变量与 P0-04 风险约束：Qt
   只拥有 UI/托盘，BackendThread 的应用 lifespan 仍拥有 turn、worker、VTS、memory 和日志。
 - 所有者已明确限定本产品为单机、单 Windows 用户、个人私用。多用户、跨用户 DACL 有效访问、
@@ -39,8 +41,8 @@
    有界进程级 deadline 纳入同一 owner graph；不得将 Python thread timeout 表述为已安全停止。
 4. 增加默认关闭的当前用户启动项、路径变更/stale value 清理 API 与 crash marker v1；异常后
    安全模式必须不自动恢复 vision/cloud vision/proactive。
-5. 在最终 head 上完成自动化、严格类型/格式检查、聚焦审查、提交、推送与 Draft PR；所有者已确认
-   无法由 AI 忠实复现的单用户 Windows shell 视觉/交互 Gate 通过。
+5. 已在最终 head 上完成自动化、严格类型/格式检查、聚焦审查、提交、推送、PR 合并与合并后验证；
+   所有者已确认无法由 AI 忠实复现的单用户 Windows shell 视觉/交互 Gate 通过。
 
 ## 已完成的自动化证据
 
@@ -95,11 +97,11 @@
 - 所有者于 2026-07-21 确认上一项单用户实际 Windows shell 审计通过：关闭到托盘、tray 的显示/隐藏/退出
   以及 Explorer 重启后的图标恢复和“显示窗口”交互均已人工确认。这是所有者人工证据，不是 headless/mock
   的替代声明；W15 不再有待办人工 Gate。
-- 所有者已于 2026-07-21 明确接受本记录所列单机、单 Windows 用户产品范围，并授权在关闭记录通过
-  exact-head CI 后执行受控合并。多用户、RDP、快速切用户、跨 session、W20 OS 信号、W24 冻结包与 W25
-  安装器边界仍为范围外/后续任务，不能因接受范围而表述为已支持。
-- W15 Draft PR #27 仍未合并。上述 runtime/test head 的远端 CI 与所有者人工确认不替代后续文档提交的
-  检查、评审或明确合并授权；不能视为已合并或可发布。
+- 所有者已于 2026-07-21 明确接受本记录所列单机、单 Windows 用户产品范围，并在 closing head 的
+  exact-head CI 成功后授权受控合并；PR #27 随后已合并。多用户、RDP、快速切用户、跨 session、W20 OS
+  信号、W24 冻结包与 W25 安装器边界仍为范围外/后续任务，不能因接受范围而表述为已支持。
+- W15 的实现、自动化、所有者人工 Gate、PR 合并和合并后基线测试均已完成。它不是整个产品发布完成：
+  后续 W 项仍需在获得新的明确授权后分别实施。
 
 ## 相关资料
 

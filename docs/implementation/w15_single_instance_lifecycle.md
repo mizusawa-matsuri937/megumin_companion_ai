@@ -2,7 +2,7 @@
 
 ## 状态与范围
 
-> 状态：实现、自动化和所有者确认的单用户人工 Gate 已完成；Draft PR
+> 状态：实现、自动化和所有者确认的单用户人工 Gate 已完成；已合并
 > [#27](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/27) 的首次 macOS CI 类型失败已修复，
 > 运行代码 head `ec46df9fd699af9ceb9581d96100de5d8a3dfce2` 的远端 CI 已通过。后续文档 head
 > `819e782bac71e2521580be8054891963512eec08` 暴露既有取消屏障测试的时序前提错误，本工作树已将其
@@ -11,7 +11,7 @@
 > 非 deadline 测试对紧 deadline 的偶发依赖；本工作树仅放宽该测试 fixture，未改变产品超时行为。
 > 实现与测试变更 head `de328c402b40086a9f671d10d6c11be3b7c43d94` 的 pull-request run
 > `29793986896` 与 push run `29793985209` 均为 success，八项 macOS/Windows quality 与 installed-wheel
-> 检查全部通过；PR 仍为 Draft，未合并。
+> 检查全部通过；该历史节点当时的 PR 仍为 Draft。
 > 2026-07-21 所有者进一步限定产品为单机、单 Windows 用户、个人私用：多用户、RDP、快速切用户和
 > 跨 session 验证均为范围外，不再作为 W15 人工 Gate。AI 已补齐所有可可靠复现的关闭/托盘断言；人工
 > 只保留实际 Explorer/托盘的单用户视觉与交互确认。
@@ -19,10 +19,12 @@
 > 与 push run `29799615238` 均成功，八项 macOS/Windows quality 与 installed-wheel 检查全部通过。它仅
 > 修复 fake whisper CLI 的测试同步：子进程在注册 `SIGTERM` handler 后才发布 `.ready`，消除 PID 已写入、
 > handler 尚未就绪时的取消竞态；产品运行代码未改变。
-> 所有者于 2026-07-21 确认先前列出的同一账户 Explorer/托盘视觉与交互审计通过。该确认关闭 W15 唯一
-> 人工 Gate，但不代表 PR 已评审、已合并或可发布。
-> 所有者随后明确授权受控合并 PR #27，并接受本记录列明的单机、单 Windows 用户范围；本关闭记录的
-> exact-head CI 是合并前的最后自动化前提，尚未发生合并。
+> 所有者于 2026-07-21 确认先前列出的同一账户 Explorer/托盘视觉与交互审计通过，关闭 W15 唯一人工 Gate；
+> 随后明确授权受控合并 PR #27，并接受本记录列明的单机、单 Windows 用户范围。关闭记录 head
+> `86ed0ff3a341741da1d597a235a9cfbf3f7c7cef` 的 pull-request run `29801772761` 和 push run
+> `29801771129` 均全绿后，PR #27 已以 merge commit
+> `252aa49285296eeb7a7dc835fd19eea90c7f1633` 合并。合并后的基线 full test 为
+> `1120 passed, 3 skipped in 165.95s`，覆盖率 90.10%。
 > 最后更新：2026-07-21（Asia/Shanghai）。
 
 W15 基于已合并的 W14 merge commit
@@ -102,8 +104,8 @@ W20 的 OS 信号或 W25 的安装器。
 - 所有者于 2026-07-21 确认 W15 唯一的单用户人工项通过：同一测试账户中，主窗口关闭后托盘图标仍可见，
   菜单可显示/隐藏/退出；重启 Explorer 后图标恢复且“显示窗口”仍有效。这是实际 Windows shell
   可见性/交互的人工确认，不由 headless/mock 冒充；W15 不再有待办人工 Gate。
-- 所有者接受多用户、RDP、快速切用户和跨 session 为范围外，并授权在该关闭记录通过 exact-head CI 后
-  进行 guarded merge。该接受不改变这些场景“未声明支持”的事实；W20、W24 和 W25 的边界保持不变。
+- 所有者接受多用户、RDP、快速切用户和跨 session 为范围外，并在该关闭记录通过 exact-head CI 后授权
+  guarded merge；PR #27 已合并。该接受不改变这些场景“未声明支持”的事实；W20、W24 和 W25 的边界保持不变。
 - 冻结包无控制台窗口和真实安装/卸载属于 W24/W25，当前不能写作 W15 人工阻塞或已验证结果。
 
 ## 回滚
