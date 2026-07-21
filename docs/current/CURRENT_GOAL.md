@@ -1,19 +1,13 @@
 # 当前产品目标
 
-> 最后核验：2026-07-21（Asia/Shanghai）。W15 的当前本地工作树已完成 AI 优先自动化核验：
-> `uv run pytest` 为 `1120 passed, 3 skipped`、总覆盖率 90.10%；Windows 与 macOS 模拟的严格
-> 类型检查、lint、格式和锁文件检查亦已通过。Draft PR
-> [#27](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/27) 的首次 head 曾在 macOS
-> strict mypy 失败，原因和修复见下；修复后的运行代码 head
-> `ec46df9fd699af9ceb9581d96100de5d8a3dfce2` 已通过 macOS/Windows quality 和两项 installed-wheel。
-> 随后的文档 head `819e782bac71e2521580be8054891963512eec08` 暴露一项既有集成测试的错误时序前提；
-> 本工作树已改为确定性门控，最终交付仍只以匹配最终 head 的远端检查为证据。
-> `0c902494e9880151a0b1b59d3ae0154ccd6dbf86` 的 push CI 全部通过，但同一 head 的 PR CI 在 Windows
-> 暴露另一项既有 GPT-SoVITS 资源追踪测试的意外 deadline 依赖；本工作树只为该非 deadline 测试设置
-> 明确且仍有界的宽松 deadline，生产逻辑与 deadline 边界测试均未改变。
-> 实现与测试变更 head `de328c402b40086a9f671d10d6c11be3b7c43d94` 的 pull-request run
-> `29793986896` 与 push run `29793985209` 均为 success，八项 macOS/Windows quality 与
-> installed-wheel 检查全部通过；PR 仍为 Draft，真实 Windows Gate 尚未完成。
+> 最后核验：2026-07-21（Asia/Shanghai）。W15 的运行/测试 head
+> `990f45bc4942af09451548ae6903680d95662c92` 已完成 AI 优先核验：本地 `uv run pytest` 为
+> `1120 passed, 3 skipped in 155.27s`、总覆盖率 90.10%；Windows 与 macOS 模拟的严格类型检查、
+> lint、格式和锁文件检查均通过。该 head 的 pull-request run `29799617184` 与 push run
+> `29799615238` 均为 success，macOS/Windows quality 与两项 installed-wheel 共八项检查均通过。
+> 它修复的是测试同步：macOS 上的 fake `whisper-cli` 曾在注册 `SIGTERM` handler 前公布 PID，导致
+> 取消测试可能在 setup 窗口内观察不到 `.term` 标记；产品运行代码未因该问题改变。PR #27 仍为 Draft，
+> 唯一残留的 W15 人工项是单用户真实 Explorer/托盘视觉与交互确认。
 
 ## 已确认事实
 
@@ -24,8 +18,8 @@
   “等待 W14 人工 Gate 后不得启动 W15” 的旧状态。
 - 当前实现分支为 `codex/w15-single-instance-lifecycle`；W15 Draft PR
   [#27](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/27) 的目标为
-  `agent/windows-development-baseline`，尚未完成远端 exact-head CI 或人工 Windows Gate；不得把它
-  表述为已关闭、已合并或可发布。
+  `agent/windows-development-baseline`。运行/测试 head `990f45b` 的远端 exact-head CI 已通过，但 PR
+  仍待单用户 Windows shell Gate 和评审；不得表述为已关闭、已合并或可发布。
 - W15 仍受 ADR-W01、ADR-W07、ADR-W08、Windows 数据流不变量与 P0-04 风险约束：Qt
   只拥有 UI/托盘，BackendThread 的应用 lifespan 仍拥有 turn、worker、VTS、memory 和日志。
 - 所有者已明确限定本产品为单机、单 Windows 用户、个人私用。多用户、跨用户 DACL 有效访问、
@@ -46,7 +40,7 @@
 5. 在最终 head 上完成自动化、严格类型/格式检查、聚焦审查、提交、推送与 Draft PR；随后仅保留
    无法由 AI 忠实复现的单用户 Windows shell 视觉/交互 Gate。
 
-## 已完成的自动化证据（提交前工作树）
+## 已完成的自动化证据
 
 - `uv run pytest --no-cov tests\\unit\\ui\\test_w15_lifecycle.py tests\\unit\\test_desktop_startup.py`
   `tests\\unit\\test_desktop_safe_mode.py tests\\unit\\ui\\test_application.py -q`
@@ -54,7 +48,7 @@
   重复退出、关闭到托盘、hung backend deadline、固定 tray actions、safe-mode feature 状态、HKCU
   stale startup path，以及关闭期快捷键/托盘命令阻断、关闭期 activation request 丢弃、tray 重显计时器和
   不触碰真实用户实例/HKCU 的桌面组合测试。
-- `uv run pytest` → `1120 passed, 3 skipped in 144.93s`；总覆盖率 `90.10%`（达到 90% 门槛）。
+- `uv run pytest` → `1120 passed, 3 skipped in 155.27s`；总覆盖率 `90.10%`（达到 90% 门槛）。
 - `uv run mypy app desktop_client tests tools\\installed_wheel_smoke.py tools\\w05_ci_smoke.py` →
   `Success: no issues found in 215 source files`；另行执行
   `uv run mypy --platform darwin app desktop_client tests tools\\installed_wheel_smoke.py tools\\w05_ci_smoke.py`
@@ -82,6 +76,13 @@
 - 实现与测试变更 head `de328c402b40086a9f671d10d6c11be3b7c43d94` 的 pull-request run
   `29793986896` 和 push run `29793985209` 均为 success；各自的 macOS/Windows quality 与两项
   installed-wheel，共八项远端检查全部通过。该证据不替代下述真实 Windows Gate。
+- AI 优先范围补强 head `14d54056ad78de74409651ff454d134648ce1e6a` 的 push run `29799041566`
+  成功，但其 PR run `29799043005` 的 macOS quality 失败于
+  `test_repeated_cancellation_cannot_interrupt_process_reaping`。已确认这是 test fixture 的同步漏洞：
+  fake `sleep` CLI 先写 PID、后注册 `SIGTERM` handler，父任务可在两者之间取消，默认 handler 会使子
+  进程退出而没有 `.term` 标记。测试提交 `990f45b` 改为在 handler 注册后写 `.ready`，并在取消前等待
+  该 marker；聚焦断言连续 20 次通过、`test_whisper_cpp.py` 19 项通过，产品代码未改变。其 exact-head
+  pull-request run `29799617184` 与 push run `29799615238` 均成功，八项远端检查全部通过。
 
 ## 未验证项与人工 Gate
 
@@ -91,8 +92,8 @@
   停止均已由自动化验证。锁屏/注销/关机 OS 信号属于 W20；冻结包无控制台窗口属于 W24；安装/卸载属于 W25。
 - 剩余唯一 W15 人工 Gate：同一测试账户中，确认关闭主窗口后托盘图标可见、菜单能显示/隐藏/退出；重启
   Explorer 后确认图标恢复且“显示窗口”有效。它是单用户 Windows shell 视觉/交互检查，mock/headless 不冒充。
-- W15 Draft PR #27 仍未合并。远端 CI 只能在其匹配当前最终 head 时作为交付证据；即使通过，仍须完成
-  上述单用户视觉 Gate 和评审，不能视为已合并或可发布。
+- W15 Draft PR #27 仍未合并。上述 runtime/test head 的远端 CI 不替代后续文档提交的检查，也不替代
+  单用户视觉 Gate 和评审；不能视为已合并或可发布。
 
 ## 相关资料
 

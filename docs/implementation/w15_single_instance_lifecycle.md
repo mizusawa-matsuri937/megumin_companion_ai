@@ -15,6 +15,10 @@
 > 2026-07-21 所有者进一步限定产品为单机、单 Windows 用户、个人私用：多用户、RDP、快速切用户和
 > 跨 session 验证均为范围外，不再作为 W15 人工 Gate。AI 已补齐所有可可靠复现的关闭/托盘断言；人工
 > 只保留实际 Explorer/托盘的单用户视觉与交互确认。
+> 此后运行/测试 head `990f45bc4942af09451548ae6903680d95662c92` 的 pull-request run `29799617184`
+> 与 push run `29799615238` 均成功，八项 macOS/Windows quality 与 installed-wheel 检查全部通过。它仅
+> 修复 fake whisper CLI 的测试同步：子进程在注册 `SIGTERM` handler 后才发布 `.ready`，消除 PID 已写入、
+> handler 尚未就绪时的取消竞态；产品运行代码未改变。
 > 最后更新：2026-07-21（Asia/Shanghai）。
 
 W15 基于已合并的 W14 merge commit
@@ -44,7 +48,7 @@ W20 的 OS 信号或 W25 的安装器。
   清除 crash 证据；未清理/损坏 marker 会进入 safe mode，并持久化关闭 vision、cloud vision 与
   proactive，待 W16 的显式用户操作重新启用。
 
-## 自动化证据（提交前工作树）
+## 自动化证据
 
 - `uv run pytest --no-cov tests\\unit\\ui\\test_w15_lifecycle.py tests\\unit\\test_desktop_startup.py`
   `tests\\unit\\test_desktop_safe_mode.py tests\\unit\\ui\\test_application.py -q`
@@ -52,7 +56,7 @@ W20 的 OS 信号或 W25 的安装器。
   opaque session marker、关闭到托盘、重复退出、hung backend deadline、固定 tray actions、safe-mode
   feature 状态与 HKCU stale startup path 外，还覆盖关闭期 `Ctrl+Enter`/托盘停止命令阻断、关闭期
   activation request 丢弃、Explorer 恢复用 tray 重显计时器，以及不触碰真实用户实例/HKCU 的桌面组合测试。
-- `uv run pytest` → `1120 passed, 3 skipped in 144.93s`；总覆盖率 `90.10%`，满足项目 90% 门槛。
+- `uv run pytest` → `1120 passed, 3 skipped in 155.27s`；总覆盖率 `90.10%`，满足项目 90% 门槛。
 - `uv run mypy app desktop_client tests tools\\installed_wheel_smoke.py tools\\w05_ci_smoke.py` →
   215 source files 无类型问题；`uv run mypy --platform darwin app desktop_client tests`
   `tools\\installed_wheel_smoke.py tools\\w05_ci_smoke.py` 也通过。`uv run ruff check .`、
@@ -76,6 +80,13 @@ W20 的 OS 信号或 W25 的安装器。
 - 实现与测试变更 head `de328c402b40086a9f671d10d6c11be3b7c43d94` 的 pull-request run `29793986896`
   与 push run `29793985209` 均成功；各自的 macOS/Windows quality 与两项 installed-wheel，共八项
   远端检查全部通过。该 CI 证据不替代残余风险段列出的真实 Windows 验证。
+- AI 优先补强 head `14d54056ad78de74409651ff454d134648ce1e6a` 的 push run `29799041566` 成功，
+  PR run `29799043005` 则在 macOS 的
+  `test_repeated_cancellation_cannot_interrupt_process_reaping` 失败。根因已确认：fake CLI 在写 PID 后、
+  注册 `SIGTERM` handler 前留下 setup 窗口；测试的第一次取消可在该窗口触发默认 handler，故不会写出
+  `.term` 标记。`990f45b` 使 fake CLI 在 handler 注册后发布 `.ready`，测试取消前等待并断言该 marker。
+  聚焦测试连续 20 次通过，完整 `test_whisper_cpp.py` 为 19 项通过；其 pull-request run `29799617184`
+  与 push run `29799615238` 的八项远端检查全绿。此修复不改产品运行代码。
 
 ## 残余风险与人工 Gate
 
