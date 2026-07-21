@@ -38,6 +38,12 @@
 - 所有者已于 2026-07-21 授权受控合并 PR #28。closing head `6c5fd83` 的八项远端 macOS/Windows quality 与
   installed-wheel 检查均成功后，PR #28 于 2026-07-21T11:30:59Z 合并；合并后的本地基线已 fast-forward 到
   `dc84319` 并完成 `uv sync --locked` 和全量测试。该事实不把仍未执行的隐私语义理解性审阅写成已通过。
+- 合并后的 docs-only 关闭记录 [`78eac32`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/78eac32bc154aadc5eb206566f2d92008e1c1ff3)
+  首次 push run [#29826924703](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29826924703)
+  的 Windows quality 在既有 `test_default_headless_smoke_uses_w14_runtime_and_keeps_stdout_as_json` 和
+  `test_configured_desktop_runtime_restarts_with_a_body_free_snapshot` 处失败；GitHub 日志没有给出断言正文。该
+  commit 相对已绿 merge tree 仅改两份 Markdown；两项精确测试本机连续 20 轮（40 个断言）通过，`--failed`
+  重跑同一 job 也成功。因此**合理推测**为 Windows runner 时序波动，不能把一次重跑成功写成永久稳定。
 - 后续状态记录 head [`8f87c73`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/8f87c733cd43c7d6714f26616f8542de4e53df2a)
   的 [pull-request CI #29820584704](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29820584704)
   已成功；[push CI #29820582676](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29820582676)

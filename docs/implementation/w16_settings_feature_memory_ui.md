@@ -88,6 +88,11 @@ W16 在 W10/W15 已合并基线上实现最小桌面管理面：secret-free 设�
 - 聚焦提交、推送、closing head CI、PR 合并和合并后基线测试均已完成。PR #28 以 merge commit `dc84319`
   合并；closing head `6c5fd83` 的八项远端检查与合并后 `uv run pytest` 是可复核证据，不能以旧 head 或
   headless 结果替代后续 W 项的验证。
+- 合并后的 docs-only 关闭记录 `78eac32` 首次 push run
+  [#29826924703](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29826924703) 的 Windows
+  quality 在两个既有 Qt runtime 测试（默认 headless smoke、配置 runtime restart）失败，且 CI 日志没有断言正文。
+  它相对 merge tree 只修改 Markdown；这两项测试本机连续 20 轮、40 个断言通过，`gh run rerun --failed` 后同一
+  Windows job 成功。现有证据**合理推测**为 runner 时序波动，不把重跑成功表述为永久稳定。
 - 实际 Windows Qt 中的 feature 启用、确认“是”和状态更新路径已复测通过。其余候选人工项仍是用户对历史、
   记忆、视觉、云端和删除语义的理解性审阅，尚未执行。配置写入、状态机、取消/关闭竞争和可合成故障必须先由
   自动化证明，不能改列人工 Gate。
