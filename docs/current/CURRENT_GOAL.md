@@ -7,7 +7,8 @@
 > `29799615238` 均为 success，macOS/Windows quality 与两项 installed-wheel 共八项检查均通过。
 > 它修复的是测试同步：macOS 上的 fake `whisper-cli` 曾在注册 `SIGTERM` handler 前公布 PID，导致
 > 取消测试可能在 setup 窗口内观察不到 `.term` 标记；产品运行代码未因该问题改变。项目所有者已于
-> 2026-07-21 确认通过唯一的 W15 单用户 Explorer/托盘视觉与交互审计；PR #27 仍为 Draft，未合并。
+> 2026-07-21 确认通过唯一的 W15 单用户 Explorer/托盘视觉与交互审计，并明确授权受控合并 PR #27。
+> 本关闭记录推送后的 exact-head CI 是合并前的最后自动化前提；尚未发生合并。
 
 ## 已确认事实
 
@@ -19,7 +20,8 @@
 - 当前实现分支为 `codex/w15-single-instance-lifecycle`；W15 Draft PR
   [#27](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/27) 的目标为
   `agent/windows-development-baseline`。运行/测试 head `990f45b` 的远端 exact-head CI 已通过，且所有者
-  已确认单用户 Windows shell Gate 通过；PR 仍待评审和明确合并授权，不得表述为已关闭、已合并或可发布。
+  已确认单用户 Windows shell Gate 通过并明确授权受控合并。此关闭记录的 exact-head CI 尚待确认；在此之前
+  不得表述为已关闭、已合并或可发布。
 - W15 仍受 ADR-W01、ADR-W07、ADR-W08、Windows 数据流不变量与 P0-04 风险约束：Qt
   只拥有 UI/托盘，BackendThread 的应用 lifespan 仍拥有 turn、worker、VTS、memory 和日志。
 - 所有者已明确限定本产品为单机、单 Windows 用户、个人私用。多用户、跨用户 DACL 有效访问、
@@ -93,6 +95,9 @@
 - 所有者于 2026-07-21 确认上一项单用户实际 Windows shell 审计通过：关闭到托盘、tray 的显示/隐藏/退出
   以及 Explorer 重启后的图标恢复和“显示窗口”交互均已人工确认。这是所有者人工证据，不是 headless/mock
   的替代声明；W15 不再有待办人工 Gate。
+- 所有者已于 2026-07-21 明确接受本记录所列单机、单 Windows 用户产品范围，并授权在关闭记录通过
+  exact-head CI 后执行受控合并。多用户、RDP、快速切用户、跨 session、W20 OS 信号、W24 冻结包与 W25
+  安装器边界仍为范围外/后续任务，不能因接受范围而表述为已支持。
 - W15 Draft PR #27 仍未合并。上述 runtime/test head 的远端 CI 与所有者人工确认不替代后续文档提交的
   检查、评审或明确合并授权；不能视为已合并或可发布。
 
