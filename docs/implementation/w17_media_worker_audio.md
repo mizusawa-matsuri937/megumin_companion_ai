@@ -3,7 +3,8 @@
 ## 状态与范围
 
 > 状态：初始实现提交 [`3d76b0b`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/3d76b0bc31214dfbd7f8423b287d096182629b8a)
-> 与打断竞态修复 [`8ff9070`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/8ff9070d3e7d2cd9203787612918e69edffadef8)
+> 与打断竞态修复 [`8ff9070`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/8ff9070d3e7d2cd9203787612918e69edffadef8)、
+> 测试稳定化 [`550671d`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/550671dba9a08b552ed3d79214f533139487ebb6)
 > 已推送；[Draft PR #30](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/30) 已以
 > `agent/windows-development-baseline` 为 base 创建。最后本地核验：2026-07-22（Asia/Shanghai）。基线为
 > `agent/windows-development-baseline` 的
@@ -97,6 +98,8 @@ helper protocol、Job Object 或资源授权模型。
   实际仍观察到中间 `failed` 状态；同一 SHA 的 `pull_request` Windows quality 通过。这是测试同步不足的合理判断，
   不是产品音频路径已失败的证据。测试现以 0.3 秒有界轮询最终 `quarantined` 状态；该单测连续 20 次、完整 worker
   supervisor 套件 45 项及最新全仓 `1158 passed, 3 skipped in 157.15s` 均通过，coverage 为 90.43%。
+- 该测试稳定化提交 `550671d` 的 `push` run `29905046336` 和 `pull_request` run `29905048854` 均成功；Windows/macOS
+  quality 与 installed-wheel 8 项检查全部通过。此为该 executable code head 的远端证据，不冒充真实硬件声学验证。
 
 上述是 fake/合成 WAV/受控 fake backend 的证据，不包含真实音频、角色素材、用户路径、secret 或 token。
 
@@ -124,5 +127,5 @@ RDP、快速切用户、跨 session 与跨用户 DACL 有效访问为当前单�
 
 ## 发布状态
 
-W17 的初始聚焦提交、打断竞态修复和 Draft PR 已完成。当前时序测试稳定化尚待提交、推送；之后必须在最终 exact
-head 上重新核验远端 CI，并完成上列真实设备 Gate。不得继承 W16、`8ff9070` 或更早 PR head 的结果。
+W17 的初始聚焦提交、打断竞态修复、测试稳定化和 Draft PR 已完成；`550671d` 的远端 CI 已通过。真实设备 Gate 仍必须
+在最终 exact head 上完成，且任何后续 head 都必须重新核验 CI；不得继承 W16、`8ff9070` 或更早 PR head 的结果。

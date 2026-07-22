@@ -6,8 +6,9 @@
 > [`3d76b0b`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/3d76b0bc31214dfbd7f8423b287d096182629b8a)，
 > Gate A 打断竞态修复为 [`8ff9070`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/8ff9070d3e7d2cd9203787612918e69edffadef8)。
 > [Draft PR #30](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/30) 已以
-> `agent/windows-development-baseline` 为 base 创建。其后续 Windows 时序测试稳定化正待提交、推送和在新 exact head 上重新核验；
-> 真实声卡体验也尚未核验，不能写成已完成。
+> `agent/windows-development-baseline` 为 base 创建。Windows 时序测试稳定化提交
+> [`550671d`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/550671dba9a08b552ed3d79214f533139487ebb6)
+> 已在该 exact code head 的 push 与 pull-request 工作流中通过；真实声卡体验仍尚未核验，不能写成已完成。
 
 ## 已确认事实
 
@@ -38,6 +39,10 @@
   `test_hanging_job_hits_hard_deadline_and_terminates_entire_fake_job` 失败：固定等待 30 ms 后状态仍为 `failed`，
   尚未由异步 process watcher 变为 `quarantined`。同一 SHA 的 `pull_request` run `29904004777` 的 Windows 和 macOS
   quality、两项 installed-wheel 均通过。该对照支持“固定 sleep 的测试同步不足”的判断，但不把一次通过当作新 head 的 CI 结果。
+- 测试稳定化提交 `550671d` 的 exact code head 已由 `push` run
+  [`29905046336`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29905046336) 和 `pull_request` run
+  [`29905048854`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29905048854) 分别核验：两组 Windows/macOS
+  quality 及 installed-wheel 全部通过。它证明该代码 head 的 CI，不代替任何未来变更 head 的检查或真实声卡 Gate。
 
 ## 本地自动化证据
 
@@ -83,8 +88,8 @@
 ## 回滚与下一步
 
 - 将 `playback_mode` 设为 `silent` 即可关闭本地播放；文字对话继续。无法恢复或异常设备不应触发无限重试。
-- Draft PR #30 已打开；当前测试稳定化尚需提交、推送并重新核验最终 exact head 的远端 CI，随后在该 head 上完成上列
-  真实设备 Gate。任何后续文档/修复提交都不得继承 `8ff9070` 或更早 head 的 CI 结果。
+- Draft PR #30 保持 Draft。W17 可执行代码的测试稳定化 head `550671d` 已完成远端 CI；在最终将要审计的任何新 head 上仍须
+  重新核验检查，随后在该 head 上完成上列真实设备 Gate。不得继承 `8ff9070` 或更早 head 的 CI 结果。
 
 ## 相关资料
 
