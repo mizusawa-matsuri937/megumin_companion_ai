@@ -13,6 +13,7 @@ from app.memory.models import MemoryItem, MemorySensitivity, MemoryStatus, Memor
 from app.schemas import (
     FeatureName,
     FeatureState,
+    InputMode,
     PipelineEvent,
     SessionReset,
     SessionSnapshotChunk,
@@ -84,6 +85,51 @@ class TurnCancelCommand:
     @property
     def session_id(self) -> str:
         return self.payload.session_id
+
+
+@dataclass(frozen=True, slots=True)
+class VoiceStartCommand:
+    """Begin explicit PTT capture; no audio payload crosses the UI bridge."""
+
+    session_id: str = "local_session"
+    command_id: str = field(default_factory=lambda: prefixed_id("cmd"))
+    protocol_version: Literal[1] = field(default=BRIDGE_PROTOCOL_VERSION, init=False)
+    type: Literal["voice.start"] = field(default="voice.start", init=False)
+
+    def __post_init__(self) -> None:
+        _validate_opaque_id(self.session_id, field_name="voice session id")
+        _validate_command_id(self.command_id)
+
+
+@dataclass(frozen=True, slots=True)
+class VoiceStopCommand:
+    """Stop PTT capture and ask MediaWorker for one bounded transcript."""
+
+    session_id: str = "local_session"
+    command_id: str = field(default_factory=lambda: prefixed_id("cmd"))
+    protocol_version: Literal[1] = field(default=BRIDGE_PROTOCOL_VERSION, init=False)
+    type: Literal["voice.stop"] = field(default="voice.stop", init=False)
+
+    def __post_init__(self) -> None:
+        _validate_opaque_id(self.session_id, field_name="voice session id")
+        _validate_command_id(self.command_id)
+
+
+@dataclass(frozen=True, slots=True)
+class VoiceCancelCommand:
+    """Fail closed when release/focus/session state makes capture unsafe."""
+
+    session_id: str = "local_session"
+    reason_code: str = "voice_released"
+    command_id: str = field(default_factory=lambda: prefixed_id("cmd"))
+    protocol_version: Literal[1] = field(default=BRIDGE_PROTOCOL_VERSION, init=False)
+    type: Literal["voice.cancel"] = field(default="voice.cancel", init=False)
+
+    def __post_init__(self) -> None:
+        _validate_opaque_id(self.session_id, field_name="voice session id")
+        if not is_stable_reason_code(self.reason_code):
+            raise ValueError("voice cancellation reason must be stable")
+        _validate_command_id(self.command_id)
 
 
 @dataclass(frozen=True, slots=True)
@@ -348,7 +394,14 @@ ManagementCommand: TypeAlias = (
     | ManagementDebugCommand
 )
 
-BridgeCommand: TypeAlias = UserMessageCommand | TurnCancelCommand | ManagementCommand
+BridgeCommand: TypeAlias = (
+    UserMessageCommand
+    | TurnCancelCommand
+    | VoiceStartCommand
+    | VoiceStopCommand
+    | VoiceCancelCommand
+    | ManagementCommand
+)
 
 
 class BackendState(StrEnum):
@@ -367,6 +420,7 @@ class BackendCapabilities:
 
     text_chat: bool = False
     turn_cancel: bool = False
+    voice_input: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -399,6 +453,54 @@ class CommandRejectedEvent:
             raise ValueError("command id is outside the bridge bound")
         if not is_stable_reason_code(self.reason_code):
             raise ValueError("command rejection reason must be a stable code")
+
+
+class VoiceInputState(StrEnum):
+    disabled = "disabled"
+    idle = "idle"
+    recording = "recording"
+    transcribing = "transcribing"
+    timed_out = "timed_out"
+    failed = "failed"
+
+
+@dataclass(frozen=True, slots=True)
+class VoiceStateEvent:
+    """Bounded PTT state only; transcript text travels directly to TurnService."""
+
+    state: VoiceInputState
+    reason_code: str | None = None
+    command_id: str | None = None
+    emitted_at: datetime = field(default_factory=utc_now)
+    protocol_version: Literal[1] = field(default=BRIDGE_PROTOCOL_VERSION, init=False)
+    type: Literal["voice.state"] = field(default="voice.state", init=False)
+
+    def __post_init__(self) -> None:
+        if self.reason_code is not None and not is_stable_reason_code(self.reason_code):
+            raise ValueError("voice state reason must be a stable code")
+        if self.command_id is not None:
+            _validate_command_id(self.command_id)
+
+
+@dataclass(frozen=True, slots=True)
+class VoiceUserMessageEvent:
+    """One completed local transcript for the visible chat surface.
+
+    The event is deliberately limited to the existing ``UserMessage`` body.
+    It contains neither PCM/WAV/JSON nor any microphone/device metadata.
+    """
+
+    message: UserMessage
+    command_id: str | None = None
+    emitted_at: datetime = field(default_factory=utc_now)
+    protocol_version: Literal[1] = field(default=BRIDGE_PROTOCOL_VERSION, init=False)
+    type: Literal["voice.message"] = field(default="voice.message", init=False)
+
+    def __post_init__(self) -> None:
+        if self.message.input_mode is not InputMode.voice:
+            raise ValueError("voice message event requires a voice UserMessage")
+        if self.command_id is not None:
+            _validate_command_id(self.command_id)
 
 
 @dataclass(frozen=True, slots=True)
@@ -620,6 +722,8 @@ BridgeEvent: TypeAlias = (
     | SessionSnapshotChunk
     | BackendStateEvent
     | CommandRejectedEvent
+    | VoiceStateEvent
+    | VoiceUserMessageEvent
     | BridgeOverflowEvent
     | SettingsSnapshotEvent
     | AudioOutputDevicesEvent
@@ -645,6 +749,15 @@ def is_terminal_event(event: BridgeEvent) -> bool:
     if isinstance(event, BackendStateEvent):
         return event.state in {BackendState.failed, BackendState.stopped}
     if isinstance(event, CommandRejectedEvent | BridgeOverflowEvent):
+        return True
+    if isinstance(event, VoiceStateEvent):
+        return event.state in {
+            VoiceInputState.disabled,
+            VoiceInputState.idle,
+            VoiceInputState.timed_out,
+            VoiceInputState.failed,
+        }
+    if isinstance(event, VoiceUserMessageEvent):
         return True
     if isinstance(
         event,

@@ -24,7 +24,10 @@ class _Handler:
         job_kind: str,
         resources: tuple[AuthorizedResource, ...],
         cancelled: asyncio.Event,
+        *,
+        job_id: str,
     ) -> dict[str, Any]:
+        del job_id
         self.calls.append((job_kind, resources))
         if job_kind == "complete":
             return {"status": "ok"}

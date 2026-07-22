@@ -114,6 +114,18 @@ class _FakeBackend:
         self.streams.append(stream)
         return stream
 
+    def open_input_stream(
+        self,
+        *,
+        sample_rate: int,
+        channels: int,
+        device: int | str | None,
+        blocksize: int,
+        callback: Any,
+    ) -> _FakeStream:
+        del sample_rate, channels, device, blocksize, callback
+        raise AssertionError("W17 output fake must not open a microphone")
+
 
 class _BrokenBackend:
     def output_devices(self) -> tuple[_DiscoveredOutput, ...]:
@@ -128,6 +140,18 @@ class _BrokenBackend:
     ) -> _FakeStream:
         del native_index, latency
         raise OSError("synthetic_open_failure")
+
+    def open_input_stream(
+        self,
+        *,
+        sample_rate: int,
+        channels: int,
+        device: int | str | None,
+        blocksize: int,
+        callback: Any,
+    ) -> _FakeStream:
+        del sample_rate, channels, device, blocksize, callback
+        raise OSError("synthetic_input_open_failure")
 
 
 class _FakeNativeAudio:

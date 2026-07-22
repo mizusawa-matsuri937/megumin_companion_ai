@@ -266,16 +266,36 @@ class STTConfig(StrictModel):
     terminate_grace_seconds: float = Field(default=0.5, gt=0.0, le=30.0)
     max_audio_bytes: int = Field(default=64 * 1024 * 1024, ge=44)
     max_output_bytes: int = Field(default=2 * 1024 * 1024, ge=1)
-    max_recording_seconds: float = Field(default=120.0, gt=0.0, le=3_600.0)
-    transcription_timeout_seconds: float = Field(default=60.0, gt=0.0, le=3_600.0)
+    # W18 stores a complete PTT capture in a preallocated private worker ring;
+    # this hard 120-second ceiling is therefore both a privacy and memory bound.
+    max_recording_seconds: float = Field(default=120.0, gt=0.0, le=120.0)
+    transcription_timeout_seconds: float = Field(default=60.0, gt=0.0, le=120.0)
     device: int | str | None = None
     blocksize: int = Field(default=0, ge=0)
 
+    @field_validator("device", mode="before")
+    @classmethod
+    def validate_device(cls, value: object) -> int | str | None:
+        """Keep the helper command payload bounded and free of NUL values."""
+        if value is None:
+            return None
+        if isinstance(value, bool):
+            raise ValueError("STT device 必须是非负索引或非空名称")
+        if isinstance(value, int):
+            if value < 0:
+                raise ValueError("STT device 索引必须为非负数")
+            return value
+        if isinstance(value, str):
+            if not value.strip() or "\x00" in value or len(value) > 256:
+                raise ValueError("STT device 名称无效")
+            return value
+        raise ValueError("STT device 必须是非负索引或非空名称")
+
     @model_validator(mode="after")
     def validate_runtime_names(self) -> STTConfig:
-        if not self.provider.strip():
+        if not self.provider.strip() or "\x00" in self.provider or len(self.provider) > 64:
             raise ValueError("STT provider 不能为空")
-        if not self.language.strip():
+        if not self.language.strip() or "\x00" in self.language or len(self.language) > 64:
             raise ValueError("STT language 不能为空")
         return self
 

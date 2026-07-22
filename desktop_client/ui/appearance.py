@@ -64,6 +64,7 @@ class ChatUiParts:
     editor: QPlainTextEdit
     send_button: QPushButton
     stop_button: QPushButton
+    voice_button: QPushButton
     settings_button: QPushButton
     connection_status: QLabel
     feature_status: QLabel

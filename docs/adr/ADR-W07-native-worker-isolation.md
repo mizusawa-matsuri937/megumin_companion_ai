@@ -29,6 +29,20 @@
   native 停止，仍由 `WorkerSupervisor` 的 deadline / Job Object 终止 helper。自动化覆盖该控制流，真实驱动
   卡死与设备体验仍须人工 Gate。
 
+## W18 PTT / whisper 落地（2026-07-22，本地验证）
+
+- 麦克风 `RawInputStream` 和 whisper.cpp 只在 `MediaWorker` 内打开/启动。父侧 `MediaWorkerVoiceInput` 只发送
+  typed job kind，并只接收有界 `text` / `language` / `segment_count`；它不取得 PCM、WAV、JSON、stderr 或 native
+  device handle。
+- callback 复制到预分配、固定上限的 16 kHz mono int16 ring，禁止每一帧向 parent event loop 排队。overflow、device
+  status 和 120 秒上限是稳定 terminal error；ring 在 terminal path 被 wipe，录音 stream 随后关闭。
+- `WhisperCppRunner` 在 helper 中复核 regular/reparse-free executable/model/audio/result 路径，记录私有的架构、
+  executable SHA-256 与 model fingerprint，并用无 shell、无内容标准流的 `--version` 和实际转写进程运行。超时或取消
+  采用 terminate→grace→kill；`WorkerSupervisor` Job Object 仍是 CLI 子树最终收束边界。
+- PCM 仅存在 ring；WAV/JSON 仅存在 MediaWorker 私有录音目录。成功、失败、取消、watchdog 与 helper shutdown 都清理目录；
+  若清理无法确认，wire 返回无内容错误而非成功 transcript。Windows synthetic 子进程树、中文空格路径、timeout/cancel 和
+  cleanup 分支已有自动化证据；真实麦克风/系统指示/锁屏仍不在此处宣称通过。
+
 ## 云视觉边界
 
 项目所有者允许云视觉，但仅能在指定窗口捕获、本地 Guard、全 OCR bbox 遮挡和最终隐私检查全部成功后，由用户显式启用的路径上传脱敏图像。任一检查未知、错误、超时或 worker 重启都必须跳过上传；不得回退到全屏截图。实际启用仍受 W21/W22 隐私 Gate 约束。

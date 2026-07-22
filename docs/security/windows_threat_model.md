@@ -36,14 +36,14 @@
 | TM-W00-03 | 另一账户读取 DB/token/temp | current-user DACL + DPAPI current-user | 两账户 effective access 与解密测试 | 管理员/内核攻击不在保证内 |
 | TM-W00-04 | 消息重放导致重复计费/播放 | 三元幂等键、有限状态、seq/replay、generation | 并发重复与断线 property tests | 远端在本地取消后可能继续计费 |
 | TM-W00-05 | 慢/恶意 provider 耗尽内存磁盘 | byte/token/segment/deadline、queue/temp/log 硬上限、背压 | slow consumer/fault/soak | 合理上限可能截断合法长回复 |
-| TM-W00-06 | native thread 卡死且继续持有敏感数据 | worker 进程、Job Object、hard deadline、kill、scavenger；W17 播放 wire 仅允许批准根相对引用，不传 PCM/WAV body/任意路径 | W12 hanging child/tree tests；W17 fake descriptor/device/cancel/deadline tests；真实驱动体验另列设备 Gate | 强杀不是物理内存/磁盘擦除证明；原生 driver abort 受设备差异影响 |
+| TM-W00-06 | native thread 卡死且继续持有敏感数据 | worker 进程、Job Object、hard deadline、kill、scavenger；W17 播放 wire 仅允许批准根相对引用；W18 PTT PCM/WAV/JSON 仅在 MediaWorker，有界 ring 不逐帧排入 parent loop，whisper timeout 走 terminate→grace→kill | W12 hanging child/tree tests；W17 fake descriptor/device/cancel/deadline tests；W18 ring/timeout/cancel/cleanup、Windows synthetic whisper child-tree tests；真实驱动体验另列设备 Gate | 强杀不是物理内存/磁盘擦除证明；原生 driver abort 和真实录音指示受设备差异影响 |
 | TM-W00-07 | 截图捕获错误窗口或包含敏感内容 | 指定窗口 recheck、Guard、锁屏/权限 fail closed、禁止全屏 fallback | 多显示器/DPI/UWP/管理员/RDP 人工 Gate | OCR/Guard false negative 不可能证明为零 |
 | TM-W00-08 | 云端收到未经脱敏截图 | cloud 默认关闭；显式启用；全 OCR bbox 遮挡；最终本地检查；未知即跳过 | sentinel、出口审计、真实敏感窗口 Gate | 本地检测 false negative 和 provider 保留策略 |
 | TM-W00-09 | 屏幕/云返回提示注入 | 标记 untrusted；不当用户命令；不产生长期记忆候选 | prompt injection tests | 模型仍可能受内容影响，需要最小权限和 UI 解释 |
 | TM-W00-10 | secret 泄露到日志/fixture/artifact | DPAPI、key-aware redaction、allowlist 诊断、sentinel scan | artifact/log/export scan | 新字段可能绕过脱敏，需 schema review |
 | TM-W00-11 | 半迁移、旧版本写新 DB、backup 丢失 | checkpoint/backup、staging verify、原子 switch、兼容矩阵 | 每阶段 fault injection | 文件锁/杀毒软件会延迟恢复 |
 | TM-W00-12 | 卸载删除过多或保留 secret | 明确选择；默认保留非秘密数据、删除/revoke secret；pending 报告 | fresh/upgrade/uninstall VM | 用户可能误解保留内容，需清晰文案 |
-| TM-W00-13 | 崩溃重启造成 crash loop/后台录音捕获 | crash marker、budget/quarantine、feature actual state reconcile | repeated crash/restart tests | 设备/驱动特定问题需真实环境 |
+| TM-W00-13 | 崩溃重启造成 crash loop/后台录音捕获 | crash marker、budget/quarantine、feature actual state reconcile；W18 只有显式 PTT start 才打开输入设备，默认不持续监听 | repeated crash/restart tests；W18 start/cancel/watchdog/worker cleanup tests | 设备/驱动特定问题、真实锁屏和系统级 hotkey 仍需真实环境/后续 adapter |
 | TM-W00-14 | 安装包夹带资产、密钥或用户数据 | artifact allowlist、manifest、SBOM、sentinel 和许可证清单 | clean build + artifact scan | 当前无独立许可证 reviewer |
 | TM-W00-15 | 未签名私人包被误作公开发布 | 文档标记私人/未签名；公开发布重新 Gate | release checklist | 用户手工转发仍可能产生信任警告 |
 

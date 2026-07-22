@@ -27,6 +27,11 @@ from desktop_client.ui.contracts import (
     BridgeEvent,
     TurnCancelCommand,
     UserMessageCommand,
+    VoiceCancelCommand,
+    VoiceStartCommand,
+    VoiceStateEvent,
+    VoiceStopCommand,
+    VoiceUserMessageEvent,
 )
 from desktop_client.ui.window import DesktopViewModel, MainWindow
 
@@ -54,6 +59,11 @@ __all__ = [
     "TurnCancelCommand",
     "TurnServiceBackendRuntime",
     "UserMessageCommand",
+    "VoiceCancelCommand",
+    "VoiceStartCommand",
+    "VoiceStateEvent",
+    "VoiceStopCommand",
+    "VoiceUserMessageEvent",
     "run_desktop",
     "run_headless_smoke",
 ]

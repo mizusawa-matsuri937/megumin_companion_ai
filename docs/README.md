@@ -73,4 +73,5 @@
 - [W14：文字对话、streaming、取消与恢复](implementation/w14_text_chat_streaming.md)
 - [W15：单实例、托盘和统一生命周期（已合并）](implementation/w15_single_instance_lifecycle.md)
 - [W16：设置、feature 与记忆管理最小 UI（已合并）](implementation/w16_settings_feature_memory_ui.md)
-- [W17：MediaWorker 播放、输出设备与 Gate A（Draft PR #30）](implementation/w17_media_worker_audio.md)
+- [W17：MediaWorker 播放、输出设备与 Gate A（已合并，PR #30）](implementation/w17_media_worker_audio.md)
+- [W18：Push-to-talk、麦克风 ring buffer 与 Whisper Job（本地验证完成，待 Draft PR）](implementation/w18_push_to_talk_whisper.md)

@@ -1,26 +1,26 @@
-"""Subprocess, parsing, cancellation, and cleanup tests for whisper.cpp."""
+"""MediaWorker-private whisper.cpp preflight and process lifecycle tests."""
 
 from __future__ import annotations
 
 import asyncio
 import json
 import os
+import platform
+import struct
 import subprocess
 import sys
 import wave
 from pathlib import Path
+from typing import Any
 
 import pytest
-from app.paths import AppPaths
-from app.temp_assets import TempAssetRegistry
-from app.windows_security import PortableDirectorySecurity
-from desktop_client.inputs.stt_contracts import (
-    STTError,
-    STTErrorCode,
-    TranscriptionRequest,
+from app.media import stt as stt_module
+from app.media.stt import (
     TranscriptionResult,
+    WhisperCppConfig,
+    WhisperCppRunner,
+    WhisperRuntimeError,
 )
-from desktop_client.inputs.whisper_cpp import WhisperCppConfig, WhisperCppProvider
 
 FAKE_CLI = """\
 import json
@@ -33,36 +33,27 @@ from pathlib import Path
 mode = sys.argv[1]
 audit = Path(sys.argv[2])
 args = sys.argv[3:]
+if args == ["--version"]:
+    audit.write_text("version", encoding="ascii")
+    raise SystemExit(0 if mode != "bad_version" else 9)
 if mode == "sleep":
-    audit.write_text(str(os.getpid()), encoding="utf-8")
+    audit.write_text(str(os.getpid()), encoding="ascii")
     def ignore_term(*_args):
-        audit.with_suffix(".term").write_text("term", encoding="utf-8")
+        audit.with_suffix(".term").write_text("term", encoding="ascii")
     signal.signal(signal.SIGTERM, ignore_term)
-    # Publish readiness only after the SIGTERM handler is installed.  Tests
-    # which need the grace period must not race the child process setup.
-    audit.with_suffix(".ready").write_text("ready", encoding="utf-8")
     time.sleep(60)
     raise SystemExit(0)
-
 audit.write_text(json.dumps(args), encoding="utf-8")
-if mode == "fail":
-    raise SystemExit(7)
 output_base = Path(args[args.index("--output-file") + 1])
 output_path = output_base.with_suffix(".json")
-if mode == "nooutput":
-    pass
-elif mode == "malformed":
+if mode == "fail":
+    raise SystemExit(7)
+if mode == "malformed":
     output_path.write_text("not-json", encoding="utf-8")
 elif mode == "empty":
     output_path.write_text(json.dumps({"transcription": []}), encoding="utf-8")
 elif mode == "oversize":
     output_path.write_text("x" * 1000, encoding="utf-8")
-elif mode == "toplist":
-    output_path.write_text("[]", encoding="utf-8")
-elif mode == "nosegments":
-    output_path.write_text(json.dumps({"result": {}}), encoding="utf-8")
-elif mode == "badsegment":
-    output_path.write_text(json.dumps({"transcription": [{"text": 4}]}), encoding="utf-8")
 else:
     output_path.write_text(json.dumps({
         "result": {"language": "zh"},
@@ -79,31 +70,31 @@ def _write_pcm_wav(path: Path) -> None:
         recording.writeframes(b"\x00\x00" * 160)
 
 
-def _provider(
+def _runner(
     tmp_path: Path,
     mode: str,
     *,
     grace: float = 0.05,
     max_output_bytes: int = 2 * 1024 * 1024,
-) -> tuple[WhisperCppProvider, Path, Path]:
-    script = tmp_path / "fake whisper cli.py"
+) -> tuple[WhisperCppRunner, Path]:
+    script = tmp_path / "假 whisper cli.py"
     script.write_text(FAKE_CLI, encoding="utf-8")
-    model = tmp_path / "model.bin"
+    model = tmp_path / "模型 文件.bin"
     model.write_bytes(b"fake-model")
-    audit = tmp_path / "audit.json"
-    scratch = tmp_path / "scratch"
-    provider = WhisperCppProvider(
-        WhisperCppConfig(
-            executable=Path(sys.executable),
-            executable_prefix_args=(str(script), mode, str(audit)),
-            model_path=model,
-            temporary_directory=scratch,
-            terminate_grace_seconds=grace,
-            max_output_bytes=max_output_bytes,
-            threads=3,
-        )
+    audit = tmp_path / "audit.txt"
+    return (
+        WhisperCppRunner(
+            WhisperCppConfig(
+                executable=Path(sys.executable),
+                executable_prefix_args=(str(script), mode, str(audit)),
+                model_path=model,
+                terminate_grace_seconds=grace,
+                max_output_bytes=max_output_bytes,
+                threads=3,
+            )
+        ),
+        audit,
     )
-    return provider, audit, scratch
 
 
 def _process_exists(pid: int) -> bool:
@@ -122,26 +113,54 @@ def _process_exists(pid: int) -> bool:
     return True
 
 
-def test_success_uses_argument_vector_parses_json_and_cleans_output(tmp_path: Path) -> None:
+class _ControlledProcess:
+    def __init__(self, *, settle_on_terminate: bool = True) -> None:
+        self.returncode: int | None = None
+        self.settle_on_terminate = settle_on_terminate
+        self.terminated = 0
+        self.killed = 0
+        self._settled = asyncio.Event()
+
+    async def wait(self) -> int:
+        await self._settled.wait()
+        assert self.returncode is not None
+        return self.returncode
+
+    def terminate(self) -> None:
+        self.terminated += 1
+        if self.settle_on_terminate:
+            self.returncode = -15
+            self._settled.set()
+
+    def kill(self) -> None:
+        self.killed += 1
+        self.returncode = -9
+        self._settled.set()
+
+
+def test_preflight_probes_version_architecture_and_fingerprints_then_transcribes(
+    tmp_path: Path,
+) -> None:
     async def scenario() -> None:
-        provider, audit, scratch = _provider(tmp_path, "success")
-        audio = tmp_path / "voice ; touch NEVER_CREATED.wav"
+        runner, audit = _runner(tmp_path, "success")
+        audio = tmp_path / "中文 空格.wav"
         _write_pcm_wav(audio)
 
-        result = await provider.transcribe(
-            TranscriptionRequest(audio_path=audio, language="auto", timeout_seconds=2)
+        result = await runner.transcribe(
+            audio,
+            language="auto",
+            timeout_seconds=2,
+            cancelled=asyncio.Event(),
         )
-        await provider.close()
 
         assert result.text == "你好， 世界。"
         assert result.language == "zh"
         assert result.segment_count == 2
-        arguments = json.loads(audit.read_text(encoding="utf-8"))
-        assert arguments[arguments.index("--file") + 1] == str(audio)
-        assert arguments[arguments.index("--language") + 1] == "auto"
-        assert arguments[arguments.index("--threads") + 1] == "3"
-        assert not (tmp_path / "NEVER_CREATED.wav").exists()
-        assert list(scratch.iterdir()) == []
+        assert audit.read_text(encoding="utf-8") != "version"
+        assert runner._fingerprint is not None
+        assert len(runner._fingerprint.executable_sha256) == 64
+        assert len(runner._fingerprint.model_fingerprint) == 64
+        await runner.close()
 
     asyncio.run(scenario())
 
@@ -149,315 +168,290 @@ def test_success_uses_argument_vector_parses_json_and_cleans_output(tmp_path: Pa
 @pytest.mark.parametrize(
     ("mode", "expected"),
     [
-        ("fail", STTErrorCode.process_failed),
-        ("malformed", STTErrorCode.invalid_response),
-        ("empty", STTErrorCode.empty_transcript),
-        ("oversize", STTErrorCode.output_too_large),
-        ("nooutput", STTErrorCode.invalid_response),
-        ("toplist", STTErrorCode.invalid_response),
-        ("nosegments", STTErrorCode.invalid_response),
-        ("badsegment", STTErrorCode.invalid_response),
+        ("fail", "stt_process_failed"),
+        ("malformed", "stt_invalid_response"),
+        ("empty", "stt_empty_transcript"),
+        ("oversize", "stt_output_too_large"),
     ],
 )
-def test_failure_shapes_are_typed_and_temporary_output_is_removed(
-    tmp_path: Path, mode: str, expected: STTErrorCode
+def test_typed_failures_do_not_expose_cli_output(tmp_path: Path, mode: str, expected: str) -> None:
+    async def scenario() -> None:
+        runner, _audit = _runner(
+            tmp_path,
+            mode,
+            max_output_bytes=10 if mode == "oversize" else 2 * 1024 * 1024,
+        )
+        audio = tmp_path / "input.wav"
+        _write_pcm_wav(audio)
+        with pytest.raises(WhisperRuntimeError) as caught:
+            await runner.transcribe(
+                audio,
+                language="auto",
+                timeout_seconds=2,
+                cancelled=asyncio.Event(),
+            )
+        assert caught.value.code == expected
+        assert "whisper" not in str(caught.value).casefold() or str(caught.value) == expected
+        await runner.close()
+
+    asyncio.run(scenario())
+
+
+def test_preflight_fails_closed_for_missing_runtime_or_bad_version(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        missing = WhisperCppRunner(
+            WhisperCppConfig(executable=tmp_path / "missing.exe", model_path=tmp_path / "model.bin")
+        )
+        with pytest.raises(WhisperRuntimeError) as caught:
+            await missing.preflight()
+        assert caught.value.code == "stt_executable_missing"
+
+        runner, _audit = _runner(tmp_path, "bad_version")
+        with pytest.raises(WhisperRuntimeError) as caught:
+            await runner.preflight()
+        assert caught.value.code == "stt_version_probe_failed"
+        await runner.close()
+
+    asyncio.run(scenario())
+
+
+def test_timeout_and_cancellation_reap_the_direct_whisper_process(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        runner, audit = _runner(tmp_path, "sleep", grace=0.02)
+        audio = tmp_path / "input.wav"
+        _write_pcm_wav(audio)
+        with pytest.raises(WhisperRuntimeError) as caught:
+            await runner.transcribe(
+                audio,
+                language="auto",
+                timeout_seconds=0.25,
+                cancelled=asyncio.Event(),
+            )
+        assert caught.value.code == "stt_timeout"
+        pid = int(audit.read_text(encoding="ascii"))
+        assert not _process_exists(pid)
+
+        cancellation = asyncio.Event()
+        task = asyncio.create_task(
+            runner.transcribe(
+                audio,
+                language="auto",
+                timeout_seconds=30,
+                cancelled=cancellation,
+            )
+        )
+        for _ in range(100):
+            if audit.exists() and audit.read_text(encoding="ascii").isdigit():
+                break
+            await asyncio.sleep(0.005)
+        cancellation.set()
+        with pytest.raises(WhisperRuntimeError) as caught:
+            await task
+        assert caught.value.code == "stt_cancelled"
+        assert not _process_exists(int(audit.read_text(encoding="ascii")))
+        await runner.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"threads": 0},
+        {"terminate_grace_seconds": 0},
+        {"max_audio_bytes": 43},
+        {"max_output_bytes": 0},
+        {"executable_prefix_args": ("",)},
+        {"executable_prefix_args": ("bad\x00arg",)},
+    ],
+)
+def test_whisper_config_rejects_invalid_private_process_limits(options: dict[str, object]) -> None:
+    with pytest.raises(ValueError):
+        WhisperCppConfig(Path("cli"), Path("model"), **options)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"text": "  "},
+        {"text": "bad\x00text"},
+        {"text": "x" * 4_097},
+        {"text": "ok", "language": ""},
+        {"text": "ok", "language": "bad\x00language"},
+        {"text": "ok", "language": "x" * 65},
+        {"text": "ok", "segment_count": -1},
+    ],
+)
+def test_transcription_result_enforces_helper_boundary(kwargs: dict[str, object]) -> None:
+    with pytest.raises(ValueError):
+        TranscriptionResult(**kwargs)  # type: ignore[arg-type]
+
+    assert TranscriptionResult("  合成文本  ", "zh", 0).text == "合成文本"
+
+
+def test_runner_rejects_invalid_audio_and_untrusted_json_shapes(tmp_path: Path) -> None:
+    runner, _audit = _runner(tmp_path, "success")
+    bad_audio = tmp_path / "stereo.wav"
+    with wave.open(str(bad_audio), "wb") as recording:
+        recording.setnchannels(2)
+        recording.setsampwidth(2)
+        recording.setframerate(16_000)
+        recording.writeframes(b"\x00\x00" * 32)
+    with pytest.raises(WhisperRuntimeError, match="stt_invalid_audio"):
+        runner._validate_audio(bad_audio)
+
+    response = tmp_path / "transcript.json"
+    for payload, expected in (
+        ([], "stt_invalid_response"),
+        ({"transcription": "not-a-list"}, "stt_invalid_response"),
+        ({"transcription": [{"missing": "text"}]}, "stt_invalid_response"),
+        ({"transcription": [{"text": "x" * 4_097}]}, "stt_transcript_too_large"),
+        (
+            {"result": {"language": "x" * 65}, "transcription": [{"text": "ok"}]},
+            "stt_invalid_response",
+        ),
+    ):
+        response.write_text(json.dumps(payload), encoding="utf-8")
+        with pytest.raises(WhisperRuntimeError) as caught:
+            runner._read_result(response)
+        assert caught.value.code == expected
+
+
+def test_preflight_rejects_architecture_mismatch_and_caches_a_healthy_runtime(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     async def scenario() -> None:
-        max_bytes = 10 if mode == "oversize" else 2 * 1024 * 1024
-        provider, _audit, scratch = _provider(tmp_path, mode, max_output_bytes=max_bytes)
-        audio = tmp_path / "input.wav"
-        _write_pcm_wav(audio)
-        with pytest.raises(STTError) as caught:
-            await provider.transcribe(TranscriptionRequest(audio_path=audio, timeout_seconds=2))
-        assert caught.value.code is expected
-        assert list(scratch.iterdir()) == []
-        await provider.close()
+        runner, _audit = _runner(tmp_path, "success")
+        with monkeypatch.context() as patched:
+            patched.setattr(stt_module, "_executable_architecture", lambda _path: "arm64")
+            patched.setattr(stt_module, "_host_architecture", lambda: "x64")
+            with pytest.raises(WhisperRuntimeError) as caught:
+                await runner.preflight()
+            assert caught.value.code == "stt_architecture_incompatible"
+        await runner.close()
+
+        healthy_dir = tmp_path / "healthy"
+        healthy_dir.mkdir()
+        # A second preflight uses the cached signature instead of spawning
+        # another probe.
+        healthy, healthy_audit = _runner(healthy_dir, "success")
+        await healthy.preflight()
+        assert healthy_audit.read_text(encoding="ascii") == "version"
+        healthy_audit.unlink()
+        await healthy.preflight()
+        assert not healthy_audit.exists()
+        await healthy.close()
 
     asyncio.run(scenario())
 
 
-def test_configuration_and_contract_validation_rejects_invalid_values(tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match="language"):
-        TranscriptionRequest(audio_path=tmp_path / "x.wav", language=" ")
-    with pytest.raises(ValueError, match="timeout"):
-        TranscriptionRequest(audio_path=tmp_path / "x.wav", timeout_seconds=0)
-    with pytest.raises(ValueError, match="threads"):
-        WhisperCppConfig(executable=tmp_path / "x", model_path=tmp_path / "m", threads=0)
-    with pytest.raises(ValueError, match="grace"):
-        WhisperCppConfig(
-            executable=tmp_path / "x",
-            model_path=tmp_path / "m",
-            terminate_grace_seconds=0,
-        )
-    with pytest.raises(ValueError, match="大小"):
-        WhisperCppConfig(
-            executable=tmp_path / "x",
-            model_path=tmp_path / "m",
-            max_audio_bytes=1,
-        )
-    with pytest.raises(ValueError, match="不能为空"):
-        TranscriptionResult(text=" ")
-    with pytest.raises(ValueError, match="负数"):
-        TranscriptionResult(text="ok", segment_count=-1)
-
-
-def test_missing_runtime_components_start_failure_and_closed_provider_are_typed(
-    tmp_path: Path,
+def test_version_timeout_start_failure_and_kill_fallback_are_bounded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     async def scenario() -> None:
+        runner, _audit = _runner(tmp_path, "success", grace=0.001)
+        timeout_process = _ControlledProcess()
+
+        async def start_timeout(_command: object) -> _ControlledProcess:
+            return timeout_process
+
+        monkeypatch.setattr(runner, "_start_process", start_timeout)
+        monkeypatch.setattr(stt_module, "_VERSION_TIMEOUT_SECONDS", 0.001)
+        with pytest.raises(WhisperRuntimeError) as caught:
+            await runner._probe_version(Path("ignored"))
+        assert caught.value.code == "stt_version_probe_timeout"
+        assert timeout_process.terminated == 1
+
+        start_dir = tmp_path / "start"
+        start_dir.mkdir()
+        failing_runner, _failing_audit = _runner(start_dir, "success")
+
+        async def start_failure(*_args: Any, **_kwargs: Any) -> None:
+            raise OSError("synthetic")
+
+        monkeypatch.setattr(
+            asyncio,
+            "create_subprocess_exec",
+            start_failure,
+        )
+        with pytest.raises(WhisperRuntimeError) as caught:
+            await failing_runner._start_process(("missing",))
+        assert caught.value.code == "stt_process_start_failed"
+
+        kill_process = _ControlledProcess(settle_on_terminate=False)
+        await runner._terminate(kill_process)  # type: ignore[arg-type]
+        assert kill_process.terminated == 1 and kill_process.killed == 1
+
+    asyncio.run(scenario())
+
+
+def test_runner_rejects_closed_timeout_invalid_audio_and_unbounded_runtime_inputs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def scenario() -> None:
+        runner, _audit = _runner(tmp_path, "success")
         audio = tmp_path / "input.wav"
         _write_pcm_wav(audio)
-        missing_executable = WhisperCppProvider(
-            WhisperCppConfig(executable=tmp_path / "none", model_path=tmp_path / "none-model")
-        )
-        with pytest.raises(STTError) as caught:
-            await missing_executable.transcribe(TranscriptionRequest(audio_path=audio))
-        assert caught.value.code is STTErrorCode.executable_missing
+        with pytest.raises(WhisperRuntimeError) as caught:
+            await runner.transcribe(
+                audio,
+                language="zh",
+                timeout_seconds=0,
+                cancelled=asyncio.Event(),
+            )
+        assert caught.value.code == "stt_timeout_invalid"
 
-        model_missing = WhisperCppProvider(
-            WhisperCppConfig(executable=Path(sys.executable), model_path=tmp_path / "none-model")
-        )
-        with pytest.raises(STTError) as caught:
-            await model_missing.transcribe(TranscriptionRequest(audio_path=audio))
-        assert caught.value.code is STTErrorCode.model_missing
+        await runner.close()
 
-        not_executable = tmp_path / "not-executable"
-        not_executable.write_text("plain text", encoding="utf-8")
-        model = tmp_path / "model.bin"
-        model.write_bytes(b"model")
-        cannot_start = WhisperCppProvider(
-            WhisperCppConfig(executable=not_executable, model_path=model)
-        )
-        with pytest.raises(STTError) as caught:
-            await cannot_start.transcribe(TranscriptionRequest(audio_path=audio))
-        assert caught.value.code is STTErrorCode.process_start_failed
+        async def skip_preflight() -> None:
+            return None
 
-        await model_missing.close()
-        await model_missing.close()
-        with pytest.raises(STTError) as caught:
-            await model_missing.transcribe(TranscriptionRequest(audio_path=audio))
-        assert caught.value.code is STTErrorCode.closed
+        monkeypatch.setattr(runner, "preflight", skip_preflight)
+        with pytest.raises(WhisperRuntimeError) as caught:
+            await runner.transcribe(
+                audio,
+                language="zh",
+                timeout_seconds=1,
+                cancelled=asyncio.Event(),
+            )
+        assert caught.value.code == "stt_worker_closed"
 
-    asyncio.run(scenario())
-
-
-def test_corrupt_wav_is_rejected_and_language_is_optional(tmp_path: Path) -> None:
-    async def scenario() -> None:
-        provider, _audit, _scratch = _provider(tmp_path, "success")
-        corrupt = tmp_path / "corrupt.wav"
-        corrupt.write_bytes(b"not a wave")
-        with pytest.raises(STTError) as caught:
-            await provider.transcribe(TranscriptionRequest(audio_path=corrupt))
-        assert caught.value.code is STTErrorCode.invalid_audio
-
-        result_path = tmp_path / "manual.json"
-        result_path.write_text(
-            json.dumps({"result": "unexpected", "transcription": [{"text": " ok "}]}),
-            encoding="utf-8",
-        )
-        result = provider._read_result(result_path)
-        assert result.text == "ok"
-        assert result.language is None
-        await provider.close()
-
-    asyncio.run(scenario())
-
-
-def test_close_terminates_an_active_process(tmp_path: Path) -> None:
-    async def scenario() -> None:
-        provider, pid_file, scratch = _provider(tmp_path, "sleep", grace=0.02)
-        audio = tmp_path / "input.wav"
-        _write_pcm_wav(audio)
-        task = asyncio.create_task(
-            provider.transcribe(TranscriptionRequest(audio_path=audio, timeout_seconds=30))
-        )
-        for _ in range(100):
-            if pid_file.exists():
-                break
-            await asyncio.sleep(0.005)
-        await provider.close()
-        result = await asyncio.gather(task, return_exceptions=True)
-        assert isinstance(result[0], STTError)
-        pid = int(pid_file.read_text(encoding="utf-8"))
-        assert not _process_exists(pid)
-        assert list(scratch.iterdir()) == []
-
-    asyncio.run(scenario())
-
-
-def test_timeout_terminates_and_reaps_process(tmp_path: Path) -> None:
-    async def scenario() -> None:
-        provider, pid_file, scratch = _provider(tmp_path, "sleep", grace=0.02)
-        audio = tmp_path / "input.wav"
-        _write_pcm_wav(audio)
-        with pytest.raises(STTError) as caught:
-            # Windows process startup is materially slower than fork/exec on
-            # macOS. Leave enough time for the fake CLI to publish its PID.
-            await provider.transcribe(TranscriptionRequest(audio_path=audio, timeout_seconds=0.5))
-        assert caught.value.code is STTErrorCode.timeout
-        pid = int(pid_file.read_text(encoding="utf-8"))
-        assert not _process_exists(pid)
-        assert list(scratch.iterdir()) == []
-        await provider.close()
-
-    asyncio.run(scenario())
-
-
-def test_task_cancellation_terminates_process_and_removes_json_directory(tmp_path: Path) -> None:
-    async def scenario() -> None:
-        provider, pid_file, scratch = _provider(tmp_path, "sleep", grace=0.02)
-        audio = tmp_path / "input.wav"
-        _write_pcm_wav(audio)
-        task = asyncio.create_task(
-            provider.transcribe(TranscriptionRequest(audio_path=audio, timeout_seconds=30))
-        )
-        for _ in range(100):
-            if pid_file.exists():
-                break
-            await asyncio.sleep(0.005)
-        assert pid_file.exists()
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-        pid = int(pid_file.read_text(encoding="utf-8"))
-        assert not _process_exists(pid)
-        assert list(scratch.iterdir()) == []
-        await provider.close()
-
-    asyncio.run(scenario())
-
-
-def test_repeated_cancellation_cannot_interrupt_process_reaping(tmp_path: Path) -> None:
-    async def scenario() -> None:
-        provider, pid_file, scratch = _provider(tmp_path, "sleep", grace=0.2)
-        audio = tmp_path / "input.wav"
-        _write_pcm_wav(audio)
-        task = asyncio.create_task(
-            provider.transcribe(TranscriptionRequest(audio_path=audio, timeout_seconds=30))
-        )
-        ready_file = pid_file.with_suffix(".ready")
-        for _ in range(100):
-            if ready_file.exists():
-                break
-            await asyncio.sleep(0.005)
-        assert ready_file.exists()
-        task.cancel()
-        term_file = pid_file.with_suffix(".term")
-        if os.name == "nt":
-            # Proactor subprocess terminate() maps to TerminateProcess, so
-            # there is no catchable SIGTERM grace period on Windows.
-            task.cancel()
-        else:
-            for _ in range(100):
-                if term_file.exists():
-                    break
-                await asyncio.sleep(0.005)
-            assert term_file.exists()
-            task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-        pid = int(pid_file.read_text(encoding="utf-8"))
-        assert not _process_exists(pid)
-        assert provider._processes == set()
-        assert list(scratch.iterdir()) == []
-        await provider.close()
-
-    asyncio.run(scenario())
-
-
-def test_concurrent_close_waiters_join_the_same_process_cleanup(tmp_path: Path) -> None:
-    async def scenario() -> None:
-        provider, pid_file, scratch = _provider(tmp_path, "sleep", grace=0.2)
-        audio = tmp_path / "input.wav"
-        _write_pcm_wav(audio)
-        transcription = asyncio.create_task(
-            provider.transcribe(TranscriptionRequest(audio_path=audio, timeout_seconds=30))
-        )
-        for _ in range(100):
-            if pid_file.exists():
-                break
-            await asyncio.sleep(0.005)
-        first_close = asyncio.create_task(provider.close())
-        term_file = pid_file.with_suffix(".term")
-        second_close = asyncio.create_task(provider.close())
-        if os.name == "nt":
-            # Windows termination is immediate; both close waiters must still
-            # converge on the same completed cleanup without racing.
-            await asyncio.gather(first_close, second_close)
-        else:
-            for _ in range(100):
-                if term_file.exists():
-                    break
-                await asyncio.sleep(0.005)
-            await asyncio.sleep(0)
-            assert not first_close.done()
-            assert not second_close.done()
-            first_close.cancel()
-            with pytest.raises(asyncio.CancelledError):
-                await first_close
-            await second_close
-        result = await asyncio.gather(transcription, return_exceptions=True)
-        assert isinstance(result[0], STTError)
-        pid = int(pid_file.read_text(encoding="utf-8"))
-        assert not _process_exists(pid)
-        assert list(scratch.iterdir()) == []
-
-    asyncio.run(scenario())
-
-
-def test_rejects_missing_or_non_pcm_inputs_without_starting_process(tmp_path: Path) -> None:
-    async def scenario() -> None:
-        provider, _audit, _scratch = _provider(tmp_path, "success")
-        missing = tmp_path / "missing.wav"
-        with pytest.raises(STTError) as caught:
-            await provider.transcribe(TranscriptionRequest(audio_path=missing))
-        assert caught.value.code is STTErrorCode.invalid_audio
-
-        stereo = tmp_path / "stereo.wav"
-        with wave.open(str(stereo), "wb") as recording:
-            recording.setnchannels(2)
-            recording.setsampwidth(2)
-            recording.setframerate(44_100)
-            recording.writeframes(b"\x00" * 8)
-        with pytest.raises(STTError) as caught:
-            await provider.transcribe(TranscriptionRequest(audio_path=stereo))
-        assert caught.value.code is STTErrorCode.invalid_audio
-        await provider.close()
-
-    asyncio.run(scenario())
-
-
-def test_whisper_directory_is_registered_and_removed_after_success(tmp_path: Path) -> None:
-    async def scenario() -> None:
-        script = tmp_path / "fake-whisper.py"
-        script.write_text(FAKE_CLI, encoding="utf-8")
-        model = tmp_path / "model.bin"
-        model.write_bytes(b"model")
-        audit = tmp_path / "audit.json"
-        audio = tmp_path / "input.wav"
-        _write_pcm_wav(audio)
-        paths = AppPaths(root=tmp_path / "private")
-        registry = TempAssetRegistry(
-            paths,
-            minimum_scavenge_age_seconds=0.0,
-            directory_security=PortableDirectorySecurity(),
-        )
-        scratch = paths.temp / "custom-stt"
-        provider = WhisperCppProvider(
+        bounded = WhisperCppRunner(
             WhisperCppConfig(
                 executable=Path(sys.executable),
-                executable_prefix_args=(str(script), "success", str(audit)),
-                model_path=model,
-                temporary_directory=scratch,
-            ),
-            temp_registry=registry,
+                model_path=tmp_path / "model.bin",
+                max_audio_bytes=44,
+            )
         )
+        (tmp_path / "model.bin").write_bytes(b"model")
+        with pytest.raises(WhisperRuntimeError) as caught:
+            bounded._validate_audio(audio)
+        assert caught.value.code == "stt_invalid_audio"
 
-        result = await provider.transcribe(TranscriptionRequest(audio_path=audio))
+        malformed = tmp_path / "malformed.wav"
+        malformed.write_bytes(b"not a wav")
+        with pytest.raises(WhisperRuntimeError) as caught:
+            bounded._validate_audio(malformed)
+        assert caught.value.code == "stt_invalid_audio"
 
-        assert result.segment_count == 2
-        assert registry.entries() == ()
-        assert not tuple(scratch.glob("companion-stt-*"))
-        await provider.close()
+        response = tmp_path / "language-omitted.json"
+        response.write_text(json.dumps({"transcription": [{"text": "ok"}]}), encoding="utf-8")
+        assert bounded._read_result(response).language is None
+        with pytest.raises(WhisperRuntimeError) as caught:
+            stt_module._validated_regular_file(tmp_path, "stt_invalid_response")
+        assert caught.value.code == "stt_invalid_response"
+
+        large_model = tmp_path / "large-model.bin"
+        large_model.write_bytes(b"a" * (2 * 64 * 1024))
+        assert len(stt_module._sampled_fingerprint(large_model)) == 64
+        with monkeypatch.context() as patched:
+            patched.setattr(platform, "machine", lambda: "aarch64")
+            assert stt_module._host_architecture() == "arm64"
+            patched.setattr(platform, "machine", lambda: "mystery")
+            assert stt_module._host_architecture() == "mystery"
+            patched.setattr(struct, "calcsize", lambda _format: 4)
+            with pytest.raises(WhisperRuntimeError) as caught:
+                bounded._inspect_runtime()
+            assert caught.value.code == "stt_architecture_incompatible"
 
     asyncio.run(scenario())

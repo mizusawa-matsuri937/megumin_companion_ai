@@ -1,127 +1,67 @@
 # 当前产品目标
 
-> 最后核验：2026-07-22（Asia/Shanghai）。用户已明确授权 W17。当前分支
-> `codex/w17-media-worker-audio` 从 `agent/windows-development-baseline` 的
-> `5df2fb2ad9c4402b674dfff7138c30880ac2c853` 开始；W17 的初始实现提交为
-> [`3d76b0b`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/3d76b0bc31214dfbd7f8423b287d096182629b8a)，
-> Gate A 打断竞态修复为 [`8ff9070`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/8ff9070d3e7d2cd9203787612918e69edffadef8)。
-> [Draft PR #30](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/30) 已以
-> `agent/windows-development-baseline` 为 base 创建。Windows 时序测试稳定化提交
-> [`550671d`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/550671dba9a08b552ed3d79214f533139487ebb6)
-> 已在该 exact code head 的 push 与 pull-request 工作流中通过；真实声卡体验仍尚未核验，不能写成已完成。
+> 最后核验：2026-07-22（Asia/Shanghai）。当前活跃任务是 W18「Push-to-talk、麦克风 ring buffer 与
+> whisper Job」。工作分支为 `codex/w18-ptt-whisper`，基线为 W17 合并提交
+> [`351da92`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/351da92bfd0232ce03a90a97b75c13ba8ee6a51b)。
+> W18 已完成本地实现和自动化验证，尚未创建 W18 提交、推送或 Draft PR；因此不能写作“已交付”或“已合并”。
 
 ## 已确认事实
 
-- W16 已合并到开发基线；用户随后明确授权开始 W17。该最新授权覆盖旧快照中“尚未授权 W17”的状态。
-- W17 把 PortAudio 播放移到受 W12 `WorkerSupervisor` / Job Object 监管的 `MediaWorker`。主进程与
-  `BackendThread` 不导入或调用 `sounddevice`；它们只提交批准根下的相对 `ResourceReference`，不会把任意
-  文件路径、WAV 内容或 PCM 传入 helper protocol。
-- 输出设备身份为 host API、名称、最大输出通道数和默认采样率的 SHA-256 截断指纹。它能抵抗通常的 PortAudio
-  index 重排，但**不是** Windows endpoint GUID；发生相同指纹的重复设备会被拒绝选择并回退。这是已知设计限制，
-  不是已证明的跨驱动永久身份。
-- 选定设备消失时，worker 停止/释放旧 stream，使用默认（或首个可选）设备并返回稳定降级状态；low-latency
-  打开失败只尝试一次 high-latency fallback，并复用成功的 high stream，不无限重试。播放失败只使音频降级，
-  文本流程继续。
-- 默认仍为 `playback_mode: silent`。设置界面只在用户显式点击刷新时枚举输出设备；用户可保存设备 ID 并显式
-  启用本地系统播放。保存但目前不可用的设备 ID 会保留，以便提示实际 fallback，而不是悄悄改写用户选择。
-- `tools/gate_a_review.py --dry-run` 使用 realtime silent player 覆盖 interrupt 路径；真实复核模式才启动临时
-  MediaWorker，且临时 WAV 位于临时目录，不进入仓库或持久 cache。
-- 2026-07-22 的实际 Gate A 打断日志曾出现旧轮次 `turn.failed`、新轮次首段
-  `playback.skipped code=audio_worker_failed`，并在 `assistant.completed` 后没有回到 PowerShell 提示符。该次结果是
-  **失败**，不能以新轮次第二段完成或文本 completed 伪装为通过。代码审计确认两个可复现的竞态：caller cancel 会把
-  原 job deadline 作为 hard-fault 等待上限，且 crash recovery 与新的 `start()` 可并发 spawn。已将 caller cancel 的
-  hard-fault 等待收紧为 supervisor `terminate_wait_seconds`，让新 `start()` join 现有 recovery，并使已明确取消的 turn
-  在 cleanup error 竞争时仍以 `turn.cancelled` 收束。
-- Gate A Day 7 现在直接打印 `turn.failed` 的稳定 error code，要求旧轮次 `turn.cancelled`、新轮次两段均
-  `playback.finished` 且不存在 `playback.skipped`，并显式输出 MediaWorker 清理开始/完成。任一不满足均为非零失败，
-  不再把 `assistant.completed` 单独当作人工 Gate 成功。
-- 最新真实 Day 7 运行的事件顺序、替换音频和清理都通过，但有时只听到两段高音，未实际听到旧轮低音。这不能写成完整
-  听感通过：`DialoguePipeline` 在调用 `AudioPlayer.play()` **之前**发出 `playback.started`，所以该事件只证明请求已调度，
-  不证明样本已到达扬声器。真实音频模式现在会在该事件后明确等待监听者实际听到低音并按 Enter，再提交新轮次；
-  `--dry-run` 保留固定 0.65 秒的自动路径，以维持可重复的控制流测试。
-- 2026-07-22，所有者报告修正后的交互式 Day 7 打断审计通过。这是实际听感的所有者确认，覆盖“听到旧轮低音后按 Enter、
-  旧轮不恢复/不重叠、两段新轮高音完成及清理”的 Gate A 场景；本轮未提供设备类型或热插拔结果，故不能外推为内置、USB、
-  蓝牙或热插拔均通过。
-- 远端 `push` run `29904002937` 在 exact head `8ff9070` 的 Windows quality 中，仅在
-  `test_hanging_job_hits_hard_deadline_and_terminates_entire_fake_job` 失败：固定等待 30 ms 后状态仍为 `failed`，
-  尚未由异步 process watcher 变为 `quarantined`。同一 SHA 的 `pull_request` run `29904004777` 的 Windows 和 macOS
-  quality、两项 installed-wheel 均通过。该对照支持“固定 sleep 的测试同步不足”的判断，但不把一次通过当作新 head 的 CI 结果。
-- 测试稳定化提交 `550671d` 的 exact code head 已由 `push` run
-  [`29905046336`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29905046336) 和 `pull_request` run
-  [`29905048854`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29905048854) 分别核验：两组 Windows/macOS
-  quality 及 installed-wheel 全部通过。它证明该代码 head 的 CI，不代替任何未来变更 head 的检查或真实声卡 Gate。
-- 随后的 docs-only head `922b6fe` 的 `push` run
-  [`29905521654`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29905521654) 在既有
-  `test_close_cleans_all_outputs_and_discard_ignores_unowned_path` 失败，`MockTransport` 成功路径在 80 ms 首字节时限内
-  被报告为 `tts_first_byte_timeout`。同一 SHA 的 `pull_request` run
-  [`29905524352`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29905524352) 成功；docs-only
-  提交没有改动可执行代码，因此这支持 CI 时序不稳定而非 W17 音频回归的判断，但不允许忽略失败。
+- W17 的 PR [#30](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/30) 已在 2026-07-22 合并到
+  `agent/windows-development-baseline`，实际 merge commit 是 `351da92`。旧的 W17 “Draft PR”表述属于历史状态，不能
+  覆盖当前基线。
+- W18 将本地 PTT 的 native 音频和 whisper.cpp 调用限制在受 W12 `WorkerSupervisor` / Job Object 监管的
+  `MediaWorker`。父进程只保留状态、临时目录租约和有界转写元数据；不会接收 PCM、WAV、whisper JSON 或 subprocess
+  stdout/stderr。
+- `MediaWorkerHandler` 使用 16 kHz、mono、int16 的预分配有界 ring。callback 不创建逐帧 `asyncio.Queue` 或
+  `call_soon_threadsafe`；溢出、PortAudio status、超时都映射为无内容的稳定 error code。录音最长 120 秒，默认没有
+  持续监听。
+- `WhisperCppRunner` 在 helper 内预检可执行文件和模型：常规文件/重解析点、架构、可执行 SHA-256、模型采样指纹和
+  `--version`；运行使用无 shell 的 argv、无控制台窗口、超时或取消时 terminate→grace→kill。W12 的 Job Object 负责
+  最终子进程树收束。
+- PTT 按钮按下时才打开输入设备，释放后只产生一条 `InputMode.voice` 的 `UserMessage`。焦点丢失和窗口关闭会发送
+  取消，不会让录音继续。全局热键尚未启用：这是计划中“UI 按钮先实现，global hotkey 后启用”的明确分阶段选择。
+- 每次录音的 PCM/WAV/JSON 位于 MediaWorker 私有目录；正常、失败、取消和 parent watchdog 都走删除/registry 清理。
+  清理不能确认时不会把转写报告为成功。
 
 ## 本地自动化证据
 
-- `uv run ruff check .`：通过。
-- `uv run mypy`：通过，`229 source files`。
-- 最新 `uv run pytest`：`1161 passed, 3 skipped in 133.61s`，总 coverage `90.38%`，达到项目 90% 门槛。
-  三项 skip 分别是未安装的可选 RapidOCR、Pillow，以及当前账户不能创建目录 symlink；均有 pytest 明确标记，
-  不是 W17 断言失败。
-- W17 定向套件（`test_media_worker.py`、`test_media_entrypoint.py`、`test_gate_a_review.py`、W17/W16 UI 及
-  pipeline 回归）覆盖模拟设备顺序变化、重复身份、选定设备消失、低/高延迟 fallback、device-lost、取消、
-  helper deadline/hang 收敛、root-relative descriptor、WAV lease 清理、设置保存与 Gate A dry-run。
-- 2026-07-22 的真实 Gate A 首次运行发现 review player 向最大 job 时限为 30 秒的 supervisor 提交了固定
-  125 秒 deadline，因此在提交播放前被拒绝为 `worker_job_deadline_invalid`；这不是声卡或 WAV 格式失败。已将
-  review deadline 收紧为 25 秒，并让工具打印 `playback.skipped`/降级码且在 Day 6 三段未全部完成时以非零退出。
-  修复后的 `uv run python tools/gate_a_review.py --mode all --volume 0` 以实际 MediaWorker 路径退出 0：Day 6
-  的三段均 `playback.finished`、`playback_count=3`，Day 7 旧轮次被取消且新轮次两段完成。音量为 0 的探针只证明
-  控制/资源/worker 路径，不证明人耳实际听感。
-- 上述打断异常修复后的定向回归
-  `uv run pytest --no-cov -q tests/unit/test_worker_supervisor.py tests/unit/test_turn_service.py tests/unit/test_gate_a_review.py tests/unit/test_media_worker.py tests/unit/test_media_entrypoint.py tests/integration/test_mock_pipeline.py tests/integration/test_w07_bounded_pipeline.py tests/integration/test_w08_provider_semantics.py`
-  → `104 passed in 16.23s`。它覆盖 caller cancel 的强杀时间上限、crash recovery 与新 start 的串行化、取消胜过
-  cleanup error，以及 Gate A 对 replacement playback skip 的拒绝。
-- 听感确认修正后，`tests/unit/test_gate_a_review.py` 为 `6 passed in 9.41s`；真实模式启用人工确认、non-TTY 拒绝和
-  `--dry-run` 自动路径均有回归覆盖。无设备
-  `uv run python tools/gate_a_review.py --mode all --dry-run --volume 0` 仍完整通过；上述 W17 定向集为
-  `107 passed in 17.92s`，最新全仓为本节所列 `1161 passed, 3 skipped`。这些都不能替代实际听感确认。
-- 修复后实际 MediaWorker 的 `uv run python tools/gate_a_review.py --mode interrupt --volume 0` 正常打印
-  `turn.cancelled`、两段新轮次 `playback.finished` 与 `Gate A 清理完成。`；随后连续 3 次
-  `--mode all --volume 0` 均以相同控制/清理顺序退出 0。该结果没有复现原问题，但只证明本机静音控制路径，不能证明
-  每一种真实 driver 卡死或可听体验。
-- 实施中第一次完整 pytest 没有断言失败，但 coverage 为 `89.43%`，因此没有被接受为通过。随后补充了原生适配器、
-  helper entrypoint、失败降级和 high-latency stream reuse 的有意义模拟路径；最终完整重跑才达到上述 90.43%。
-- 针对上述 Windows CI 失败，测试不再猜测 30 ms 内应完成状态转换，而是在 0.3 秒上限内轮询最终 `quarantined` 状态。
-  该单测连续 20 次通过，完整 `test_worker_supervisor.py` 为 `45 passed in 2.02s`；`ruff format --check .`、`ruff check .`、
-  `mypy`、`uv lock --check` 和 `git diff --check` 均通过。它只稳定测试同步，不改变 MediaWorker 产品逻辑。
-- GPT-SoVITS close/discard 测试只验证受控输出的清理所有权，不验证网络 deadline；它现在显式使用 1,000 ms 首字节和
-  3,000 ms 总时限，保留专门 timeout 测试的短时限。该测试连续 30 次通过，`test_gpt_sovits.py` 为 `57 passed in 2.51s`，
-  该修复时完整 pytest 为 `1158 passed, 3 skipped in 149.56s`、coverage 90.43%。后续 head 仍须各自核验 CI。
+- `uv run pytest`：最终重跑为 `1195 passed, 3 skipped in 166.48s`，总 coverage `90.18%`，达到项目 90% 硬门槛。三个 skip 分别为
+  未安装的可选 RapidOCR、Pillow，以及当前账户不能创建目录 symlink；pytest 已明确标记，均非 W18 断言失败。
+- W18 定向集：`uv run pytest --no-cov tests/unit/test_whisper_cpp.py tests/unit/test_media_voice.py tests/unit/test_stt_factory.py`
+  → `74 passed in 7.90s`。覆盖预检/架构/指纹/版本失败、中文空格路径、转写 timeout/cancel、ring overflow/device status、
+  120 秒 watchdog、临时文件清理、start/cancel 竞争、Windows Job Object 子进程树、UI PTT 和焦点取消。
+- 当前 exact 工作树的 `uv run ruff check .`、`uv run ruff format --check .`（239 files）、`uv run mypy`
+  （232 source files）、`uv lock --check`、`git diff --check` 和 docs 相对链接检查均通过。
+- 提交前的一次完整运行曾单独失败 `tests/unit/test_worker_supervisor.py::test_successful_handshake_job_and_orderly_shutdown`；
+  随后该单测连续 20 次通过、完整 `test_worker_supervisor.py` 为 `45 passed in 2.14s`，最终全仓重跑也通过。失败原因目前
+  **未验证**，不能把这次局部复现不足写作已解决；最终 PR head/CI 仍必须重新执行该套件。
+- 测试使用合成 PCM、合成 WAV、fake whisper 和 fake device；没有把真实录音、模型、角色资产、用户路径、token 或 secret
+  写入仓库、fixture 或日志。
 
 ## 未验证项、人工 Gate 与范围外
 
-- 已由所有者通过的 Gate：修正后的 Day 7 交互式 interrupt 听感审计（测试设备未在本轮结果中标明）。自动化
-  fake/headless 结果仍不能证明其他真实 Windows 音频硬件；内置声卡、USB 和蓝牙上的正常结束、各设备的 interrupt、
-  设备热插拔时的实际听感/UI 提示及退出时的原生驱动资源释放仍未报告通过。
-- W12 已提供 worker 的 Job Object hard-kill 机制；W17 的 fake 覆盖可中止 write 与 supervisor deadline 路径。
-  这不能证明每一种真实 PortAudio/驱动卡死都能在同一线程内被中止；真正卡死仍依赖 supervisor 终止 helper。
-- 项目范围仍为单机、单 Windows 用户、个人私用。RDP、快速切用户、跨 session 和跨用户 DACL 有效访问均为
-  **范围外**；不得写成 W17 已通过，也不得作为本任务新增人工 Gate。
-- 未向仓库、fixture、日志或文档加入真实 WAV、用户路径、令牌、密钥或受保护角色资产。
+- **真实麦克风体验：** 需要在实际 Windows 麦克风上确认授权拒绝/授权后开始、中文准确率与端到端延迟、设备灯或系统录音
+  指示。自动化仅证明模拟回调和 helper 生命周期，不能冒充真实硬件或驱动结果。
+- **全局热键：** 当前未注册系统级 hotkey，故不存在可诚实报告的冲突、按键丢失或实际释放证据；该能力留待后续启用阶段。
+- **锁屏：** 当前没有 W20 的真实 Windows session/lock adapter。焦点丢失和显式取消已自动验证，但“锁屏后不录音”仍未验证，
+  不能记为通过。
+- **实际桌面 UI/IME：** headless Qt 测试验证 command/event 和可见模型状态；真实高 DPI、IME 候选与按住/释放手感仍须人工
+  视觉交互确认。
+- 项目范围仍为单机、单 Windows 用户、个人私用。RDP、快速切换用户、跨 session 和跨用户访问为**范围外**，不得写作通过，
+  也不转交为本任务人工 Gate。
 
 ## 回滚与下一步
 
-- 将 `playback_mode` 设为 `silent` 即可关闭本地播放；文字对话继续。无法恢复或异常设备不应触发无限重试。
-- Draft PR #30 已获所有者授权在最终 head 检查通过后从 Draft 进入受控合并。Gate A 听感验收语义修正提交
-  [`598e6aa`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/598e6aa7358b49a7c3e14085e35151d8e89fa99f)
-  的 `push` run [`29920861198`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29920861198) 与
-  `pull_request` run [`29920863704`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29920863704)
-  均在该 exact code head 上 8/8 通过。修正后的 Day 7 人工听感审计已获所有者通过；上列其余真实设备 Gate 仍待完成，
-  任何未来 head 都不得继承此 CI 结果或人工结论。
-- 2026-07-22，所有者明确要求合并 Draft PR #30，并接受以下**残余风险**：目标分支
-  `agent/windows-development-baseline` 当前无 GitHub branch protection，PR 没有独立 review，且内置/USB/蓝牙的完整
-  正常播放、设备特定 interrupt、热插拔和原生 driver UX 尚未报告通过。此授权只允许受控合并，不把这些项目标记为通过。
+- 回滚开关为 `stt.enabled=false`；文字输入继续，且不启动输入设备或 whisper helper。用户设置的模型/可执行路径不会被
+  自动复制、上传或写入日志。
+- 接下来：审查并创建 W18 聚焦提交，推送 `codex/w18-ptt-whisper` 并建立 Draft PR。PR 创建、最终 head 的远端
+  检查和任何真实设备 Gate 发生前，W18 仍不是发布完成状态。
 
 ## 相关资料
 
-- [W17 实现记录](../implementation/w17_media_worker_audio.md)
-- [W17 权威计划](../windows_development_plan.md)
-- [ADR-W01：运行拓扑](../adr/ADR-W01-runtime-topology.md)
-- [ADR-W06：有界流水线](../adr/ADR-W06-bounded-pipeline.md)
+- [W18 权威计划](../windows_development_plan.md)
 - [ADR-W07：native worker 隔离](../adr/ADR-W07-native-worker-isolation.md)
+- [Windows 数据流与保留清单](../architecture/windows_data_flow_inventory.md)
+- [Windows 威胁模型](../security/windows_threat_model.md)
+- [W17 实现记录（已合并的前置任务）](../implementation/w17_media_worker_audio.md)

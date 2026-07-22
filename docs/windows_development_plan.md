@@ -711,6 +711,9 @@ flowchart LR
 #### PR W18：Push-to-talk、麦克风 ring buffer 与 whisper Job
 
 - **责任：AI-R；隐私/设备 H。依赖：W17。风险：P1-15、P1-16。**
+- **实现状态（2026-07-22）：** 本地实现与自动化验证已完成，尚待 W18 聚焦提交、推送、Draft PR 和最终 PR head
+  检查。按钮优先路径已实现；系统级 global hotkey 与 W20 的真实 lock/session adapter 尚未启用，不能把其真实行为
+  写作已通过。
 - callback 写预分配有界 buffer，不对每 frame 向 asyncio loop 排队；overflow/设备断开成为显式事件。
 - UI 按钮先实现，global hotkey 后启用；start 才打开设备，stop 后本地 STT 并生成一个 voice `UserMessage`。
 - whisper executable/model 做版本、架构、hash/fingerprint 和路径预检；进程树纳入 Job Object。

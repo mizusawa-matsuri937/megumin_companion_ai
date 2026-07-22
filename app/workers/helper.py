@@ -27,6 +27,8 @@ class HelperJobHandler(Protocol):
         job_kind: str,
         resources: tuple[AuthorizedResource, ...],
         cancelled: asyncio.Event,
+        *,
+        job_id: str,
     ) -> dict[str, Any]: ...
 
     async def close(self) -> None: ...
@@ -192,7 +194,12 @@ class HelperRuntime:
             except ResourceAccessError as exc:
                 raise ProtocolError("helper_protocol_resource_rejected") from exc
             authorized = tuple(authorized_items)
-            result = await self._handler.run_job(job_kind, authorized, cancelled)
+            result = await self._handler.run_job(
+                job_kind,
+                authorized,
+                cancelled,
+                job_id=job_id,
+            )
             if not isinstance(result, dict):
                 raise ProtocolError("helper_protocol_job_result_invalid")
             await self._send(
