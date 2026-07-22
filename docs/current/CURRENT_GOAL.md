@@ -39,6 +39,9 @@
   听感通过：`DialoguePipeline` 在调用 `AudioPlayer.play()` **之前**发出 `playback.started`，所以该事件只证明请求已调度，
   不证明样本已到达扬声器。真实音频模式现在会在该事件后明确等待监听者实际听到低音并按 Enter，再提交新轮次；
   `--dry-run` 保留固定 0.65 秒的自动路径，以维持可重复的控制流测试。
+- 2026-07-22，所有者报告修正后的交互式 Day 7 打断审计通过。这是实际听感的所有者确认，覆盖“听到旧轮低音后按 Enter、
+  旧轮不恢复/不重叠、两段新轮高音完成及清理”的 Gate A 场景；本轮未提供设备类型或热插拔结果，故不能外推为内置、USB、
+  蓝牙或热插拔均通过。
 - 远端 `push` run `29904002937` 在 exact head `8ff9070` 的 Windows quality 中，仅在
   `test_hanging_job_hits_hard_deadline_and_terminates_entire_fake_job` 失败：固定等待 30 ms 后状态仍为 `failed`，
   尚未由异步 process watcher 变为 `quarantined`。同一 SHA 的 `pull_request` run `29904004777` 的 Windows 和 macOS
@@ -93,9 +96,9 @@
 
 ## 未验证项、人工 Gate 与范围外
 
-- 自动化 fake/headless 结果只证明模拟条件，不能证明真实 Windows 音频硬件。仍需在内置声卡、USB 和蓝牙设备上
-  人工确认：正常结束无尾音截断；Day 7 实际听到旧轮低音后按 Enter，interrupt 后不补播/不重叠；设备热插拔时的实际听感和 UI 提示、以及退出时的
-  原生驱动资源释放。
+- 已由所有者通过的 Gate：修正后的 Day 7 交互式 interrupt 听感审计（测试设备未在本轮结果中标明）。自动化
+  fake/headless 结果仍不能证明其他真实 Windows 音频硬件；内置声卡、USB 和蓝牙上的正常结束、各设备的 interrupt、
+  设备热插拔时的实际听感/UI 提示及退出时的原生驱动资源释放仍未报告通过。
 - W12 已提供 worker 的 Job Object hard-kill 机制；W17 的 fake 覆盖可中止 write 与 supervisor deadline 路径。
   这不能证明每一种真实 PortAudio/驱动卡死都能在同一线程内被中止；真正卡死仍依赖 supervisor 终止 helper。
 - 项目范围仍为单机、单 Windows 用户、个人私用。RDP、快速切用户、跨 session 和跨用户 DACL 有效访问均为
@@ -109,7 +112,8 @@
   [`598e6aa`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/598e6aa7358b49a7c3e14085e35151d8e89fa99f)
   的 `push` run [`29920861198`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29920861198) 与
   `pull_request` run [`29920863704`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29920863704)
-  均在该 exact code head 上 8/8 通过。随后仍须在最终 head 上完成上列真实设备 Gate；任何未来 head 都不得继承此 CI 结果。
+  均在该 exact code head 上 8/8 通过。修正后的 Day 7 人工听感审计已获所有者通过；上列其余真实设备 Gate 仍待完成，
+  任何未来 head 都不得继承此 CI 结果或人工结论。
 
 ## 相关资料
 

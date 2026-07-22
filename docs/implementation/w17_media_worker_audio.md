@@ -120,8 +120,13 @@ helper protocol、Job Object 或资源授权模型。
 
 以下是 AI 无法忠实自动化的真实 Windows 设备体验，仍需在 exact PR head 上人工确认：
 
+已通过（2026-07-22，所有者报告）：修正后的交互式 Day 7 interrupt 听感审计。该结果确认用户实际听到旧轮低音后按
+Enter，随后旧轮不恢复/不重叠、新轮高音完成并清理；设备类型未在本轮报告中注明，不能外推为其他设备通过。
+
+仍待确认：
+
 1. 内置输出、USB 输出和蓝牙输出分别播放正常结束的短/长 WAV，确认无尾音截断、爆音或异常延迟。
-2. 三类设备上实际听到旧轮低音后按 Enter 触发 interrupt，确认声音停止、字幕/新 turn 不补播或重叠。
+2. 未报告过的各设备上，实际听到旧轮低音后按 Enter 触发 interrupt，确认声音停止、字幕/新 turn 不补播或重叠。
 3. 正在播放时拔出/重连 USB 或蓝牙设备，确认实际 driver 行为与 UI 的 fallback 提示一致，且退出不残留设备占用。
 4. 在真实 native write/driver 异常下确认 W12 Job 终止后的 UX；自动化只能证明 fake write 和 supervisor 代码路径。
 
@@ -142,5 +147,5 @@ RDP、快速切用户、跨 session 与跨用户 DACL 有效访问为当前单�
 
 W17 的初始聚焦提交、打断竞态修复、测试稳定化和 Draft PR 已完成；Gate A 听感验收语义修正 `598e6aa` 的
 `push` run `29920861198` 与 `pull_request` run `29920863704` 均在该 exact code head 上 8/8 通过。真实设备 Gate
-仍必须在最终 head 上完成；任何未来 head 都不得继承此 CI 结果。不得继承 W16、`7ba750f`、`922b6fe`、`8ff9070` 或更早
-PR head 的结果。
+中的 Day 7 interactive interrupt 已获所有者通过；其余设备、热插拔和 native driver UX 仍待确认。任何未来 head 都不得
+继承此 CI 结果或人工结论。不得继承 W16、`7ba750f`、`922b6fe`、`8ff9070` 或更早 PR head 的结果。
