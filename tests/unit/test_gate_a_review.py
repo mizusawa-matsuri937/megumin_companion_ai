@@ -6,6 +6,20 @@ import subprocess
 import sys
 from pathlib import Path
 
+from tools import gate_a_review
+
+
+def test_gate_a_review_renders_playback_failure_codes() -> None:
+    assert (
+        gate_a_review._review_event_line(
+            "playback.skipped", {"index": 1, "error_code": "audio_device_unavailable"}
+        )
+        == "playback.skipped   index=1 code=audio_device_unavailable"
+    )
+    assert gate_a_review._review_event_line("playback.finished", {"index": 2}) == (
+        "playback.finished  index=2"
+    )
+
 
 def test_gate_a_review_all_modes_dry_run_exercises_interrupt_path() -> None:
     root = Path(__file__).resolve().parents[2]

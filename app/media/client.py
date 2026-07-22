@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import sys
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import suppress
@@ -28,6 +29,9 @@ from app.workers import (
 _ROOT_TEMP = "audio_temp"
 _ROOT_CACHE = "audio_cache"
 _RESOURCE_WAVE = "wave"
+_PLAYBACK_DEADLINE_SECONDS = 125.0
+_REVIEW_PLAYBACK_DEADLINE_SECONDS = 25.0
+_REVIEW_MAXIMUM_JOB_SECONDS = 30.0
 
 
 class _MediaSupervisor(Protocol):
@@ -58,17 +62,26 @@ class MediaWorkerAudioPlayer:
         supervisor: _MediaSupervisor | None = None,
         supervisor_factory: Callable[[], _MediaSupervisor] | None = None,
         prepare_roots: Callable[[], None] | None = None,
+        playback_deadline_seconds: float = _PLAYBACK_DEADLINE_SECONDS,
     ) -> None:
         if (supervisor is None) == (supervisor_factory is None):
             raise ValueError("media worker requires exactly one supervisor source")
         selected_roots = {key: value.absolute() for key, value in roots.items()}
         if not selected_roots:
             raise ValueError("media worker requires approved audio roots")
+        if (
+            isinstance(playback_deadline_seconds, bool)
+            or not isinstance(playback_deadline_seconds, (int, float))
+            or not math.isfinite(playback_deadline_seconds)
+            or playback_deadline_seconds <= 0
+        ):
+            raise ValueError("media playback deadline must be positive and finite")
         self._roots = selected_roots
         self._selected_device_id = selected_device_id or None
         self._supervisor = supervisor
         self._supervisor_factory = supervisor_factory
         self._prepare_roots = prepare_roots
+        self._playback_deadline_seconds = float(playback_deadline_seconds)
         self._operation_lock = asyncio.Lock()
         self._state_lock = asyncio.Lock()
         self._active_job_id: str | None = None
@@ -130,7 +143,10 @@ class MediaWorkerAudioPlayer:
                 command=_worker_command(roots, None),
                 adapter=process_adapter_for_current_platform(),
                 resource_policy=policy,
-                config=SupervisorConfig(maximum_active_jobs=1, maximum_job_seconds=30.0),
+                config=SupervisorConfig(
+                    maximum_active_jobs=1,
+                    maximum_job_seconds=_REVIEW_MAXIMUM_JOB_SECONDS,
+                ),
             )
 
         return cls(
@@ -138,6 +154,10 @@ class MediaWorkerAudioPlayer:
             selected_device_id=None,
             supervisor_factory=make_supervisor,
             prepare_roots=prepare_roots,
+            # Gate A only produces short synthetic tones. Keep its deadline below
+            # the review supervisor's 30-second hard maximum rather than using
+            # the production player's 125-second allowance.
+            playback_deadline_seconds=_REVIEW_PLAYBACK_DEADLINE_SECONDS,
         )
 
     async def list_output_devices(self) -> OutputDeviceList:
@@ -171,7 +191,7 @@ class MediaWorkerAudioPlayer:
                     job_id=job_id,
                     job_kind="media.play",
                     resources=(reference,),
-                    hard_deadline_seconds=125.0,
+                    hard_deadline_seconds=self._playback_deadline_seconds,
                 ),
                 name=f"media-play-{job_id}",
             )

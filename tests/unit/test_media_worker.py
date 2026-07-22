@@ -44,7 +44,7 @@ from app.media.worker import (
 from app.paths import AppPaths
 from app.pipelines.audio_player import AudioPlaybackResult
 from app.schemas import AudioResult
-from app.workers import WorkerError
+from app.workers import SupervisorConfig, WorkerError
 from app.workers.access import AuthorizedResource, ResourceReference
 
 
@@ -190,6 +190,7 @@ class _ResultSupervisor:
         self.started = False
         self.stopped = False
         self.calls: list[tuple[str, str, tuple[ResourceReference, ...]]] = []
+        self.deadlines: list[float | None] = []
 
     async def start(self) -> None:
         self.started = True
@@ -202,7 +203,7 @@ class _ResultSupervisor:
         resources: Sequence[ResourceReference] = (),
         hard_deadline_seconds: float | None = None,
     ) -> dict[str, Any]:
-        del hard_deadline_seconds
+        self.deadlines.append(hard_deadline_seconds)
         self.calls.append((job_id, job_kind, tuple(resources)))
         if self.error is not None:
             raise self.error
@@ -759,13 +760,17 @@ def test_media_player_factories_prepare_only_approved_roots(
     production = create_media_worker_audio_player(settings)
     review = MediaWorkerAudioPlayer.for_review(tmp_path / "review")
 
-    async def scenario() -> None:
+    async def scenario() -> AudioPlaybackResult:
         await production._ensure_supervisor()
         await review._ensure_supervisor()
+        result = await review.play(
+            _audio_result(tmp_path / "review" / "segment.wav"), CancellationToken("review")
+        )
         await production.close()
         await review.close()
+        return result
 
-    asyncio.run(scenario())
+    review_result = asyncio.run(scenario())
 
     assert (tmp_path / "private" / "temp" / "audio").is_dir()
     assert settings.paths.audio_cache.is_dir()
@@ -781,6 +786,14 @@ def test_media_player_factories_prepare_only_approved_roots(
         "audio_" + "a" * 32,
     )
 
+    review_supervisor = FakeWorkerSupervisor.instances[1]
+    review_config = cast(SupervisorConfig, review_supervisor.options["config"])
+    assert review_result.played
+    assert review_supervisor.calls[0][1] == "media.play"
+    assert review_supervisor.deadlines[0] == 25.0
+    assert review_supervisor.deadlines[0] is not None
+    assert review_supervisor.deadlines[0] < review_config.maximum_job_seconds
+
     with pytest.raises(ValueError, match="exactly one"):
         MediaWorkerAudioPlayer(
             roots={"audio_temp": tmp_path},
@@ -790,3 +803,10 @@ def test_media_player_factories_prepare_only_approved_roots(
         )
     with pytest.raises(ValueError, match="approved audio roots"):
         MediaWorkerAudioPlayer(roots={}, selected_device_id=None, supervisor=_ResultSupervisor())
+    with pytest.raises(ValueError, match="deadline"):
+        MediaWorkerAudioPlayer(
+            roots={"audio_temp": tmp_path},
+            selected_device_id=None,
+            supervisor=_ResultSupervisor(),
+            playback_deadline_seconds=0,
+        )

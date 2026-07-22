@@ -42,6 +42,10 @@ helper protocol、Job Object 或资源授权模型。
 - `tools/gate_a_review.py` 的真实播放模式改用 `MediaWorkerAudioPlayer.for_review()` 和临时目录；不再创建旧的
   in-process `SystemAudioPlayer`。
 - `--dry-run` 使用 realtime `SilentAudioPlayer`，能重复验证 pause/interrupt 的顺序而不打开设备或产生声音。
+- 2026-07-22 的首次真实 Gate A 运行暴露了 review-only deadline 不匹配：`for_review()` 的 supervisor 上限为
+  30 秒，而通用 player 固定提交 125 秒，故 supervisor 在 `media.play` 发出前拒绝该 job。review player 现使用
+  25 秒 deadline；同时工具会输出 `audio.degraded` / `playback.skipped` 的无内容错误码，并在 Day 6 未完成全部
+  三段时失败退出，避免把“已开始”误报为已播放。
 - 修正 response factory、订阅/取消 API 以及 TTS deadline 参数，使工具可执行而不是依赖错误的
   `ChatRequest.input_mode` 前提。
 - Qt 设置合约新增有界的 audio device command/event，管理 runtime 只在显式刷新命令时启动临时 MediaWorker。
@@ -54,13 +58,18 @@ helper protocol、Job Object 或资源授权模型。
 - `uv run ruff check .`：通过。
 - `uv run ruff format --check .`：`236 files already formatted`；`uv lock --check` 与 `git diff --check`：通过。
 - `uv run mypy`：`Success: no issues found in 229 source files`。
-- `uv run pytest`：`1153 passed, 3 skipped in 292.39s`，coverage `90.43%`（项目门槛为 90%）。skip 是 optional
+- `uv run pytest`：`1154 passed, 3 skipped in 170.51s`，coverage `90.43%`（项目门槛为 90%）。skip 是 optional
   RapidOCR、Pillow 和当前账户目录 symlink 能力，均由测试明确标记。
 - W17 的定向验证包括 `tests/unit/test_media_worker.py`、`tests/unit/test_media_entrypoint.py`、
   `tests/unit/test_gate_a_review.py` 和 `tests/unit/ui/test_w17_media_settings.py`，并回归
   bootstrap、mock pipeline、W07 bounded pipeline、W08 provider semantics 与 W16 management。最近 W17
   media/entrypoint 定向集合为 `15 passed in 3.33s`；局部 coverage 为 90%（client 88%、worker 89%、entrypoint
   96%）。
+- deadline 修复后的 W17 相关定向集合为 `33 passed in 12.42s`；其中 `tests/unit/test_media_worker.py` 与
+  `tests/unit/test_gate_a_review.py` 覆盖 review deadline 小于 supervisor 上限及 `playback.skipped` 错误码输出，
+  且该集合在无真实设备条件下通过。随后以实际 MediaWorker 运行
+  `uv run python tools/gate_a_review.py --mode all --volume 0`：Day 6 三段均完成、Day 7 旧轮次取消后新轮次完成；
+  该静音探针不等同于真实可听的设备 Gate。
 - 该集合模拟并断言：索引重排/重复 ID、设备消失、低延迟占用→high fallback、high stream reuse、write lost、
   cancel/abort、无设备、无效/超大 WAV、helper device/list/release protocol、根相对 descriptor、deadline/hang
   映射、lease 后文件删除、UI 保存/不可用选择和 Gate A dry-run。

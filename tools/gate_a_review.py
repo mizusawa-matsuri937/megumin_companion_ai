@@ -29,6 +29,15 @@ from app.schemas import (  # noqa: E402
 )
 
 AudioPlayerFactory = Callable[[], AudioPlayer]
+_AUDIO_REVIEW_EVENTS = frozenset(
+    {
+        "audio.ready",
+        "audio.degraded",
+        "playback.started",
+        "playback.finished",
+        "playback.skipped",
+    }
+)
 
 
 class SwitchingToneTTS:
@@ -56,6 +65,14 @@ class SwitchingToneTTS:
 
     async def close(self) -> None:
         await self._provider.close()
+
+
+def _review_event_line(event_type: str, payload: dict[str, object]) -> str:
+    """Render no-content playback evidence so a skipped device is not hidden."""
+
+    detail = payload.get("error_code") or payload.get("reason")
+    suffix = f" code={detail}" if isinstance(detail, str) and detail else ""
+    return f"{event_type:18} index={payload.get('index')}{suffix}"
 
 
 def review_segments() -> None:
@@ -114,12 +131,17 @@ async def review_order(
     token = CancellationToken(state.turn_id)
 
     async def emit(event_type: str, payload: dict[str, object]) -> None:
-        if event_type in {"audio.ready", "playback.started", "playback.finished"}:
-            print(f"{event_type:18} index={payload.get('index')}")
+        if event_type in _AUDIO_REVIEW_EVENTS:
+            print(_review_event_line(event_type, payload))
 
     try:
         metrics = await pipeline.run(message, state, token, emit)
         print("延迟指标：", metrics.model_dump(mode="json"))
+        if metrics.metrics.playback_count != 3:
+            raise RuntimeError(
+                "Gate A 音频顺序验收失败：3 个合成提示音没有全部完成播放；"
+                "请查看 playback.skipped 的 code。"
+            )
     finally:
         await pipeline.close()
 
@@ -190,14 +212,10 @@ async def review_interruption(
             events.task_done()
             if not isinstance(event, PipelineEvent):
                 continue
-            if event.type in {
-                "turn.accepted",
-                "turn.cancelled",
-                "playback.started",
-                "playback.finished",
-                "assistant.completed",
-            }:
+            if event.type in {"turn.accepted", "turn.cancelled", "assistant.completed"}:
                 print(f"{event.type:20} turn={event.turn_id} index={event.payload.get('index')}")
+            elif event.type in _AUDIO_REVIEW_EVENTS:
+                print(f"{_review_event_line(event.type, event.payload)} turn={event.turn_id}")
             if event.type == "assistant.completed" and event.turn_id == second.turn_id:
                 break
     finally:
