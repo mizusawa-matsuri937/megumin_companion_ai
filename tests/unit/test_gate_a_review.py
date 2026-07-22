@@ -2,11 +2,39 @@
 
 from __future__ import annotations
 
+import asyncio
 import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+from app.core import CancellationToken
+from app.pipelines.audio_player import AudioPlaybackResult
+from app.schemas import AudioResult
 from tools import gate_a_review
+
+
+class _InterruptThenSkipPlayer:
+    def __init__(self) -> None:
+        self.calls = 0
+        self.closed = False
+
+    async def play(
+        self,
+        _result: AudioResult,
+        token: CancellationToken,
+    ) -> AudioPlaybackResult:
+        self.calls += 1
+        if self.calls == 1:
+            await token.wait()
+            token.raise_if_cancelled()
+        return AudioPlaybackResult(played=False, error_code="audio_worker_failed")
+
+    async def stop(self, *, immediate: bool = False) -> None:
+        del immediate
+
+    async def close(self) -> None:
+        self.closed = True
 
 
 def test_gate_a_review_renders_playback_failure_codes() -> None:
@@ -38,3 +66,20 @@ def test_gate_a_review_all_modes_dry_run_exercises_interrupt_path() -> None:
     assert "Day 6 音频顺序人工验收" in completed.stdout
     assert "Day 7 快速输入/打断人工验收" in completed.stdout
     assert "新 turn:" in completed.stdout
+    assert "Day 7 打断人工验收：事件顺序通过" in completed.stdout
+    assert "Gate A 清理完成。" in completed.stdout
+
+
+def test_gate_a_review_rejects_a_replacement_turn_with_skipped_audio(tmp_path: Path) -> None:
+    player = _InterruptThenSkipPlayer()
+
+    with pytest.raises(RuntimeError, match="新轮次音频未完整播放"):
+        asyncio.run(
+            gate_a_review.review_interruption(
+                0,
+                cache=tmp_path,
+                player_factory=lambda: player,
+            )
+        )
+
+    assert player.closed

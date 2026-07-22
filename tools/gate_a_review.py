@@ -38,6 +38,14 @@ _AUDIO_REVIEW_EVENTS = frozenset(
         "playback.skipped",
     }
 )
+_TURN_REVIEW_EVENTS = frozenset(
+    {
+        "turn.accepted",
+        "turn.cancelled",
+        "turn.failed",
+        "assistant.completed",
+    }
+)
 
 
 class SwitchingToneTTS:
@@ -73,6 +81,14 @@ def _review_event_line(event_type: str, payload: dict[str, object]) -> str:
     detail = payload.get("error_code") or payload.get("reason")
     suffix = f" code={detail}" if isinstance(detail, str) and detail else ""
     return f"{event_type:18} index={payload.get('index')}{suffix}"
+
+
+def _turn_review_event_line(event: PipelineEvent) -> str:
+    """Render terminal turn evidence without relying on logger formatting."""
+
+    detail = event.payload.get("error_code")
+    suffix = f" code={detail}" if isinstance(detail, str) and detail else ""
+    return f"{event.type:20} turn={event.turn_id} index={event.payload.get('index')}{suffix}"
 
 
 def review_segments() -> None:
@@ -182,45 +198,80 @@ async def review_interruption(
         tts_cancellation_timeout_ms=500,
     )
     logger = logging.getLogger("gate_a_review")
-    logger.addHandler(logging.StreamHandler())
+    logger.handlers = [logging.NullHandler()]
+    logger.propagate = False
     service = TurnService(logger, pipeline)
     session_id = "gate_a_review"
     events = await service.subscribe(session_id)
-    first = await service.accept(
-        UserMessage(text="旧轮次", input_mode=InputMode.text, session_id=session_id)
-    )
-    print(f"旧 turn: {first.turn_id}")
-
-    while True:
-        event = await asyncio.wait_for(events.get(), timeout=10)
-        events.task_done()
-        if not isinstance(event, PipelineEvent):
-            continue
-        if event.type in {"turn.accepted", "playback.started"}:
-            print(f"{event.type:20} turn={event.turn_id} index={event.payload.get('index')}")
-        if event.type == "playback.started" and event.turn_id == first.turn_id:
-            break
-    await asyncio.sleep(0.65)
-    second = await service.accept(
-        UserMessage(text="新轮次", input_mode=InputMode.voice, session_id=session_id)
-    )
-    print(f"新 turn: {second.turn_id}")
-
     try:
+        first = await service.accept(
+            UserMessage(text="旧轮次", input_mode=InputMode.text, session_id=session_id)
+        )
+        print(f"旧 turn: {first.turn_id}")
+
         while True:
             event = await asyncio.wait_for(events.get(), timeout=10)
             events.task_done()
             if not isinstance(event, PipelineEvent):
                 continue
-            if event.type in {"turn.accepted", "turn.cancelled", "assistant.completed"}:
-                print(f"{event.type:20} turn={event.turn_id} index={event.payload.get('index')}")
+            if event.type in _TURN_REVIEW_EVENTS:
+                print(_turn_review_event_line(event))
             elif event.type in _AUDIO_REVIEW_EVENTS:
                 print(f"{_review_event_line(event.type, event.payload)} turn={event.turn_id}")
+            if event.type == "turn.failed" and event.turn_id == first.turn_id:
+                raise RuntimeError(
+                    "Gate A 打断验收失败：旧轮次在替换输入前进入 turn.failed；"
+                    "请记录上方稳定 error code。"
+                )
+            if event.type == "playback.started" and event.turn_id == first.turn_id:
+                break
+
+        await asyncio.sleep(0.65)
+        second = await service.accept(
+            UserMessage(text="新轮次", input_mode=InputMode.voice, session_id=session_id)
+        )
+        print(f"新 turn: {second.turn_id}")
+
+        first_cancelled = False
+        first_failed = False
+        replacement_finished: set[int] = set()
+        replacement_skipped: list[int] = []
+        while True:
+            event = await asyncio.wait_for(events.get(), timeout=10)
+            events.task_done()
+            if not isinstance(event, PipelineEvent):
+                continue
+            if event.type in _TURN_REVIEW_EVENTS:
+                print(_turn_review_event_line(event))
+            elif event.type in _AUDIO_REVIEW_EVENTS:
+                print(f"{_review_event_line(event.type, event.payload)} turn={event.turn_id}")
+            if event.turn_id == first.turn_id:
+                first_cancelled = first_cancelled or event.type == "turn.cancelled"
+                first_failed = first_failed or event.type == "turn.failed"
+            if event.turn_id == second.turn_id:
+                if event.type == "playback.finished":
+                    index = event.payload.get("index")
+                    if isinstance(index, int):
+                        replacement_finished.add(index)
+                elif event.type == "playback.skipped":
+                    index = event.payload.get("index")
+                    if isinstance(index, int):
+                        replacement_skipped.append(index)
             if event.type == "assistant.completed" and event.turn_id == second.turn_id:
                 break
+
+        if first_failed or not first_cancelled:
+            raise RuntimeError("Gate A 打断验收失败：旧轮次没有在新输入后以 turn.cancelled 收束。")
+        if replacement_skipped or replacement_finished != {0, 1}:
+            raise RuntimeError(
+                "Gate A 打断验收失败：新轮次音频未完整播放；请查看 playback.skipped 的 code。"
+            )
+        print("Day 7 打断人工验收：事件顺序通过，等待实际听感确认。")
     finally:
         service.unsubscribe(events)
+        print("Gate A 清理 MediaWorker…")
         await service.shutdown()
+        print("Gate A 清理完成。")
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:

@@ -500,6 +500,32 @@ class TurnService:
                 )
             raise
         except Exception as exc:
+            # Preemption signals the token before cancelling the task.  A
+            # cleanup/provider error that wins the scheduling race afterward
+            # must not turn an explicitly cancelled old turn into failure.
+            if token.cancelled:
+                cancelled, changed = self._set_terminal_if_open(
+                    state.turn_id,
+                    TurnStatus.cancelled,
+                )
+                self._clear_active_locked(state.turn_id)
+                if changed:
+                    await self._safe_persist_state(client_id, cancelled)
+                    self._prune_terminal(self._now())
+                    await self._publish_state(
+                        cancelled,
+                        "turn.cancelled",
+                        client_id=client_id,
+                    )
+                    log_event(
+                        self._logger,
+                        logging.INFO,
+                        "turn.cancelled",
+                        turn_id=state.turn_id,
+                        session_id=state.session_id,
+                        cancellation_race_error=_safe_error_code(exc),
+                    )
+                return
             failed, changed = self._set_terminal_if_open(
                 state.turn_id,
                 TurnStatus.failed,

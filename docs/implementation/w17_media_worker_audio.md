@@ -46,6 +46,16 @@ helper protocol、Job Object 或资源授权模型。
   30 秒，而通用 player 固定提交 125 秒，故 supervisor 在 `media.play` 发出前拒绝该 job。review player 现使用
   25 秒 deadline；同时工具会输出 `audio.degraded` / `playback.skipped` 的无内容错误码，并在 Day 6 未完成全部
   三段时失败退出，避免把“已开始”误报为已播放。
+- 随后的实际 Day 7 复核曾报告旧轮次 `turn.failed`、新轮次首段
+  `playback.skipped code=audio_worker_failed`，以及 `assistant.completed` 后未返回 PowerShell。该次是客观失败，
+  不是“第二段新音频完成”的通过。修复将 caller cancel 的 hard-fault 等待上限从原 job deadline 收紧为
+  `terminate_wait_seconds`；`WorkerSupervisor.start()` 会 join 已存在的 crash recovery，避免 recovery 与下一次 start
+  并发 spawn/覆盖 worker owner。若 Job 终止在该上限内仍未确认子树归零，supervisor 关闭现有 Job owner、结清 jobs，
+  由后续 start 在干净 owner 上重建；它不把 Python task cancel 误说成 native write 已停止。
+- `TurnService` 现在在 token 已明确取消时让取消语义胜过同时发生的 cleanup/provider error；因此旧 turn 不会因这种
+  调度竞争错误标为 `turn.failed`。Gate A Day 7 订阅并打印 `turn.failed` 的无内容 code，要求旧轮次
+  `turn.cancelled`、新轮次 0/1 均 `playback.finished` 且没有 `playback.skipped`，并打印清理开始/完成。任何一个
+  断言失败都会使工具非零退出，`assistant.completed` 不再单独代表 Gate 成功。
 - 修正 response factory、订阅/取消 API 以及 TTS deadline 参数，使工具可执行而不是依赖错误的
   `ChatRequest.input_mode` 前提。
 - Qt 设置合约新增有界的 audio device command/event，管理 runtime 只在显式刷新命令时启动临时 MediaWorker。
@@ -70,6 +80,13 @@ helper protocol、Job Object 或资源授权模型。
   且该集合在无真实设备条件下通过。随后以实际 MediaWorker 运行
   `uv run python tools/gate_a_review.py --mode all --volume 0`：Day 6 三段均完成、Day 7 旧轮次取消后新轮次完成；
   该静音探针不等同于真实可听的设备 Gate。
+- Day 7 竞态修复后的 worker/turn/Gate/pipeline 定向集为 `104 passed in 16.23s`；它覆盖 cancel hard-fault 的
+  terminate bound、crash recovery join、取消与 cleanup error 的终态竞争，以及 replacement 音频 skip 的 Gate 拒绝。
+  后续完整 `uv run pytest` 为 `1158 passed, 3 skipped in 143.72s`，总 coverage `90.37%`。
+- 修复后以实际 MediaWorker 连续运行 3 次
+  `uv run python tools/gate_a_review.py --mode all --volume 0`；每次 Day 6 三段完成、Day 7 旧 turn 为
+  `turn.cancelled`、新 turn 两段完成并打印 `Gate A 清理完成。`。这些是本机 0 音量控制/清理证据，不能替代真实声音、
+  USB、蓝牙或原生 driver hang 的人工 Gate。
 - 该集合模拟并断言：索引重排/重复 ID、设备消失、低延迟占用→high fallback、high stream reuse、write lost、
   cancel/abort、无设备、无效/超大 WAV、helper device/list/release protocol、根相对 descriptor、deadline/hang
   映射、lease 后文件删除、UI 保存/不可用选择和 Gate A dry-run。

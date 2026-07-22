@@ -23,12 +23,21 @@
   启用本地系统播放。保存但目前不可用的设备 ID 会保留，以便提示实际 fallback，而不是悄悄改写用户选择。
 - `tools/gate_a_review.py --dry-run` 使用 realtime silent player 覆盖 interrupt 路径；真实复核模式才启动临时
   MediaWorker，且临时 WAV 位于临时目录，不进入仓库或持久 cache。
+- 2026-07-22 的实际 Gate A 打断日志曾出现旧轮次 `turn.failed`、新轮次首段
+  `playback.skipped code=audio_worker_failed`，并在 `assistant.completed` 后没有回到 PowerShell 提示符。该次结果是
+  **失败**，不能以新轮次第二段完成或文本 completed 伪装为通过。代码审计确认两个可复现的竞态：caller cancel 会把
+  原 job deadline 作为 hard-fault 等待上限，且 crash recovery 与新的 `start()` 可并发 spawn。已将 caller cancel 的
+  hard-fault 等待收紧为 supervisor `terminate_wait_seconds`，让新 `start()` join 现有 recovery，并使已明确取消的 turn
+  在 cleanup error 竞争时仍以 `turn.cancelled` 收束。
+- Gate A Day 7 现在直接打印 `turn.failed` 的稳定 error code，要求旧轮次 `turn.cancelled`、新轮次两段均
+  `playback.finished` 且不存在 `playback.skipped`，并显式输出 MediaWorker 清理开始/完成。任一不满足均为非零失败，
+  不再把 `assistant.completed` 单独当作人工 Gate 成功。
 
 ## 本地自动化证据
 
 - `uv run ruff check .`：通过。
 - `uv run mypy`：通过，`229 source files`。
-- `uv run pytest`：`1154 passed, 3 skipped in 170.51s`，总 coverage `90.43%`，达到项目 90% 门槛。
+- `uv run pytest`：`1158 passed, 3 skipped in 143.72s`，总 coverage `90.37%`，达到项目 90% 门槛。
   三项 skip 分别是未安装的可选 RapidOCR、Pillow，以及当前账户不能创建目录 symlink；均有 pytest 明确标记，
   不是 W17 断言失败。
 - W17 定向套件（`test_media_worker.py`、`test_media_entrypoint.py`、`test_gate_a_review.py`、W17/W16 UI 及
@@ -40,6 +49,14 @@
   修复后的 `uv run python tools/gate_a_review.py --mode all --volume 0` 以实际 MediaWorker 路径退出 0：Day 6
   的三段均 `playback.finished`、`playback_count=3`，Day 7 旧轮次被取消且新轮次两段完成。音量为 0 的探针只证明
   控制/资源/worker 路径，不证明人耳实际听感。
+- 上述打断异常修复后的定向回归
+  `uv run pytest --no-cov -q tests/unit/test_worker_supervisor.py tests/unit/test_turn_service.py tests/unit/test_gate_a_review.py tests/unit/test_media_worker.py tests/unit/test_media_entrypoint.py tests/integration/test_mock_pipeline.py tests/integration/test_w07_bounded_pipeline.py tests/integration/test_w08_provider_semantics.py`
+  → `104 passed in 16.23s`。它覆盖 caller cancel 的强杀时间上限、crash recovery 与新 start 的串行化、取消胜过
+  cleanup error，以及 Gate A 对 replacement playback skip 的拒绝。
+- 修复后实际 MediaWorker 的 `uv run python tools/gate_a_review.py --mode interrupt --volume 0` 正常打印
+  `turn.cancelled`、两段新轮次 `playback.finished` 与 `Gate A 清理完成。`；随后连续 3 次
+  `--mode all --volume 0` 均以相同控制/清理顺序退出 0。该结果没有复现原问题，但只证明本机静音控制路径，不能证明
+  每一种真实 driver 卡死或可听体验。
 - 实施中第一次完整 pytest 没有断言失败，但 coverage 为 `89.43%`，因此没有被接受为通过。随后补充了原生适配器、
   helper entrypoint、失败降级和 high-latency stream reuse 的有意义模拟路径；最终完整重跑才达到上述 90.43%。
 
@@ -57,8 +74,8 @@
 ## 回滚与下一步
 
 - 将 `playback_mode` 设为 `silent` 即可关闭本地播放；文字对话继续。无法恢复或异常设备不应触发无限重试。
-- Draft PR #30 已打开；等待其最终 exact head 的远端 CI，并在该 head 上完成上列真实设备 Gate。任何后续
-  文档/修复提交都必须重新核验 PR head，不得继承初始提交的本地结果。
+- Draft PR #30 已打开；这次修复尚需提交、推送并重新核验其最终 exact head 的远端 CI，随后在该 head 上完成上列
+  真实设备 Gate。任何后续文档/修复提交都不得继承初始提交的本地结果。
 
 ## 相关资料
 
