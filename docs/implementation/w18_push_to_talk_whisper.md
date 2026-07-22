@@ -2,9 +2,13 @@
 
 ## 状态与范围
 
-> 状态：实现提交 [`439fa88`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/439fa88) 已推送，
-> Draft PR [#31](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/31) 已创建；本次状态更新推送后仍待最终
-> PR head 的远端检查。最后本地核验：2026-07-22（Asia/Shanghai），分支 `codex/w18-ptt-whisper`，基线为 W17 合并提交
+> 状态：实现及 CI 修复提交 [`439fa88`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/439fa88)、
+> [`69b46dd`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/69b46dd) 和
+> [`6c66dc0`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/6c66dc0) 已推送。功能 head 的
+> [PR workflow](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29941194620) 与
+> [push workflow](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29941191361) 均通过。
+> Draft PR [#31](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/31) 未合并；本验证记录推送后仍须核验新的
+> 最终 PR head。最后本地核验：2026-07-23（Asia/Shanghai），分支 `codex/w18-ptt-whisper`，基线为 W17 合并提交
 > [`351da92`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/351da92bfd0232ce03a90a97b75c13ba8ee6a51b)。
 > 本文不把本地绿测、headless Qt 或 fake PortAudio/whisper 结果表述成真实麦克风、锁屏、IME 或全局热键体验。
 
@@ -41,15 +45,15 @@ global hotkey 或 W20 的 Windows lock/session adapter。
 
 最终本地命令：
 
-- `uv run pytest` → 最后一次完整重跑 `1195 passed, 3 skipped in 255.33s`，coverage `90.18%`。
-- `uv run pytest --no-cov tests/unit/test_whisper_cpp.py tests/unit/test_media_voice.py tests/unit/test_stt_factory.py`
-  → `74 passed in 7.90s`。
+- `uv run pytest` → 最后一次完整重跑 `1195 passed, 3 skipped in 190.60s`，coverage `90.18%`。
+- `uv run pytest --no-cov tests/unit/test_media_voice.py tests/unit/test_whisper_cpp.py` → `56 passed in 7.88s`；余下
+  fixture 规范化后再次执行 `tests/unit/test_whisper_cpp.py` → `24 passed in 4.84s`。
 
 完整测试的 skip 是可选 RapidOCR、可选 Pillow 和当前账户的 directory-symlink 权限限制，pytest 已明确标记；没有 W18
 断言失败。提交前一次全仓运行曾单独失败既有的
-`test_successful_handshake_job_and_orderly_shutdown`：随后该单测连续 20 次、完整 WorkerSupervisor 子套件 45 项和最终全仓
-重跑都通过。失败根因仍**未验证**，故将其作为残余时序风险而不是报告为已修复；最终 PR head/CI 必须重新执行。Ruff、格式、
-mypy、`uv lock --check` 和 `git diff --check` 已在当前工作树通过。
+`test_successful_handshake_job_and_orderly_shutdown`：随后该单测连续 20 次、完整 WorkerSupervisor 子套件 45 项、最终全仓
+重跑和功能 head 跨 OS CI 都通过。失败根因仍**未验证**，故将其作为残余时序风险而不是报告为已修复。Ruff、格式、mypy、
+`uv lock --check` 和 `git diff --check` 已在当前工作树通过。
 
 ## 人工 Gate、未验证项与范围外
 
@@ -77,8 +81,13 @@ AI 已覆盖可合成的 ring、worker lifecycle、进程树、路径、取消�
   是生命周期隔离和 best effort，不构成物理介质擦除承诺。
 - 真实模型文件、可执行文件、麦克风权限和性能仍是用户环境依赖。运行时预检以稳定错误码失败，不复制/上传模型或音频。
 - Draft PR [#31](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/31) 已创建，初始实现提交为
-  [`439fa88`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/439fa88)。本次发布状态更新推送后，必须以
-  最终 PR head 重跑并核验必需检查；未完成前不得报告为可合并或发布完成。
+  [`439fa88`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/439fa88)。功能 head
+  [`6c66dc0`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/6c66dc0) 的两套 workflow 已通过：
+  [PR run 29941194620](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29941194620) 与
+  [push run 29941191361](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29941191361)。
+  初始 CI 失败是测试的 real-time watchdog 竞争和 macOS fake CLI 路径的 symlink 规范化问题；`69b46dd`/`6c66dc0`
+  只修正测试确定性，不放宽 production reparse-point 拒绝策略。本验证记录推送后仍必须核验新的最终 PR head；Draft PR
+  未获合并授权，且真实设备 Gate 未完成，因此不能报告为发布完成。
 
 ## 关联资料
 

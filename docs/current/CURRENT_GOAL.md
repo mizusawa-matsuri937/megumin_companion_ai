@@ -1,11 +1,15 @@
 # 当前产品目标
 
-> 最后核验：2026-07-22（Asia/Shanghai）。当前活跃任务是 W18「Push-to-talk、麦克风 ring buffer 与
+> 最后核验：2026-07-23（Asia/Shanghai）。当前活跃任务是 W18「Push-to-talk、麦克风 ring buffer 与
 > whisper Job」。工作分支为 `codex/w18-ptt-whisper`，基线为 W17 合并提交
 > [`351da92`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/351da92bfd0232ce03a90a97b75c13ba8ee6a51b)。
-> W18 实现提交 [`439fa88`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/439fa88) 已推送，并已创建
-> Draft PR [#31](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/31)。本次发布状态更新推送后，仍须以最终
-> PR head 核验远端必需检查；在此之前不能写作“发布完成”或“已合并”。
+> W18 实现及 CI 修复提交 [`439fa88`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/439fa88)、
+> [`69b46dd`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/69b46dd) 和
+> [`6c66dc0`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/6c66dc0) 已推送。功能 head `6c66dc0` 的
+> [PR workflow](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29941194620) 与
+> [push workflow](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29941191361) 均通过。
+> Draft PR [#31](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/31) 仍未合并；本验证记录推送后仍须核验其
+> 新的最终 PR head，不能写作“已合并”或“发布完成”。
 
 ## 已确认事实
 
@@ -28,16 +32,20 @@
 
 ## 本地自动化证据
 
-- `uv run pytest`：最后一次完整重跑为 `1195 passed, 3 skipped in 255.33s`，总 coverage `90.18%`，达到项目 90% 硬门槛。三个 skip 分别为
+- `uv run pytest`：最后一次完整重跑为 `1195 passed, 3 skipped in 190.60s`，总 coverage `90.18%`，达到项目 90% 硬门槛。三个 skip 分别为
   未安装的可选 RapidOCR、Pillow，以及当前账户不能创建目录 symlink；pytest 已明确标记，均非 W18 断言失败。
-- W18 定向集：`uv run pytest --no-cov tests/unit/test_whisper_cpp.py tests/unit/test_media_voice.py tests/unit/test_stt_factory.py`
-  → `74 passed in 7.90s`。覆盖预检/架构/指纹/版本失败、中文空格路径、转写 timeout/cancel、ring overflow/device status、
-  120 秒 watchdog、临时文件清理、start/cancel 竞争、Windows Job Object 子进程树、UI PTT 和焦点取消。
+- 修复后的定向集：`uv run pytest --no-cov tests/unit/test_media_voice.py tests/unit/test_whisper_cpp.py`
+  → `56 passed in 7.88s`；剩余 fixture 规范化后再次执行 `test_whisper_cpp.py` → `24 passed in 4.84s`。最终全仓运行覆盖
+  预检/架构/指纹/版本失败、中文空格路径、转写 timeout/cancel、ring overflow/device status、120 秒 watchdog、临时文件清理、
+  start/cancel 竞争、Windows Job Object 子进程树、UI PTT 和焦点取消。
 - 当前 exact 工作树的 `uv run ruff check .`、`uv run ruff format --check .`（239 files）、`uv run mypy`
   （232 source files）、`uv lock --check`、`git diff --check` 和 docs 相对链接检查均通过。
 - 提交前的一次完整运行曾单独失败 `tests/unit/test_worker_supervisor.py::test_successful_handshake_job_and_orderly_shutdown`；
-  随后该单测连续 20 次通过、完整 `test_worker_supervisor.py` 为 `45 passed in 2.14s`，最终全仓重跑也通过。失败原因目前
-  **未验证**，不能把这次局部复现不足写作已解决；最终 PR head/CI 仍必须重新执行该套件。
+  随后该单测连续 20 次通过、完整 `test_worker_supervisor.py` 为 `45 passed in 2.14s`，最终全仓重跑及功能 head 的跨 OS CI 均通过。
+  该次局部失败根因仍**未验证**，因此仅作为残余时序风险记录，而不写作已解决。
+- 功能 head `6c66dc0` 的 macOS/Windows `quality` 与 `installed-wheel` 均在上述 PR/push workflows 通过。此前失败分别是
+  watchdog 测试依赖 real-time sleep 的竞争，以及 macOS fake CLI fixture 把 `sys.executable` 的 symlink 交给故意拒绝
+  reparse point 的安全预检；修复只让测试注入可控等待并规范化 fixture 路径，没有放宽生产预检。
 - 测试使用合成 PCM、合成 WAV、fake whisper 和 fake device；没有把真实录音、模型、角色资产、用户路径、token 或 secret
   写入仓库、fixture 或日志。
 
@@ -57,8 +65,8 @@
 
 - 回滚开关为 `stt.enabled=false`；文字输入继续，且不启动输入设备或 whisper helper。用户设置的模型/可执行路径不会被
   自动复制、上传或写入日志。
-- 接下来：推送本次发布状态更新，并以 [Draft PR #31](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/31) 的
-  最终 head 核验远端必需检查。远端检查和任何真实设备 Gate 发生前，W18 仍不是发布完成状态。
+- 接下来：推送本次仅文档的验证记录，并以 [Draft PR #31](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/31) 的
+  新最终 head 核验远端必需检查；随后等待 review 和上述真实设备 Gate。Draft PR 不在本任务中合并，W18 也不据此宣称发布完成。
 
 ## 相关资料
 
