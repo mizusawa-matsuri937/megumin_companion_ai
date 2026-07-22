@@ -58,6 +58,10 @@ helper protocol、Job Object 或资源授权模型。
   调度竞争错误标为 `turn.failed`。Gate A Day 7 订阅并打印 `turn.failed` 的无内容 code，要求旧轮次
   `turn.cancelled`、新轮次 0/1 均 `playback.finished` 且没有 `playback.skipped`，并打印清理开始/完成。任何一个
   断言失败都会使工具非零退出，`assistant.completed` 不再单独代表 Gate 成功。
+- 真实 Day 7 复核随后显示：事件顺序通过时，旧轮低音仍可能尚未可听。根因是 `DialoguePipeline` 在
+  `await AudioPlayer.play()` 前发出 `playback.started`，该事件是播放请求调度而非声卡确认。真实音频模式现在在该事件后
+  显式说明其语义，并等待监听者实际听到低音后按 Enter 才提交新 turn；`--dry-run` 继续用固定 0.65 秒以保持自动化、
+  无设备回归可重复。若旧轮已在确认前完成，工具以明确的“验收无效”错误退出，而不是误报打断通过。
 - 修正 response factory、订阅/取消 API 以及 TTS deadline 参数，使工具可执行而不是依赖错误的
   `ChatRequest.input_mode` 前提。
 - Qt 设置合约新增有界的 audio device command/event，管理 runtime 只在显式刷新命令时启动临时 MediaWorker。
@@ -85,6 +89,10 @@ helper protocol、Job Object 或资源授权模型。
 - Day 7 竞态修复后的 worker/turn/Gate/pipeline 定向集为 `104 passed in 16.23s`；它覆盖 cancel hard-fault 的
   terminate bound、crash recovery join、取消与 cleanup error 的终态竞争，以及 replacement 音频 skip 的 Gate 拒绝。
   后续完整 `uv run pytest` 为 `1158 passed, 3 skipped in 143.72s`，总 coverage `90.37%`。
+- 听感确认修正后，`tests/unit/test_gate_a_review.py` 为 `6 passed in 9.41s`，覆盖人工确认分支、真实模式开关和
+  non-TTY 的明确拒绝；`--mode all --dry-run --volume 0` 仍完成无设备的 Day 5–7 路径。W17 定向回归为
+  `107 passed in 17.92s`，最新完整 pytest 为 `1161 passed, 3 skipped in 133.61s`，coverage `90.38%`。
+  这只证明脚本语义、控制流和 fake 条件；实际听到低音后按 Enter 的结果仍必须由人工设备 Gate 记录。
 - 修复后以实际 MediaWorker 连续运行 3 次
   `uv run python tools/gate_a_review.py --mode all --volume 0`；每次 Day 6 三段完成、Day 7 旧 turn 为
   `turn.cancelled`、新 turn 两段完成并打印 `Gate A 清理完成。`。这些是本机 0 音量控制/清理证据，不能替代真实声音、
@@ -113,7 +121,7 @@ helper protocol、Job Object 或资源授权模型。
 以下是 AI 无法忠实自动化的真实 Windows 设备体验，仍需在 exact PR head 上人工确认：
 
 1. 内置输出、USB 输出和蓝牙输出分别播放正常结束的短/长 WAV，确认无尾音截断、爆音或异常延迟。
-2. 三类设备上播放中 interrupt，确认声音停止、字幕/新 turn 不补播或重叠。
+2. 三类设备上实际听到旧轮低音后按 Enter 触发 interrupt，确认声音停止、字幕/新 turn 不补播或重叠。
 3. 正在播放时拔出/重连 USB 或蓝牙设备，确认实际 driver 行为与 UI 的 fallback 提示一致，且退出不残留设备占用。
 4. 在真实 native write/driver 异常下确认 W12 Job 终止后的 UX；自动化只能证明 fake write 和 supervisor 代码路径。
 
@@ -132,6 +140,6 @@ RDP、快速切用户、跨 session 与跨用户 DACL 有效访问为当前单�
 
 ## 发布状态
 
-W17 的初始聚焦提交、打断竞态修复、第一条测试稳定化和 Draft PR 已完成；`550671d` 的远端 CI 已通过。第二条测试
-稳定化将在新的 exact head 上重新核验 CI；真实设备 Gate 仍必须在该最终 head 上完成。不得继承 W16、`922b6fe`、
-`8ff9070` 或更早 PR head 的结果。
+W17 的初始聚焦提交、打断竞态修复、测试稳定化和 Draft PR 已完成；当前 Gate A 听感验收语义修正将在新的 exact head
+上重新核验 CI。真实设备 Gate 仍必须在该最终 head 上完成。不得继承 W16、`7ba750f`、`922b6fe`、`8ff9070` 或更早
+PR head 的结果。

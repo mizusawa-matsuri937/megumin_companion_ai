@@ -35,6 +35,10 @@
 - Gate A Day 7 现在直接打印 `turn.failed` 的稳定 error code，要求旧轮次 `turn.cancelled`、新轮次两段均
   `playback.finished` 且不存在 `playback.skipped`，并显式输出 MediaWorker 清理开始/完成。任一不满足均为非零失败，
   不再把 `assistant.completed` 单独当作人工 Gate 成功。
+- 最新真实 Day 7 运行的事件顺序、替换音频和清理都通过，但有时只听到两段高音，未实际听到旧轮低音。这不能写成完整
+  听感通过：`DialoguePipeline` 在调用 `AudioPlayer.play()` **之前**发出 `playback.started`，所以该事件只证明请求已调度，
+  不证明样本已到达扬声器。真实音频模式现在会在该事件后明确等待监听者实际听到低音并按 Enter，再提交新轮次；
+  `--dry-run` 保留固定 0.65 秒的自动路径，以维持可重复的控制流测试。
 - 远端 `push` run `29904002937` 在 exact head `8ff9070` 的 Windows quality 中，仅在
   `test_hanging_job_hits_hard_deadline_and_terminates_entire_fake_job` 失败：固定等待 30 ms 后状态仍为 `failed`，
   尚未由异步 process watcher 变为 `quarantined`。同一 SHA 的 `pull_request` run `29904004777` 的 Windows 和 macOS
@@ -54,7 +58,7 @@
 
 - `uv run ruff check .`：通过。
 - `uv run mypy`：通过，`229 source files`。
-- 最新 `uv run pytest`：`1158 passed, 3 skipped in 157.15s`，总 coverage `90.43%`，达到项目 90% 门槛。
+- 最新 `uv run pytest`：`1161 passed, 3 skipped in 133.61s`，总 coverage `90.38%`，达到项目 90% 门槛。
   三项 skip 分别是未安装的可选 RapidOCR、Pillow，以及当前账户不能创建目录 symlink；均有 pytest 明确标记，
   不是 W17 断言失败。
 - W17 定向套件（`test_media_worker.py`、`test_media_entrypoint.py`、`test_gate_a_review.py`、W17/W16 UI 及
@@ -70,6 +74,10 @@
   `uv run pytest --no-cov -q tests/unit/test_worker_supervisor.py tests/unit/test_turn_service.py tests/unit/test_gate_a_review.py tests/unit/test_media_worker.py tests/unit/test_media_entrypoint.py tests/integration/test_mock_pipeline.py tests/integration/test_w07_bounded_pipeline.py tests/integration/test_w08_provider_semantics.py`
   → `104 passed in 16.23s`。它覆盖 caller cancel 的强杀时间上限、crash recovery 与新 start 的串行化、取消胜过
   cleanup error，以及 Gate A 对 replacement playback skip 的拒绝。
+- 听感确认修正后，`tests/unit/test_gate_a_review.py` 为 `6 passed in 9.41s`；真实模式启用人工确认、non-TTY 拒绝和
+  `--dry-run` 自动路径均有回归覆盖。无设备
+  `uv run python tools/gate_a_review.py --mode all --dry-run --volume 0` 仍完整通过；上述 W17 定向集为
+  `107 passed in 17.92s`，最新全仓为本节所列 `1161 passed, 3 skipped`。这些都不能替代实际听感确认。
 - 修复后实际 MediaWorker 的 `uv run python tools/gate_a_review.py --mode interrupt --volume 0` 正常打印
   `turn.cancelled`、两段新轮次 `playback.finished` 与 `Gate A 清理完成。`；随后连续 3 次
   `--mode all --volume 0` 均以相同控制/清理顺序退出 0。该结果没有复现原问题，但只证明本机静音控制路径，不能证明
@@ -81,12 +89,12 @@
   `mypy`、`uv lock --check` 和 `git diff --check` 均通过。它只稳定测试同步，不改变 MediaWorker 产品逻辑。
 - GPT-SoVITS close/discard 测试只验证受控输出的清理所有权，不验证网络 deadline；它现在显式使用 1,000 ms 首字节和
   3,000 ms 总时限，保留专门 timeout 测试的短时限。该测试连续 30 次通过，`test_gpt_sovits.py` 为 `57 passed in 2.51s`，
-  最新完整 pytest 为 `1158 passed, 3 skipped in 149.56s`、coverage 90.43%。该修复仍须在后续 exact head CI 中核验。
+  该修复时完整 pytest 为 `1158 passed, 3 skipped in 149.56s`、coverage 90.43%。后续 head 仍须各自核验 CI。
 
 ## 未验证项、人工 Gate 与范围外
 
 - 自动化 fake/headless 结果只证明模拟条件，不能证明真实 Windows 音频硬件。仍需在内置声卡、USB 和蓝牙设备上
-  人工确认：正常结束无尾音截断、interrupt 后不补播/不重叠、设备热插拔时的实际听感和 UI 提示、以及退出时的
+  人工确认：正常结束无尾音截断；Day 7 实际听到旧轮低音后按 Enter，interrupt 后不补播/不重叠；设备热插拔时的实际听感和 UI 提示、以及退出时的
   原生驱动资源释放。
 - W12 已提供 worker 的 Job Object hard-kill 机制；W17 的 fake 覆盖可中止 write 与 supervisor deadline 路径。
   这不能证明每一种真实 PortAudio/驱动卡死都能在同一线程内被中止；真正卡死仍依赖 supervisor 终止 helper。
@@ -97,9 +105,8 @@
 ## 回滚与下一步
 
 - 将 `playback_mode` 设为 `silent` 即可关闭本地播放；文字对话继续。无法恢复或异常设备不应触发无限重试。
-- Draft PR #30 保持 Draft。W17 可执行代码的测试稳定化 head `550671d` 已完成远端 CI；目前第二条 CI-only 测试稳定化
-  仍须在新的 exact head 上重新核验检查，随后在该 head 上完成上列真实设备 Gate。不得继承 `922b6fe`、`8ff9070` 或更早
-  head 的 CI 结果。
+- Draft PR #30 保持 Draft。当前 Gate A 听感验收语义修正还须在新的 exact head 上重新核验检查，随后在该 head 上完成
+  上列真实设备 Gate。不得继承 `7ba750f`、`922b6fe`、`8ff9070` 或更早 head 的 CI 结果。
 
 ## 相关资料
 

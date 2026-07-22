@@ -6,7 +6,7 @@ import argparse
 import asyncio
 import logging
 import sys
-from collections.abc import Callable, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -29,6 +29,7 @@ from app.schemas import (  # noqa: E402
 )
 
 AudioPlayerFactory = Callable[[], AudioPlayer]
+AudibleConfirmationWaiter = Callable[[], Awaitable[None]]
 _AUDIO_REVIEW_EVENTS = frozenset(
     {
         "audio.ready",
@@ -89,6 +90,17 @@ def _turn_review_event_line(event: PipelineEvent) -> str:
     detail = event.payload.get("error_code")
     suffix = f" code={detail}" if isinstance(detail, str) and detail else ""
     return f"{event.type:20} turn={event.turn_id} index={event.payload.get('index')}{suffix}"
+
+
+async def _wait_for_audible_low_tone() -> None:
+    """Require a real listener to confirm output before the Day 7 interruption."""
+
+    if not sys.stdin.isatty():
+        raise RuntimeError(
+            "Gate A 打断听感验收需要交互式终端；请在实际听到低音后按 Enter，"
+            "或使用 --dry-run 运行自动顺序检查。"
+        )
+    await asyncio.to_thread(input, "听到仍在播放的低音后，请立即按 Enter 提交新轮次：")
 
 
 def review_segments() -> None:
@@ -167,9 +179,14 @@ async def review_interruption(
     *,
     cache: Path,
     player_factory: AudioPlayerFactory,
+    wait_for_audible_confirmation: bool = False,
+    confirmation_waiter: AudibleConfirmationWaiter = _wait_for_audible_low_tone,
 ) -> None:
     print("\n=== Day 7 快速输入/打断人工验收 ===")
-    print("先播放较低音的旧轮次；确认开始播放后约 0.65 秒自动提交新轮次。")
+    if wait_for_audible_confirmation:
+        print("先播放较低音的旧轮次；实际听到低音后按 Enter 自动提交新轮次。")
+    else:
+        print("dry-run：旧轮次调度后约 0.65 秒自动提交新轮次。")
     print("随后只应听到较高音的新轮次，旧轮次低音不得恢复或与其重叠。")
     tts = SwitchingToneTTS(
         MockTTSProvider(cache, duration_ms=1000, volume=volume, synthesis_delay_seconds=0)
@@ -226,7 +243,11 @@ async def review_interruption(
             if event.type == "playback.started" and event.turn_id == first.turn_id:
                 break
 
-        await asyncio.sleep(0.65)
+        if wait_for_audible_confirmation:
+            print("已收到 playback.started：它仅表示播放请求已调度，不代表声音已经到达扬声器。")
+            await confirmation_waiter()
+        else:
+            await asyncio.sleep(0.65)
         second = await service.accept(
             UserMessage(text="新轮次", input_mode=InputMode.voice, session_id=session_id)
         )
@@ -234,6 +255,7 @@ async def review_interruption(
 
         first_cancelled = False
         first_failed = False
+        first_completed = False
         replacement_finished: set[int] = set()
         replacement_skipped: list[int] = []
         while True:
@@ -248,6 +270,7 @@ async def review_interruption(
             if event.turn_id == first.turn_id:
                 first_cancelled = first_cancelled or event.type == "turn.cancelled"
                 first_failed = first_failed or event.type == "turn.failed"
+                first_completed = first_completed or event.type == "assistant.completed"
             if event.turn_id == second.turn_id:
                 if event.type == "playback.finished":
                     index = event.payload.get("index")
@@ -261,6 +284,11 @@ async def review_interruption(
                 break
 
         if first_failed or not first_cancelled:
+            if first_completed:
+                raise RuntimeError(
+                    "Gate A 打断验收无效：旧轮次已在确认前完成；"
+                    "请重新运行，并在低音仍在播放时立即按 Enter。"
+                )
             raise RuntimeError("Gate A 打断验收失败：旧轮次没有在新输入后以 turn.cancelled 收束。")
         if replacement_skipped or replacement_finished != {0, 1}:
             raise RuntimeError(
@@ -324,7 +352,12 @@ async def main(argv: Sequence[str] | None = None) -> None:
         if args.mode in {"audio", "all"}:
             await review_order(args.volume, cache=cache, player_factory=player_factory)
         if args.mode in {"interrupt", "all"}:
-            await review_interruption(args.volume, cache=cache, player_factory=player_factory)
+            await review_interruption(
+                args.volume,
+                cache=cache,
+                player_factory=player_factory,
+                wait_for_audible_confirmation=not args.dry_run,
+            )
 
 
 if __name__ == "__main__":
