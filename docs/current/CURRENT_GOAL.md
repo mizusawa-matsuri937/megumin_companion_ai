@@ -105,8 +105,11 @@
 ## 回滚与下一步
 
 - 将 `playback_mode` 设为 `silent` 即可关闭本地播放；文字对话继续。无法恢复或异常设备不应触发无限重试。
-- Draft PR #30 保持 Draft。当前 Gate A 听感验收语义修正还须在新的 exact head 上重新核验检查，随后在该 head 上完成
-  上列真实设备 Gate。不得继承 `7ba750f`、`922b6fe`、`8ff9070` 或更早 head 的 CI 结果。
+- Draft PR #30 保持 Draft。Gate A 听感验收语义修正提交
+  [`598e6aa`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/598e6aa7358b49a7c3e14085e35151d8e89fa99f)
+  的 `push` run [`29920861198`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29920861198) 与
+  `pull_request` run [`29920863704`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29920863704)
+  均在该 exact code head 上 8/8 通过。随后仍须在最终 head 上完成上列真实设备 Gate；任何未来 head 都不得继承此 CI 结果。
 
 ## 相关资料
 

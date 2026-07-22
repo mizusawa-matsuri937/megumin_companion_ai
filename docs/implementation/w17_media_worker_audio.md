@@ -140,6 +140,7 @@ RDP、快速切用户、跨 session 与跨用户 DACL 有效访问为当前单�
 
 ## 发布状态
 
-W17 的初始聚焦提交、打断竞态修复、测试稳定化和 Draft PR 已完成；当前 Gate A 听感验收语义修正将在新的 exact head
-上重新核验 CI。真实设备 Gate 仍必须在该最终 head 上完成。不得继承 W16、`7ba750f`、`922b6fe`、`8ff9070` 或更早
+W17 的初始聚焦提交、打断竞态修复、测试稳定化和 Draft PR 已完成；Gate A 听感验收语义修正 `598e6aa` 的
+`push` run `29920861198` 与 `pull_request` run `29920863704` 均在该 exact code head 上 8/8 通过。真实设备 Gate
+仍必须在最终 head 上完成；任何未来 head 都不得继承此 CI 结果。不得继承 W16、`7ba750f`、`922b6fe`、`8ff9070` 或更早
 PR head 的结果。
