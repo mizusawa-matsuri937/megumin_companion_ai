@@ -421,7 +421,7 @@ def test_runner_rejects_closed_timeout_invalid_audio_and_unbounded_runtime_input
 
         bounded = WhisperCppRunner(
             WhisperCppConfig(
-                executable=Path(sys.executable),
+                executable=Path(sys.executable).resolve(),
                 model_path=tmp_path / "model.bin",
                 max_audio_bytes=44,
             )
