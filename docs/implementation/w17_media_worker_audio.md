@@ -149,3 +149,6 @@ W17 的初始聚焦提交、打断竞态修复、测试稳定化和 Draft PR 已
 `push` run `29920861198` 与 `pull_request` run `29920863704` 均在该 exact code head 上 8/8 通过。真实设备 Gate
 中的 Day 7 interactive interrupt 已获所有者通过；其余设备、热插拔和 native driver UX 仍待确认。任何未来 head 都不得
 继承此 CI 结果或人工结论。不得继承 W16、`7ba750f`、`922b6fe`、`8ff9070` 或更早 PR head 的结果。
+
+2026-07-22，所有者明确授权合并 Draft PR #30，并接受目标 base 分支目前无 branch protection、没有独立 PR review，及上述
+未完成真实设备 Gate 的残余风险。该授权是受控发布决定，不构成未验收项通过的证据。

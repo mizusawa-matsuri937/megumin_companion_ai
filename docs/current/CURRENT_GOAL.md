@@ -108,12 +108,15 @@
 ## 回滚与下一步
 
 - 将 `playback_mode` 设为 `silent` 即可关闭本地播放；文字对话继续。无法恢复或异常设备不应触发无限重试。
-- Draft PR #30 保持 Draft。Gate A 听感验收语义修正提交
+- Draft PR #30 已获所有者授权在最终 head 检查通过后从 Draft 进入受控合并。Gate A 听感验收语义修正提交
   [`598e6aa`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/598e6aa7358b49a7c3e14085e35151d8e89fa99f)
   的 `push` run [`29920861198`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29920861198) 与
   `pull_request` run [`29920863704`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29920863704)
   均在该 exact code head 上 8/8 通过。修正后的 Day 7 人工听感审计已获所有者通过；上列其余真实设备 Gate 仍待完成，
   任何未来 head 都不得继承此 CI 结果或人工结论。
+- 2026-07-22，所有者明确要求合并 Draft PR #30，并接受以下**残余风险**：目标分支
+  `agent/windows-development-baseline` 当前无 GitHub branch protection，PR 没有独立 review，且内置/USB/蓝牙的完整
+  正常播放、设备特定 interrupt、热插拔和原生 driver UX 尚未报告通过。此授权只允许受控合并，不把这些项目标记为通过。
 
 ## 相关资料
 
