@@ -100,6 +100,11 @@ helper protocol、Job Object 或资源授权模型。
   supervisor 套件 45 项及最新全仓 `1158 passed, 3 skipped in 157.15s` 均通过，coverage 为 90.43%。
 - 该测试稳定化提交 `550671d` 的 `push` run `29905046336` 和 `pull_request` run `29905048854` 均成功；Windows/macOS
   quality 与 installed-wheel 8 项检查全部通过。此为该 executable code head 的远端证据，不冒充真实硬件声学验证。
+- `922b6fe` 的 docs-only `push` run `29905521654` 随后暴露另一条既有 Windows 时序问题：GPT-SoVITS 的 close/discard
+  清理测试继承 80 ms first-byte deadline，尽管 MockTransport 成功响应仍在负载下得到 `tts_first_byte_timeout`。同 SHA 的
+  pull-request run `29905524352` 成功，且 docs-only head 未修改 executable code。该 cleanup 测试现在明确使用
+  1,000 ms first-byte 与 3,000 ms total deadline；专门 timeout 测试不变，连续 30 次、完整 GPT-SoVITS 57 项和本机
+  全仓 `1158 passed, 3 skipped in 149.56s` 均通过。新 head CI 仍为必需证据。
 
 上述是 fake/合成 WAV/受控 fake backend 的证据，不包含真实音频、角色素材、用户路径、secret 或 token。
 
@@ -127,5 +132,6 @@ RDP、快速切用户、跨 session 与跨用户 DACL 有效访问为当前单�
 
 ## 发布状态
 
-W17 的初始聚焦提交、打断竞态修复、测试稳定化和 Draft PR 已完成；`550671d` 的远端 CI 已通过。真实设备 Gate 仍必须
-在最终 exact head 上完成，且任何后续 head 都必须重新核验 CI；不得继承 W16、`8ff9070` 或更早 PR head 的结果。
+W17 的初始聚焦提交、打断竞态修复、第一条测试稳定化和 Draft PR 已完成；`550671d` 的远端 CI 已通过。第二条测试
+稳定化将在新的 exact head 上重新核验 CI；真实设备 Gate 仍必须在该最终 head 上完成。不得继承 W16、`922b6fe`、
+`8ff9070` 或更早 PR head 的结果。

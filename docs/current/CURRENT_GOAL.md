@@ -43,6 +43,12 @@
   [`29905046336`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29905046336) 和 `pull_request` run
   [`29905048854`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29905048854) 分别核验：两组 Windows/macOS
   quality 及 installed-wheel 全部通过。它证明该代码 head 的 CI，不代替任何未来变更 head 的检查或真实声卡 Gate。
+- 随后的 docs-only head `922b6fe` 的 `push` run
+  [`29905521654`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29905521654) 在既有
+  `test_close_cleans_all_outputs_and_discard_ignores_unowned_path` 失败，`MockTransport` 成功路径在 80 ms 首字节时限内
+  被报告为 `tts_first_byte_timeout`。同一 SHA 的 `pull_request` run
+  [`29905524352`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29905524352) 成功；docs-only
+  提交没有改动可执行代码，因此这支持 CI 时序不稳定而非 W17 音频回归的判断，但不允许忽略失败。
 
 ## 本地自动化证据
 
@@ -73,6 +79,9 @@
 - 针对上述 Windows CI 失败，测试不再猜测 30 ms 内应完成状态转换，而是在 0.3 秒上限内轮询最终 `quarantined` 状态。
   该单测连续 20 次通过，完整 `test_worker_supervisor.py` 为 `45 passed in 2.02s`；`ruff format --check .`、`ruff check .`、
   `mypy`、`uv lock --check` 和 `git diff --check` 均通过。它只稳定测试同步，不改变 MediaWorker 产品逻辑。
+- GPT-SoVITS close/discard 测试只验证受控输出的清理所有权，不验证网络 deadline；它现在显式使用 1,000 ms 首字节和
+  3,000 ms 总时限，保留专门 timeout 测试的短时限。该测试连续 30 次通过，`test_gpt_sovits.py` 为 `57 passed in 2.51s`，
+  最新完整 pytest 为 `1158 passed, 3 skipped in 149.56s`、coverage 90.43%。该修复仍须在后续 exact head CI 中核验。
 
 ## 未验证项、人工 Gate 与范围外
 
@@ -88,8 +97,9 @@
 ## 回滚与下一步
 
 - 将 `playback_mode` 设为 `silent` 即可关闭本地播放；文字对话继续。无法恢复或异常设备不应触发无限重试。
-- Draft PR #30 保持 Draft。W17 可执行代码的测试稳定化 head `550671d` 已完成远端 CI；在最终将要审计的任何新 head 上仍须
-  重新核验检查，随后在该 head 上完成上列真实设备 Gate。不得继承 `8ff9070` 或更早 head 的 CI 结果。
+- Draft PR #30 保持 Draft。W17 可执行代码的测试稳定化 head `550671d` 已完成远端 CI；目前第二条 CI-only 测试稳定化
+  仍须在新的 exact head 上重新核验检查，随后在该 head 上完成上列真实设备 Gate。不得继承 `922b6fe`、`8ff9070` 或更早
+  head 的 CI 结果。
 
 ## 相关资料
 
