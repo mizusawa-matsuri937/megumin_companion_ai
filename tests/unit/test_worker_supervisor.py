@@ -338,7 +338,9 @@ def test_hanging_job_hits_hard_deadline_and_terminates_entire_fake_job() -> None
                 job_kind="hang",
                 hard_deadline_seconds=0.03,
             )
-        await asyncio.sleep(0.03)
+        async with asyncio.timeout(0.3):
+            while supervisor.actual_state is not WorkerActualState.quarantined:
+                await asyncio.sleep(0.005)
         assert adapter.processes[0].terminated
         assert adapter.processes[0].active == 0
         assert supervisor.actual_state is WorkerActualState.quarantined

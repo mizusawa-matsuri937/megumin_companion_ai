@@ -4,8 +4,10 @@
 > `codex/w17-media-worker-audio` 从 `agent/windows-development-baseline` 的
 > `5df2fb2ad9c4402b674dfff7138c30880ac2c853` 开始；W17 的初始实现提交为
 > [`3d76b0b`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/3d76b0bc31214dfbd7f8423b287d096182629b8a)，
+> Gate A 打断竞态修复为 [`8ff9070`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/8ff9070d3e7d2cd9203787612918e69edffadef8)。
 > [Draft PR #30](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/30) 已以
-> `agent/windows-development-baseline` 为 base 创建。远端 CI 与真实声卡体验尚未核验，不能写成已完成。
+> `agent/windows-development-baseline` 为 base 创建。其后续 Windows 时序测试稳定化正待提交、推送和在新 exact head 上重新核验；
+> 真实声卡体验也尚未核验，不能写成已完成。
 
 ## 已确认事实
 
@@ -32,12 +34,16 @@
 - Gate A Day 7 现在直接打印 `turn.failed` 的稳定 error code，要求旧轮次 `turn.cancelled`、新轮次两段均
   `playback.finished` 且不存在 `playback.skipped`，并显式输出 MediaWorker 清理开始/完成。任一不满足均为非零失败，
   不再把 `assistant.completed` 单独当作人工 Gate 成功。
+- 远端 `push` run `29904002937` 在 exact head `8ff9070` 的 Windows quality 中，仅在
+  `test_hanging_job_hits_hard_deadline_and_terminates_entire_fake_job` 失败：固定等待 30 ms 后状态仍为 `failed`，
+  尚未由异步 process watcher 变为 `quarantined`。同一 SHA 的 `pull_request` run `29904004777` 的 Windows 和 macOS
+  quality、两项 installed-wheel 均通过。该对照支持“固定 sleep 的测试同步不足”的判断，但不把一次通过当作新 head 的 CI 结果。
 
 ## 本地自动化证据
 
 - `uv run ruff check .`：通过。
 - `uv run mypy`：通过，`229 source files`。
-- `uv run pytest`：`1158 passed, 3 skipped in 143.72s`，总 coverage `90.37%`，达到项目 90% 门槛。
+- 最新 `uv run pytest`：`1158 passed, 3 skipped in 157.15s`，总 coverage `90.43%`，达到项目 90% 门槛。
   三项 skip 分别是未安装的可选 RapidOCR、Pillow，以及当前账户不能创建目录 symlink；均有 pytest 明确标记，
   不是 W17 断言失败。
 - W17 定向套件（`test_media_worker.py`、`test_media_entrypoint.py`、`test_gate_a_review.py`、W17/W16 UI 及
@@ -59,6 +65,9 @@
   每一种真实 driver 卡死或可听体验。
 - 实施中第一次完整 pytest 没有断言失败，但 coverage 为 `89.43%`，因此没有被接受为通过。随后补充了原生适配器、
   helper entrypoint、失败降级和 high-latency stream reuse 的有意义模拟路径；最终完整重跑才达到上述 90.43%。
+- 针对上述 Windows CI 失败，测试不再猜测 30 ms 内应完成状态转换，而是在 0.3 秒上限内轮询最终 `quarantined` 状态。
+  该单测连续 20 次通过，完整 `test_worker_supervisor.py` 为 `45 passed in 2.02s`；`ruff format --check .`、`ruff check .`、
+  `mypy`、`uv lock --check` 和 `git diff --check` 均通过。它只稳定测试同步，不改变 MediaWorker 产品逻辑。
 
 ## 未验证项、人工 Gate 与范围外
 
@@ -74,8 +83,8 @@
 ## 回滚与下一步
 
 - 将 `playback_mode` 设为 `silent` 即可关闭本地播放；文字对话继续。无法恢复或异常设备不应触发无限重试。
-- Draft PR #30 已打开；这次修复尚需提交、推送并重新核验其最终 exact head 的远端 CI，随后在该 head 上完成上列
-  真实设备 Gate。任何后续文档/修复提交都不得继承初始提交的本地结果。
+- Draft PR #30 已打开；当前测试稳定化尚需提交、推送并重新核验最终 exact head 的远端 CI，随后在该 head 上完成上列
+  真实设备 Gate。任何后续文档/修复提交都不得继承 `8ff9070` 或更早 head 的 CI 结果。
 
 ## 相关资料
 
