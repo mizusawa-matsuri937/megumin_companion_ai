@@ -19,6 +19,15 @@ TTS/audio queue、文本、provider 输出和临时资产缺少端到端硬上�
 - VTS action 带 turn generation；取消或重连 purge 旧 generation。
 - 达到上限时 UI 显示 busy、truncated、audio degraded 或 failed，不静默丢数据。
 
+## W17 播放失败细化（2026-07-22）
+
+- 音频播放以 `AudioPlaybackResult` 返回无内容的 played / error / notice 状态。worker 不可用、设备丢失、
+  deadline 或协议失败会被映射为 `audio.degraded` / `playback.skipped`，而不是让已生成的文字 turn 整体失败。
+- 选定设备消失时停止并释放旧 stream，回退 default/首个可选设备；low-latency 打开失败最多再尝试一次
+  high-latency stream。成功的 high stream 会复用，避免每段音频重新进入 low/high retry 循环。
+- 默认 `playback_mode=silent` 仍是故障与回滚路径。启用系统播放与保存设备 ID 均需用户显式设置；旧的不可用 ID
+  不能被静默覆盖。
+
 ## 备选与取舍
 
 - **可行备选：** 完全串行 TTS。资源模型更简单但延迟更高，可作为低资源/故障降级模式。

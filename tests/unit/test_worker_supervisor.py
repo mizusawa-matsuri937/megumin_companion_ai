@@ -338,7 +338,9 @@ def test_hanging_job_hits_hard_deadline_and_terminates_entire_fake_job() -> None
                 job_kind="hang",
                 hard_deadline_seconds=0.03,
             )
-        await asyncio.sleep(0.03)
+        async with asyncio.timeout(0.3):
+            while supervisor.actual_state is not WorkerActualState.quarantined:
+                await asyncio.sleep(0.005)
         assert adapter.processes[0].terminated
         assert adapter.processes[0].active == 0
         assert supervisor.actual_state is WorkerActualState.quarantined
@@ -581,6 +583,87 @@ def test_caller_cancellation_keeps_capacity_until_terminal_or_job_tree_zero() ->
         with pytest.raises(WorkerError, match="not_accepting|capacity"):
             await supervisor.run_job(job_id="two", job_kind="hang")
         await supervisor.stop()
+
+    asyncio.run(scenario())
+
+
+def test_caller_cancellation_uses_terminate_bound_not_full_job_deadline() -> None:
+    async def scenario() -> None:
+        adapter = _FakeJobAdapter(({"ignore_cancel": True, "terminate_completes": False},))
+        supervisor = WorkerSupervisor(
+            name="media-worker",
+            role="media",
+            command=("trusted-helper",),
+            adapter=adapter,
+            config=_config(
+                heartbeat_timeout_seconds=1.0,
+                soft_cancel_grace_seconds=0.01,
+                terminate_wait_seconds=0.05,
+                maximum_job_seconds=1.0,
+            ),
+        )
+        await supervisor.start()
+        hanging = asyncio.create_task(
+            supervisor.run_job(job_id="bounded-cancel", job_kind="hang", hard_deadline_seconds=0.8)
+        )
+        try:
+            async with asyncio.timeout(0.1):
+                while "job.start" not in adapter.processes[0].received_types:
+                    await asyncio.sleep(0)
+            started = asyncio.get_running_loop().time()
+            hanging.cancel()
+            with suppress(asyncio.CancelledError):
+                await asyncio.wait_for(asyncio.shield(hanging), timeout=0.25)
+            assert hanging.done()
+            assert asyncio.get_running_loop().time() - started < 0.25
+            assert (await supervisor.snapshot()).active_processes == 0
+        finally:
+            await supervisor.stop()
+
+    asyncio.run(scenario())
+
+
+def test_start_joins_crash_recovery_before_reusing_a_hard_faulted_worker() -> None:
+    async def scenario() -> None:
+        adapter = _FakeJobAdapter(
+            (
+                {"ignore_cancel": True},
+                {},
+                {},
+            )
+        )
+        supervisor = WorkerSupervisor(
+            name="media-worker",
+            role="media",
+            command=("trusted-helper",),
+            adapter=adapter,
+            config=_config(
+                soft_cancel_grace_seconds=0.01,
+                terminate_wait_seconds=0.05,
+                restart_backoff_initial_seconds=0.15,
+                restart_backoff_max_seconds=0.15,
+            ),
+        )
+        await supervisor.start()
+        first = asyncio.create_task(supervisor.run_job(job_id="one", job_kind="hang"))
+        try:
+            async with asyncio.timeout(0.1):
+                while "job.start" not in adapter.processes[0].received_types:
+                    await asyncio.sleep(0)
+            first.cancel()
+            with suppress(asyncio.CancelledError):
+                await first
+
+            async with asyncio.timeout(0.2):
+                while supervisor.actual_state is not WorkerActualState.failed:
+                    await asyncio.sleep(0)
+            await asyncio.wait_for(supervisor.start(), timeout=0.5)
+            assert await supervisor.run_job(job_id="two", job_kind="complete") == {"status": "ok"}
+            await asyncio.sleep(0.2)
+            assert len(adapter.processes) == 2
+            assert (await supervisor.snapshot()).restart_count == 1
+        finally:
+            await supervisor.stop()
 
     asyncio.run(scenario())
 

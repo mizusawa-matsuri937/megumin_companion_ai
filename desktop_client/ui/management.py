@@ -11,6 +11,7 @@ import asyncio
 import json
 import os
 import re
+from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from pathlib import Path
 from typing import Any, Protocol, TypeGuard
@@ -19,6 +20,8 @@ from uuid import uuid4
 from app import __version__
 from app.clients.vts import DPAPITokenStore, VTSToken
 from app.config import ConfigurationError, Settings, load_settings, patch_user_settings
+from app.media import MediaWorkerAudioPlayer
+from app.media.types import AudioOutputDevice, OutputDeviceList
 from app.memory.runtime import MemoryRuntime
 from app.memory.service import (
     ConfirmationNotFoundError,
@@ -32,6 +35,8 @@ from desktop_client.ui.bridge import ApplicationBridge
 from desktop_client.ui.contracts import (
     MAX_MANAGEMENT_LIST_ITEMS,
     MAX_MANAGEMENT_PREVIEW_CHARS,
+    AudioOutputDevicesCommand,
+    AudioOutputDevicesEvent,
     BackendCapabilities,
     DesktopSettingsForm,
     FeatureSetCommand,
@@ -118,10 +123,12 @@ class DesktopManagementRuntime:
         memory_runtime: MemoryRuntime | None,
         *,
         secrets: DesktopSecretStore | None = None,
+        audio_device_lister: Callable[[Settings], Awaitable[OutputDeviceList]] | None = None,
     ) -> None:
         self._settings = settings
         self._memory_runtime = memory_runtime
         self._secrets = secrets or DPAPIDesktopSecretStore()
+        self._audio_device_lister = audio_device_lister or _list_audio_output_devices
 
     @staticmethod
     def handles(command: object) -> TypeGuard[ManagementCommand]:
@@ -130,6 +137,7 @@ class DesktopManagementRuntime:
             (
                 ManagementRefreshCommand,
                 SettingsSaveCommand,
+                AudioOutputDevicesCommand,
                 SecretStoreCommand,
                 SecretRevokeCommand,
                 FeatureSetCommand,
@@ -177,6 +185,9 @@ class DesktopManagementRuntime:
                 return
             if isinstance(command, SettingsSaveCommand):
                 await self._save_settings(bridge, command)
+                return
+            if isinstance(command, AudioOutputDevicesCommand):
+                await self._publish_audio_output_devices(bridge, command_id=command.command_id)
                 return
             if isinstance(command, SecretStoreCommand):
                 await self._store_secret(bridge, command)
@@ -732,6 +743,32 @@ class DesktopManagementRuntime:
             )
         )
 
+    async def _publish_audio_output_devices(
+        self,
+        bridge: ApplicationBridge,
+        *,
+        command_id: str,
+    ) -> None:
+        try:
+            listing = await self._audio_device_lister(self._settings)
+        except Exception:
+            bridge.publish_event(
+                AudioOutputDevicesEvent(
+                    devices=(),
+                    reason_code="audio_device_enumeration_failed",
+                    command_id=command_id,
+                )
+            )
+            return
+        bridge.publish_event(
+            AudioOutputDevicesEvent(
+                devices=listing.devices,
+                truncated=listing.truncated,
+                reason_code=listing.reason_code,
+                command_id=command_id,
+            )
+        )
+
     def _publish_debug(
         self,
         bridge: ApplicationBridge,
@@ -782,6 +819,17 @@ class DesktopManagementRuntime:
         )
 
 
+async def _list_audio_output_devices(settings: Settings) -> OutputDeviceList:
+    """Enumerate only when the user explicitly asks the settings UI to do so."""
+
+    player = MediaWorkerAudioPlayer.for_settings(settings)
+    try:
+        return await player.list_output_devices()
+    finally:
+        with suppress(Exception):
+            await player.close()
+
+
 def _settings_form(settings: Settings) -> DesktopSettingsForm:
     return DesktopSettingsForm(
         llm_provider=settings.llm.provider,
@@ -798,6 +846,8 @@ def _settings_form(settings: Settings) -> DesktopSettingsForm:
         stt_model_path=str(settings.stt.model_path),
         stt_device="" if settings.stt.device is None else str(settings.stt.device),
         startup_enabled=settings.desktop.startup_enabled,
+        output_device_id=settings.pipeline.output_device_id or "",
+        system_playback_enabled=settings.pipeline.playback_mode == "system",
     )
 
 
@@ -832,6 +882,10 @@ def _settings_patch(form: DesktopSettingsForm) -> dict[str, object]:
             "executable": form.stt_executable.strip(),
             "model_path": form.stt_model_path.strip(),
             "device": device,
+        },
+        "pipeline": {
+            "playback_mode": "system" if form.system_playback_enabled else "silent",
+            "output_device_id": form.output_device_id.strip() or None,
         },
     }
 
@@ -921,6 +975,9 @@ class ManagementViewModel:
 
     def __init__(self) -> None:
         self.settings: SettingsSnapshot | None = None
+        self.audio_output_devices: tuple[AudioOutputDevice, ...] = ()
+        self.audio_output_devices_truncated = False
+        self.audio_output_devices_reason: str | None = None
         self.feature_states: dict[FeatureName, FeatureState] = {}
         self.memory_items: tuple[MemorySummary, ...] = ()
         self.memory_query = ""
@@ -934,6 +991,11 @@ class ManagementViewModel:
     def apply_event(self, event: object) -> bool:
         if isinstance(event, SettingsSnapshotEvent):
             self.settings = event.snapshot
+            return True
+        if isinstance(event, AudioOutputDevicesEvent):
+            self.audio_output_devices = event.devices
+            self.audio_output_devices_truncated = event.truncated
+            self.audio_output_devices_reason = event.reason_code
             return True
         if isinstance(event, FeatureStatesEvent):
             self.feature_states = {state.name: state for state in event.states}
@@ -962,6 +1024,9 @@ class ManagementViewModel:
         """Drop UI-held paths, memory bodies, summaries, and status after close."""
 
         self.settings = None
+        self.audio_output_devices = ()
+        self.audio_output_devices_truncated = False
+        self.audio_output_devices_reason = None
         self.feature_states.clear()
         self.memory_items = ()
         self.memory_query = ""

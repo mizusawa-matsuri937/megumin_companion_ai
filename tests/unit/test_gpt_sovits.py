@@ -1041,7 +1041,14 @@ def test_close_cleans_all_outputs_and_discard_ignores_unowned_path(tmp_path: Pat
             "http://127.0.0.1:9880", tmp_path / "audio", _presets(), client=client
         )
         token = CancellationToken("turn_test")
-        result = await provider.synthesize(_job(token), segment_index=0, token=token)
+        # This test exercises owned-output cleanup, not deadline enforcement.
+        # Leave scheduler headroom for MockTransport and filesystem work on
+        # loaded Windows CI runners; dedicated timeout tests keep short limits.
+        result = await provider.synthesize(
+            _job(token, first_byte_timeout_ms=1_000, timeout_ms=3_000),
+            segment_index=0,
+            token=token,
+        )
         assert result.audio_path is not None
 
         unowned = tmp_path / "keep.wav"

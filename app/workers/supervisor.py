@@ -188,6 +188,10 @@ class WorkerSupervisor:
         self._jobs: dict[str, asyncio.Future[dict[str, Any]]] = {}
         self._tasks: set[asyncio.Task[Any]] = set()
         self._process_wait_task: asyncio.Task[int] | None = None
+        # A worker exit may spend a short, bounded interval in crash cleanup
+        # and restart.  New callers must join that owner rather than racing it
+        # with a second spawn and overwriting the process/Job handles.
+        self._recovery_operation: asyncio.Task[Any] | None = None
         self._lifecycle_lock = asyncio.Lock()
         self._lifecycle_epoch = 0
         self._start_operation: asyncio.Task[None] | None = None
@@ -230,45 +234,74 @@ class WorkerSupervisor:
         return CapabilityCheck(status=CapabilityState.unavailable, error_code=code)
 
     async def start(self) -> None:
-        async with self._lifecycle_lock:
-            if self._state is WorkerActualState.enabled:
-                return
-            if self._state is WorkerActualState.quarantined:
-                raise WorkerError("worker_quarantined")
-            if self._state is WorkerActualState.stopping:
-                raise WorkerError("worker_stopping")
-            if not self._adapter.supports_job_objects:
-                self._desired_enabled = True
-                self._state = WorkerActualState.unsupported
-                self._last_error_code = "worker_platform_unsupported"
-                self._emit("worker.unsupported")
-                raise WorkerError("worker_platform_unsupported")
-            existing = self._start_operation
-            if existing is not None and not existing.done():
-                operation = existing
-            else:
-                self._lifecycle_epoch += 1
-                epoch = self._lifecycle_epoch
-                self._state = WorkerActualState.starting
-                self._accepting_jobs = False
-                self._last_error_code = None
-                self._hello = asyncio.Event()
-                self._heartbeat_sequence = 0
-                self._decoder = FrameDecoder()
-                self._emit("worker.starting")
-                operation = asyncio.create_task(
-                    self._spawn_and_handshake(epoch),
-                    name=f"worker-start-{self.name}-{epoch}",
-                )
-                self._start_operation = operation
-            self._desired_enabled = True
-            self._deliberate_stop = False
-        try:
-            await asyncio.shield(operation)
-        finally:
+        while True:
+            recovery: asyncio.Task[Any] | None = None
+            operation: asyncio.Task[None] | None = None
             async with self._lifecycle_lock:
-                if self._start_operation is operation and operation.done():
-                    self._start_operation = None
+                if self._state is WorkerActualState.enabled:
+                    return
+                if self._state is WorkerActualState.quarantined:
+                    raise WorkerError("worker_quarantined")
+                if self._state is WorkerActualState.stopping:
+                    raise WorkerError("worker_stopping")
+                if not self._adapter.supports_job_objects:
+                    self._desired_enabled = True
+                    self._state = WorkerActualState.unsupported
+                    self._last_error_code = "worker_platform_unsupported"
+                    self._emit("worker.unsupported")
+                    raise WorkerError("worker_platform_unsupported")
+
+                candidate = self._recovery_operation
+                if (
+                    self._state is WorkerActualState.failed
+                    and candidate is not None
+                    and candidate is not asyncio.current_task()
+                    and not candidate.done()
+                ):
+                    recovery = candidate
+                else:
+                    existing = self._start_operation
+                    if existing is not None and not existing.done():
+                        operation = existing
+                    else:
+                        self._lifecycle_epoch += 1
+                        epoch = self._lifecycle_epoch
+                        self._state = WorkerActualState.starting
+                        self._accepting_jobs = False
+                        self._last_error_code = None
+                        self._hello = asyncio.Event()
+                        self._heartbeat_sequence = 0
+                        self._decoder = FrameDecoder()
+                        self._emit("worker.starting")
+                        operation = asyncio.create_task(
+                            self._spawn_and_handshake(epoch),
+                            name=f"worker-start-{self.name}-{epoch}",
+                        )
+                        self._start_operation = operation
+                    self._desired_enabled = True
+                    self._deliberate_stop = False
+
+            if recovery is not None:
+                try:
+                    await asyncio.shield(recovery)
+                except asyncio.CancelledError:
+                    current = asyncio.current_task()
+                    if current is not None and current.cancelling():
+                        raise
+                except Exception:
+                    # The next loop iteration reports a quarantine or starts
+                    # a clean replacement if crash recovery itself failed.
+                    pass
+                continue
+
+            assert operation is not None
+            try:
+                await asyncio.shield(operation)
+            finally:
+                async with self._lifecycle_lock:
+                    if self._start_operation is operation and operation.done():
+                        self._start_operation = None
+            return
 
     async def _spawn_and_handshake(self, epoch: int) -> None:
         process: ManagedProcess | None = None
@@ -562,9 +595,13 @@ class WorkerSupervisor:
         if settled:
             self._jobs.pop(job_id, None)
             return
+        hard_deadline = min(
+            deadline_at,
+            loop.time() + self._config.terminate_wait_seconds,
+        )
         tree_zero = await self._hard_fault(
             "worker_job_cancel_unsettled",
-            deadline_at=deadline_at,
+            deadline_at=hard_deadline,
         )
         if tree_zero:
             self._jobs.pop(job_id, None)
@@ -586,11 +623,23 @@ class WorkerSupervisor:
     ) -> int:
         try:
             code = await process.wait()
+        except asyncio.CancelledError:
+            current = asyncio.current_task()
+            if self._recovery_operation is current:
+                self._recovery_operation = None
+            raise
         except (OSError, ProcessAdapterError):
             code = 1
         if generation != self._generation or self._deliberate_stop:
             return code
-        await self._handle_crash("worker_process_exited")
+        current = asyncio.current_task()
+        if current is not None:
+            self._recovery_operation = current
+        try:
+            await self._handle_crash("worker_process_exited")
+        finally:
+            if self._recovery_operation is current:
+                self._recovery_operation = None
         return code
 
     async def _hard_fault(self, code: str, *, deadline_at: float | None = None) -> bool:
@@ -607,6 +656,9 @@ class WorkerSupervisor:
         process = self._process
         if process is None:
             return True
+        wait_task = self._process_wait_task
+        if wait_task is not None and not wait_task.done():
+            self._recovery_operation = wait_task
         if deadline_at is None:
             deadline_at = asyncio.get_running_loop().time() + self._config.terminate_wait_seconds
         try:
@@ -623,6 +675,16 @@ class WorkerSupervisor:
                         return True
                     await asyncio.sleep(0)
         except (TimeoutError, OSError, ProcessAdapterError):
+            # The Job handle is the only reliable stop mechanism for a native
+            # thread that ignored soft cancel.  Do not leave a stale owner for
+            # a later start() to race; close it and settle abandoned jobs.
+            if self._process is process:
+                await self._close_current_process(expected=process)
+                for future in tuple(self._jobs.values()):
+                    if not future.done():
+                        future.set_exception(WorkerError(code))
+                        future.exception()
+                self._jobs.clear()
             return False
 
     async def _handle_crash(self, code: str) -> None:

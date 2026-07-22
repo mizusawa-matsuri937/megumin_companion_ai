@@ -9,6 +9,7 @@ from app.schemas import FeatureActualState, FeatureName
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
@@ -29,6 +30,7 @@ from PySide6.QtWidgets import (
 )
 
 from desktop_client.ui.contracts import (
+    AudioOutputDevicesCommand,
     DesktopSettingsForm,
     FeatureSetCommand,
     ManagementCommand,
@@ -188,6 +190,20 @@ class SettingsDialog(QDialog):
         self.stt_executable = self._line_edit("Whisper 可执行文件")
         self.stt_model_path = self._line_edit("Whisper 模型")
         self.stt_device = self._line_edit("音频设备")
+        self.output_device = QComboBox(page)
+        self.output_device.setAccessibleName("播放输出设备")
+        self.output_device.currentIndexChanged.connect(self._mark_form_dirty_index)
+        self.system_playback_enabled = QCheckBox("启用本地系统播放（重启后生效）", page)
+        self.system_playback_enabled.toggled.connect(self._mark_form_dirty_bool)
+        self.audio_device_hint = QLabel("尚未读取播放设备。", page)
+        self.audio_device_hint.setWordWrap(True)
+        refresh_audio_devices = QPushButton("刷新播放设备", page)
+        refresh_audio_devices.clicked.connect(self._refresh_audio_devices)
+        output_device_row = QWidget(page)
+        output_device_layout = QHBoxLayout(output_device_row)
+        output_device_layout.setContentsMargins(0, 0, 0, 0)
+        output_device_layout.addWidget(self.output_device, 1)
+        output_device_layout.addWidget(refresh_audio_devices)
         self.startup_enabled = QCheckBox("登录后自动启动", page)
         for checkbox in (self.vts_enabled, self.stt_enabled, self.startup_enabled):
             checkbox.toggled.connect(self._mark_form_dirty_bool)
@@ -204,6 +220,9 @@ class SettingsDialog(QDialog):
         form.addRow("STT 可执行文件", self.stt_executable)
         form.addRow("STT 模型", self.stt_model_path)
         form.addRow("STT 设备（编号或名称）", self.stt_device)
+        form.addRow("本地系统播放", self.system_playback_enabled)
+        form.addRow("播放输出设备", output_device_row)
+        form.addRow("播放设备说明", self.audio_device_hint)
         form.addRow("启动项", self.startup_enabled)
         layout.addLayout(form)
         save = QPushButton("保存设置（需要重启才能应用）", page)
@@ -408,6 +427,10 @@ class SettingsDialog(QDialog):
         if not self._populating_form:
             self._form_dirty = True
 
+    def _mark_form_dirty_index(self, _index: int) -> None:
+        if not self._populating_form:
+            self._form_dirty = True
+
     def _submit(self, command: ManagementCommand) -> bool:
         accepted = self._submit_command(command)
         if not accepted:
@@ -416,6 +439,13 @@ class SettingsDialog(QDialog):
 
     def _refresh(self) -> None:
         self._submit(ManagementRefreshCommand())
+
+    def _refresh_audio_devices(self) -> None:
+        self._submit(AudioOutputDevicesCommand())
+
+    def _selected_output_device_id(self) -> str:
+        value = self.output_device.currentData()
+        return value if isinstance(value, str) else ""
 
     def _save_settings(self) -> None:
         try:
@@ -440,6 +470,8 @@ class SettingsDialog(QDialog):
                         stt_model_path=self.stt_model_path.text(),
                         stt_device=self.stt_device.text(),
                         startup_enabled=self.startup_enabled.isChecked(),
+                        output_device_id=self._selected_output_device_id(),
+                        system_playback_enabled=self.system_playback_enabled.isChecked(),
                     )
                 )
             )
@@ -608,13 +640,45 @@ class SettingsDialog(QDialog):
             self.vts_enabled.setChecked(form.vts_enabled)
             self.stt_enabled.setChecked(form.stt_enabled)
             self.startup_enabled.setChecked(form.startup_enabled)
+            self.system_playback_enabled.setChecked(form.system_playback_enabled)
             self._populating_form = False
+        selected_device_id = (
+            self._selected_output_device_id() if self._form_dirty else form.output_device_id
+        )
+        self._sync_audio_output_devices(selected_device_id)
         self.llm_secret_state.setText(
             "LLM 密钥：已配置" if snapshot.llm_secret_configured else "LLM 密钥：未配置"
         )
         self.vts_secret_state.setText(
             "VTS 令牌：已配置" if snapshot.vts_secret_configured else "VTS 令牌：未配置"
         )
+
+    def _sync_audio_output_devices(self, selected_device_id: str) -> None:
+        self.output_device.blockSignals(True)
+        self.output_device.clear()
+        self.output_device.addItem("系统默认输出", "")
+        for device in self._model.audio_output_devices:
+            label = device.label + ("（系统默认）" if device.is_default else "")
+            self.output_device.addItem(label, device.device_id)
+        selected_index = self.output_device.findData(selected_device_id)
+        if selected_device_id and selected_index < 0:
+            self.output_device.addItem("已保存的设备（当前未在列表中）", selected_device_id)
+            selected_index = self.output_device.count() - 1
+        self.output_device.setCurrentIndex(max(0, selected_index))
+        self.output_device.blockSignals(False)
+        if self._model.audio_output_devices_reason is not None:
+            self.audio_device_hint.setText(
+                "无法读取播放设备；下次播放将使用系统默认输出（"
+                f"{self._model.audio_output_devices_reason}）。"
+            )
+        elif self._model.audio_output_devices_truncated:
+            self.audio_device_hint.setText(
+                "设备列表已截断；保存后下次启动生效，设备消失时将回退系统默认输出。"
+            )
+        else:
+            self.audio_device_hint.setText(
+                "保存后下次启动生效；若所选设备消失，MediaWorker 会回退系统默认输出。"
+            )
 
     def _sync_features(self) -> None:
         last_result = self._model.last_result
@@ -761,6 +825,8 @@ class SettingsDialog(QDialog):
             self.vts_secret,
         ):
             edit.clear()
+        self.output_device.clear()
+        self.audio_device_hint.setText("")
         self.memory_search.clear()
         self.memory_detail.clear()
         self.memory_tree.clear()

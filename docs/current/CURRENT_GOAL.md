@@ -1,126 +1,127 @@
 # 当前产品目标
 
-> 最后核验：2026-07-21（Asia/Shanghai）。**W16：设置、feature 与记忆管理最小 UI** 已由
-> [PR #28](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/28) 合并到
-> `agent/windows-development-baseline`，merge commit 为 `dc84319d13e0330321a9f284d4b4685a12615a0f`。关闭 head
-> `6c5fd83c5d3aff3f2fe58b584a456754564b89a6` 的 pull-request run `29825814677` 与 push run `29825811679`
-> 均为 `success`；合并后 `uv sync --locked` 和 `uv run pytest` 也通过（`1134 passed, 3 skipped in 157.59s`，
-> 总覆盖率 90.39%）。当前尚未收到 W17 或后续 W 项的实施授权。
+> 最后核验：2026-07-22（Asia/Shanghai）。用户已明确授权 W17。当前分支
+> `codex/w17-media-worker-audio` 从 `agent/windows-development-baseline` 的
+> `5df2fb2ad9c4402b674dfff7138c30880ac2c853` 开始；W17 的初始实现提交为
+> [`3d76b0b`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/3d76b0bc31214dfbd7f8423b287d096182629b8a)，
+> Gate A 打断竞态修复为 [`8ff9070`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/8ff9070d3e7d2cd9203787612918e69edffadef8)。
+> [Draft PR #30](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/30) 已以
+> `agent/windows-development-baseline` 为 base 创建。Windows 时序测试稳定化提交
+> [`550671d`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/550671dba9a08b552ed3d79214f533139487ebb6)
+> 已在该 exact code head 的 push 与 pull-request 工作流中通过；真实声卡体验仍尚未核验，不能写成已完成。
 
 ## 已确认事实
 
-- 所有者已明确授权开始 W16；这覆盖本文件旧版本中“尚未授权 W16”的历史状态。
-- W15 已由 PR #27 合并到 `agent/windows-development-baseline`。W16 从其后当前基线
-  `87801bc` 开始，开始前工作树干净。
-- W16 初始实现提交 [`0dfad2f`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/0dfad2f6039bc30c3273a004586fb0484f01c0d7)
-  已推送到该开发分支；[Draft PR #28](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/28) 已打开，
-  base 为 `agent/windows-development-baseline`。状态记录 head
-  [`c1cce43`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/c1cce43bfdcd5d435a9ef9d1cb2c89b53e12ed49)
-  的 [push CI #29809797158](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29809797158) 与
-  [pull-request CI #29809800285](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29809800285)
-  均为 `success`；每个 run 的 macOS/Windows quality 与 installed-wheel 均通过。核验时 PR 仍为 Draft、
-  `OPEN`、`MERGEABLE/CLEAN`，且没有 review、issue conversation 或 inline review comment。任何后续提交
-  都必须以新的精确 head 重新核验。
-- 后续 CI-evidence head [`cd56622`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/cd5662242495dfe064f30c7c34818b96fbb71c58)
-  的 [push CI #29810283413](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29810283413) 与
-  [pull-request CI #29810286263](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29810286263)
-  也均为 `success`；每个 run 的 macOS/Windows quality 与 installed-wheel 均通过。
-- 2026-07-21 的实际 Windows Qt 审阅发现：用户在 feature 启用确认框选择“是”后，界面仍显示
-  `希望停用 / 已停用 / ——`。本地 feature 元数据也未变化，证明请求没有送入后端。根因已复现：本机 PySide6
-  原生 `QMessageBox.question()` 返回底层 `int`，它与 `StandardButton.Yes` 值相等但不是同一对象；旧
-  `_confirm()` 使用 `is`，因而把明确的“是”静默当作取消。当前修复改用值比较，并加入该返回形态的回归测试；
-  修复提交 [`7175588`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/7175588ec101398b0f8ef7201f10d82c79b4abb9)
-  的 [push CI #29820123292](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29820123292) 与
-  [pull-request CI #29820126134](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29820126134)
-  均为 `success`。这只是该修复提交的历史证据，任何随后 head 仍须独立核验。
-- 修复后，用户已在实际 Windows Qt 中重新执行该精确路径并报告通过：feature 启用、确认“是”、状态更新均正常。
-  这是本次缺陷的实际桌面复测证据；它不替代历史、记忆、视觉、云端与删除语义的完整理解性审阅。
-- 所有者已于 2026-07-21 授权受控合并 PR #28。closing head `6c5fd83` 的八项远端 macOS/Windows quality 与
-  installed-wheel 检查均成功后，PR #28 于 2026-07-21T11:30:59Z 合并；合并后的本地基线已 fast-forward 到
-  `dc84319` 并完成 `uv sync --locked` 和全量测试。该事实不把仍未执行的隐私语义理解性审阅写成已通过。
-- 合并后的 docs-only 关闭记录 [`78eac32`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/78eac32bc154aadc5eb206566f2d92008e1c1ff3)
-  首次 push run [#29826924703](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29826924703)
-  的 Windows quality 在既有 `test_default_headless_smoke_uses_w14_runtime_and_keeps_stdout_as_json` 和
-  `test_configured_desktop_runtime_restarts_with_a_body_free_snapshot` 处失败；GitHub 日志没有给出断言正文。该
-  commit 相对已绿 merge tree 仅改两份 Markdown；两项精确测试本机连续 20 轮（40 个断言）通过，`--failed`
-  重跑同一 job 也成功。因此**合理推测**为 Windows runner 时序波动，不能把一次重跑成功写成永久稳定。
-- 后续状态记录 head [`8f87c73`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/8f87c733cd43c7d6714f26616f8542de4e53df2a)
-  的 [pull-request CI #29820584704](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29820584704)
-  已成功；[push CI #29820582676](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29820582676)
-  第一次尝试只在既有
-  `test_close_during_cache_promotion_removes_wav_and_partial_files` 的 1 秒异步等待超时。相同 SHA 的 PR Windows
-  quality 和本机聚焦复现均通过，重跑失败 job 的第二次尝试也为 `success`。现有证据**合理推测**为 CI 调度波动，
-  但不能据此宣称该既有测试已永久稳定；PR 当前 exact head 仍须现场读取检查状态。
-- W16 依赖 W10 与 W15，沿用 W03 的当前用户 DPAPI/受管路径边界、W10 的 feature 状态机和逻辑删除、
-  W13/W14 的 Qt 主线程与有界 BackendThread bridge。它不启动、暴露或复用开发 HTTP API。
-- 产品范围仍是单机、单 Windows 用户、个人私用。多用户、跨用户 DACL 有效访问、RDP、快速切用户和跨
-  session 行为均为**范围外**，不得写作已验证或待 W16 人工 Gate。
+- W16 已合并到开发基线；用户随后明确授权开始 W17。该最新授权覆盖旧快照中“尚未授权 W17”的状态。
+- W17 把 PortAudio 播放移到受 W12 `WorkerSupervisor` / Job Object 监管的 `MediaWorker`。主进程与
+  `BackendThread` 不导入或调用 `sounddevice`；它们只提交批准根下的相对 `ResourceReference`，不会把任意
+  文件路径、WAV 内容或 PCM 传入 helper protocol。
+- 输出设备身份为 host API、名称、最大输出通道数和默认采样率的 SHA-256 截断指纹。它能抵抗通常的 PortAudio
+  index 重排，但**不是** Windows endpoint GUID；发生相同指纹的重复设备会被拒绝选择并回退。这是已知设计限制，
+  不是已证明的跨驱动永久身份。
+- 选定设备消失时，worker 停止/释放旧 stream，使用默认（或首个可选）设备并返回稳定降级状态；low-latency
+  打开失败只尝试一次 high-latency fallback，并复用成功的 high stream，不无限重试。播放失败只使音频降级，
+  文本流程继续。
+- 默认仍为 `playback_mode: silent`。设置界面只在用户显式点击刷新时枚举输出设备；用户可保存设备 ID 并显式
+  启用本地系统播放。保存但目前不可用的设备 ID 会保留，以便提示实际 fallback，而不是悄悄改写用户选择。
+- `tools/gate_a_review.py --dry-run` 使用 realtime silent player 覆盖 interrupt 路径；真实复核模式才启动临时
+  MediaWorker，且临时 WAV 位于临时目录，不进入仓库或持久 cache。
+- 2026-07-22 的实际 Gate A 打断日志曾出现旧轮次 `turn.failed`、新轮次首段
+  `playback.skipped code=audio_worker_failed`，并在 `assistant.completed` 后没有回到 PowerShell 提示符。该次结果是
+  **失败**，不能以新轮次第二段完成或文本 completed 伪装为通过。代码审计确认两个可复现的竞态：caller cancel 会把
+  原 job deadline 作为 hard-fault 等待上限，且 crash recovery 与新的 `start()` 可并发 spawn。已将 caller cancel 的
+  hard-fault 等待收紧为 supervisor `terminate_wait_seconds`，让新 `start()` join 现有 recovery，并使已明确取消的 turn
+  在 cleanup error 竞争时仍以 `turn.cancelled` 收束。
+- Gate A Day 7 现在直接打印 `turn.failed` 的稳定 error code，要求旧轮次 `turn.cancelled`、新轮次两段均
+  `playback.finished` 且不存在 `playback.skipped`，并显式输出 MediaWorker 清理开始/完成。任一不满足均为非零失败，
+  不再把 `assistant.completed` 单独当作人工 Gate 成功。
+- 最新真实 Day 7 运行的事件顺序、替换音频和清理都通过，但有时只听到两段高音，未实际听到旧轮低音。这不能写成完整
+  听感通过：`DialoguePipeline` 在调用 `AudioPlayer.play()` **之前**发出 `playback.started`，所以该事件只证明请求已调度，
+  不证明样本已到达扬声器。真实音频模式现在会在该事件后明确等待监听者实际听到低音并按 Enter，再提交新轮次；
+  `--dry-run` 保留固定 0.65 秒的自动路径，以维持可重复的控制流测试。
+- 2026-07-22，所有者报告修正后的交互式 Day 7 打断审计通过。这是实际听感的所有者确认，覆盖“听到旧轮低音后按 Enter、
+  旧轮不恢复/不重叠、两段新轮高音完成及清理”的 Gate A 场景；本轮未提供设备类型或热插拔结果，故不能外推为内置、USB、
+  蓝牙或热插拔均通过。
+- 远端 `push` run `29904002937` 在 exact head `8ff9070` 的 Windows quality 中，仅在
+  `test_hanging_job_hits_hard_deadline_and_terminates_entire_fake_job` 失败：固定等待 30 ms 后状态仍为 `failed`，
+  尚未由异步 process watcher 变为 `quarantined`。同一 SHA 的 `pull_request` run `29904004777` 的 Windows 和 macOS
+  quality、两项 installed-wheel 均通过。该对照支持“固定 sleep 的测试同步不足”的判断，但不把一次通过当作新 head 的 CI 结果。
+- 测试稳定化提交 `550671d` 的 exact code head 已由 `push` run
+  [`29905046336`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29905046336) 和 `pull_request` run
+  [`29905048854`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29905048854) 分别核验：两组 Windows/macOS
+  quality 及 installed-wheel 全部通过。它证明该代码 head 的 CI，不代替任何未来变更 head 的检查或真实声卡 Gate。
+- 随后的 docs-only head `922b6fe` 的 `push` run
+  [`29905521654`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29905521654) 在既有
+  `test_close_cleans_all_outputs_and_discard_ignores_unowned_path` 失败，`MockTransport` 成功路径在 80 ms 首字节时限内
+  被报告为 `tts_first_byte_timeout`。同一 SHA 的 `pull_request` run
+  [`29905524352`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29905524352) 成功；docs-only
+  提交没有改动可执行代码，因此这支持 CI 时序不稳定而非 W17 音频回归的判断，但不允许忽略失败。
 
-## W16 完成状态与边界
+## 本地自动化证据
 
-1. 在 Qt 桌面中提供 LLM/TTS/VTS/STT 路径/设备和启动项设置；任何密钥或 VTS 令牌只可直写当前用户的
-   DPAPI 加密存储，UI 不回填、不显示、不持久化明文。
-2. 展示 feature 的 desired、actual、过渡与 failed 状态。关闭 Vision/Proactive 必须先等待既有强屏障，
-   再报告最终状态。
-3. 提供最近历史清空、长期记忆的 list/search/confirm/edit/delete/export；所有危险操作都要在用户点击后
-   再次确认，并诚实呈现逻辑删除与底层清理待处理语义。
-4. 在视觉开关旁固定披露指定窗口范围、cloud vision 独立开关和可能的云端出口；不能暗示 W16 已实现真实
-   截图或云上传。Debug 只展示无内容 capability、稳定错误码、版本和队列占用。
-5. 已以自动化验证可复现的配置写入、DPAPI 命令边界、feature 屏障、记忆操作、导出、UI 状态与隐私边界，
-   并完成聚焦提交、推送、PR exact-head CI、受控合并与合并后基线验证。
+- `uv run ruff check .`：通过。
+- `uv run mypy`：通过，`229 source files`。
+- 最新 `uv run pytest`：`1161 passed, 3 skipped in 133.61s`，总 coverage `90.38%`，达到项目 90% 门槛。
+  三项 skip 分别是未安装的可选 RapidOCR、Pillow，以及当前账户不能创建目录 symlink；均有 pytest 明确标记，
+  不是 W17 断言失败。
+- W17 定向套件（`test_media_worker.py`、`test_media_entrypoint.py`、`test_gate_a_review.py`、W17/W16 UI 及
+  pipeline 回归）覆盖模拟设备顺序变化、重复身份、选定设备消失、低/高延迟 fallback、device-lost、取消、
+  helper deadline/hang 收敛、root-relative descriptor、WAV lease 清理、设置保存与 Gate A dry-run。
+- 2026-07-22 的真实 Gate A 首次运行发现 review player 向最大 job 时限为 30 秒的 supervisor 提交了固定
+  125 秒 deadline，因此在提交播放前被拒绝为 `worker_job_deadline_invalid`；这不是声卡或 WAV 格式失败。已将
+  review deadline 收紧为 25 秒，并让工具打印 `playback.skipped`/降级码且在 Day 6 三段未全部完成时以非零退出。
+  修复后的 `uv run python tools/gate_a_review.py --mode all --volume 0` 以实际 MediaWorker 路径退出 0：Day 6
+  的三段均 `playback.finished`、`playback_count=3`，Day 7 旧轮次被取消且新轮次两段完成。音量为 0 的探针只证明
+  控制/资源/worker 路径，不证明人耳实际听感。
+- 上述打断异常修复后的定向回归
+  `uv run pytest --no-cov -q tests/unit/test_worker_supervisor.py tests/unit/test_turn_service.py tests/unit/test_gate_a_review.py tests/unit/test_media_worker.py tests/unit/test_media_entrypoint.py tests/integration/test_mock_pipeline.py tests/integration/test_w07_bounded_pipeline.py tests/integration/test_w08_provider_semantics.py`
+  → `104 passed in 16.23s`。它覆盖 caller cancel 的强杀时间上限、crash recovery 与新 start 的串行化、取消胜过
+  cleanup error，以及 Gate A 对 replacement playback skip 的拒绝。
+- 听感确认修正后，`tests/unit/test_gate_a_review.py` 为 `6 passed in 9.41s`；真实模式启用人工确认、non-TTY 拒绝和
+  `--dry-run` 自动路径均有回归覆盖。无设备
+  `uv run python tools/gate_a_review.py --mode all --dry-run --volume 0` 仍完整通过；上述 W17 定向集为
+  `107 passed in 17.92s`，最新全仓为本节所列 `1161 passed, 3 skipped`。这些都不能替代实际听感确认。
+- 修复后实际 MediaWorker 的 `uv run python tools/gate_a_review.py --mode interrupt --volume 0` 正常打印
+  `turn.cancelled`、两段新轮次 `playback.finished` 与 `Gate A 清理完成。`；随后连续 3 次
+  `--mode all --volume 0` 均以相同控制/清理顺序退出 0。该结果没有复现原问题，但只证明本机静音控制路径，不能证明
+  每一种真实 driver 卡死或可听体验。
+- 实施中第一次完整 pytest 没有断言失败，但 coverage 为 `89.43%`，因此没有被接受为通过。随后补充了原生适配器、
+  helper entrypoint、失败降级和 high-latency stream reuse 的有意义模拟路径；最终完整重跑才达到上述 90.43%。
+- 针对上述 Windows CI 失败，测试不再猜测 30 ms 内应完成状态转换，而是在 0.3 秒上限内轮询最终 `quarantined` 状态。
+  该单测连续 20 次通过，完整 `test_worker_supervisor.py` 为 `45 passed in 2.02s`；`ruff format --check .`、`ruff check .`、
+  `mypy`、`uv lock --check` 和 `git diff --check` 均通过。它只稳定测试同步，不改变 MediaWorker 产品逻辑。
+- GPT-SoVITS close/discard 测试只验证受控输出的清理所有权，不验证网络 deadline；它现在显式使用 1,000 ms 首字节和
+  3,000 ms 总时限，保留专门 timeout 测试的短时限。该测试连续 30 次通过，`test_gpt_sovits.py` 为 `57 passed in 2.51s`，
+  该修复时完整 pytest 为 `1158 passed, 3 skipped in 149.56s`、coverage 90.43%。后续 head 仍须各自核验 CI。
 
-## 已完成的本地实现与自动化证据
+## 未验证项、人工 Gate 与范围外
 
-- 已加入秘密值不可见的设置/管理 bridge 契约、BackendThread 内 `DesktopManagementRuntime`、四页 Qt
-  设置对话框和主窗口入口。文件、DPAPI、SQLite、导出均在 BackendThread；Qt 只发有界 typed command。
-- 设置写入只合并用户 YAML 层，不会把开发环境覆盖复制回持久配置；明文 secret 字段被配置写入层拒绝。
-  真实 LLM 保存前要求已存 DPAPI 密钥和模型名；GPT-SoVITS 保存前要求已有有效 preset，真实服务预检仍由
-  W19 负责。
-- feature 过渡开始时会先发布完整 desired/actual 快照，随后等待状态机 barrier 并发布最终/failed 状态。
-- `uv run pytest` → `1134 passed, 3 skipped in 154.51s`；总覆盖率 `90.37%`，达到项目 90% 门槛。三个 skip
-  分别是未安装的可选 RapidOCR/Pillow 能力与当前用户不能创建目录符号链接，均由测试框架明确标记，非 W16
-  失败。
-- `uv run mypy app desktop_client tests tools\\installed_wheel_smoke.py tools\\w05_ci_smoke.py` 和
-  `uv run mypy --platform darwin app desktop_client tests tools\\installed_wheel_smoke.py tools\\w05_ci_smoke.py`
-  均为 `Success: no issues found in 218 source files`。
-- `uv run ruff check .`、`uv run ruff format --check .`、`uv lock --check` 和 `git diff --check` 均通过。
-- 聚焦测试覆盖了 secret 不回显、用户层写入不吸收开发覆盖、real-provider/preset 保存防线、过渡快照先于
-  强屏障最终状态、memory CRUD/export、错误码不暴露原始异常、二次确认、可访问的 Qt 表面和最终 wipe。
-- 新增 `test_w16_feature_enable_submits_when_pyside_returns_integer_yes`，并以
-  `uv run pytest --no-cov tests\\unit\\ui\\test_w16_management.py -q` 验证 `13 passed in 2.71s`；它锁定了
-  PySide6 返回 `int(Yes)` 时必须提交而非取消的行为。
-- 2026-07-21 的 Windows CI 两次在相同 W16 代码之外的真实时间边界测试失败：一次为 GPT-SoVITS cache
-  promotion 的一秒等待，另一次为首字节 50ms/81ms 边界及 mock WAV 300ms 总时限。当前修改仅扩大**测试**的
-  调度余量，未改变产品超时逻辑：首字节成功/失败分别使用 2s/100ms 与 10s 延迟，mock WAV 验证使用 3s
-  总时限。两组测试连续 20 轮、每轮 4 个断言均通过；失败 head 的
-  [PR CI #29823189335](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29823189335) 是历史
-  反例。测试稳定化 head [`523406d`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/523406dfc57bbf4e75aadfe407e5858495b4b976)
-  的 [push CI #29825077879](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29825077879) 与
-  [pull-request CI #29825080662](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29825080662)
-  均为 `success`，各自的 macOS/Windows quality 和 installed-wheel job 也均通过。现场审计时 PR #28 为
-  Draft / `OPEN` / `CLEAN`，没有 review、普通评论或 inline review comment；该 head 仍会随着后续证据提交
-  成为历史记录，不能替代下一 head 的检查。
+- 已由所有者通过的 Gate：修正后的 Day 7 交互式 interrupt 听感审计（测试设备未在本轮结果中标明）。自动化
+  fake/headless 结果仍不能证明其他真实 Windows 音频硬件；内置声卡、USB 和蓝牙上的正常结束、各设备的 interrupt、
+  设备热插拔时的实际听感/UI 提示及退出时的原生驱动资源释放仍未报告通过。
+- W12 已提供 worker 的 Job Object hard-kill 机制；W17 的 fake 覆盖可中止 write 与 supervisor deadline 路径。
+  这不能证明每一种真实 PortAudio/驱动卡死都能在同一线程内被中止；真正卡死仍依赖 supervisor 终止 helper。
+- 项目范围仍为单机、单 Windows 用户、个人私用。RDP、快速切用户、跨 session 和跨用户 DACL 有效访问均为
+  **范围外**；不得写成 W17 已通过，也不得作为本任务新增人工 Gate。
+- 未向仓库、fixture、日志或文档加入真实 WAV、用户路径、令牌、密钥或受保护角色资产。
 
-## 未完成项与真实人工 Gate
+## 回滚与下一步
 
-- W16 的自动交付、PR 合并和合并后基线验证均已完成。closing head `6c5fd83` 的远端检查和 merge commit
-  `dc84319` 上的本地全量测试是可复核证据；任何后续 W 项仍须在自己的 exact head 上独立验证。客观失败
-  必须直接记录和修复，不能转交人工确认。
-- 实际 Windows Qt 已通过本次 feature 启用/确认/状态更新路径的复测。仍保留 AI 无法忠实复现的理解性审阅：
-  用户是否正确理解历史、记忆、视觉、云端和删除语义；其余部分尚未执行，不能把整个 Gate 标记为通过。
-- 真实音频设备、麦克风、VTS/GPT-SoVITS 服务与资源预检属于 W17–W19；真实指定窗口捕获/cloud vision
-  属于 W21/W22；冻结包与安装/卸载属于 W24/W25。它们不是 W16 已实现能力。
+- 将 `playback_mode` 设为 `silent` 即可关闭本地播放；文字对话继续。无法恢复或异常设备不应触发无限重试。
+- Draft PR #30 已获所有者授权在最终 head 检查通过后从 Draft 进入受控合并。Gate A 听感验收语义修正提交
+  [`598e6aa`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/598e6aa7358b49a7c3e14085e35151d8e89fa99f)
+  的 `push` run [`29920861198`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29920861198) 与
+  `pull_request` run [`29920863704`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29920863704)
+  均在该 exact code head 上 8/8 通过。修正后的 Day 7 人工听感审计已获所有者通过；上列其余真实设备 Gate 仍待完成，
+  任何未来 head 都不得继承此 CI 结果或人工结论。
+- 2026-07-22，所有者明确要求合并 Draft PR #30，并接受以下**残余风险**：目标分支
+  `agent/windows-development-baseline` 当前无 GitHub branch protection，PR 没有独立 review，且内置/USB/蓝牙的完整
+  正常播放、设备特定 interrupt、热插拔和原生 driver UX 尚未报告通过。此授权只允许受控合并，不把这些项目标记为通过。
 
 ## 相关资料
 
-- 权威 W16 计划：[Windows 开发计划](../windows_development_plan.md)
-- 当前实现记录：[W16 设置、feature 与记忆管理 UI](../implementation/w16_settings_feature_memory_ui.md)
-- 运行时/desktop 所有权边界：[ADR-W01](../adr/ADR-W01-runtime-topology.md)、
-  [ADR-W03](../adr/ADR-W03-windows-storage-security.md)、[ADR-W04](../adr/ADR-W04-control-protocol.md)
-- W10 feature/删除语义：[W10 实现记录](../implementation/w10_memory_state_recovery.md)
-
-## 维护规则
-
-W16 的验证结果、提交、PR、CI、人工 Gate 或残余风险发生实质变化时，先更新本快照及
-`implementation/w16_settings_feature_memory_ui.md`，再报告状态。计划、mock/headless 结果或旧 W15
-证据不得替代当前 head 的可复核证据。
+- [W17 实现记录](../implementation/w17_media_worker_audio.md)
+- [W17 权威计划](../windows_development_plan.md)
+- [ADR-W01：运行拓扑](../adr/ADR-W01-runtime-topology.md)
+- [ADR-W06：有界流水线](../adr/ADR-W06-bounded-pipeline.md)
+- [ADR-W07：native worker 隔离](../adr/ADR-W07-native-worker-isolation.md)

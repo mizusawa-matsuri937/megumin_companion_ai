@@ -19,7 +19,7 @@ from app.core.context import (
     ProactiveContextBuilder,
 )
 from app.limits import LimitsConfig
-from app.pipelines.audio_player import AudioPlayer
+from app.pipelines.audio_player import AudioPlaybackResult, AudioPlayer
 from app.pipelines.segmenter import DialogueSegmenter
 from app.schemas import (
     AudioResult,
@@ -510,8 +510,6 @@ class DialoguePipeline:
                             metrics.audio_queue_wait_ms.append(
                                 max(0, round((time.perf_counter() - current.ready_at) * 1000))
                             )
-                            if metrics.first_sentence_play_ms is None:
-                                metrics.first_sentence_play_ms = _elapsed_ms(started)
                             await emit(
                                 "playback.started",
                                 {
@@ -520,9 +518,28 @@ class DialoguePipeline:
                                     "segment_id": result.segment_id,
                                 },
                             )
-                            playback_started = True
-                            await self._audio_player.play(result, token)
+                            playback = _playback_result(
+                                await self._audio_player.play(result, token)
+                            )
                             token.raise_if_cancelled()
+                            if playback.notice_code is not None:
+                                await emit(
+                                    "audio.degraded",
+                                    {"index": next_index, "reason": playback.notice_code},
+                                )
+                            if not playback.played:
+                                await emit(
+                                    "playback.skipped",
+                                    {
+                                        "index": next_index,
+                                        "error_code": playback.error_code or "audio_unavailable",
+                                    },
+                                )
+                                next_index += 1
+                                continue
+                            if metrics.first_sentence_play_ms is None:
+                                metrics.first_sentence_play_ms = _elapsed_ms(started)
+                            playback_started = True
                             metrics.playback_count += 1
                             await emit(
                                 "playback.finished",
@@ -779,3 +796,13 @@ def _exception_code(error: Exception) -> str:
     if isinstance(value, str) and 1 <= len(value) <= 128:
         return value
     return "pipeline_failed"
+
+
+def _playback_result(value: object) -> AudioPlaybackResult:
+    """Keep pre-W17 test doubles compatible while containing malformed results."""
+
+    if value is None:
+        return AudioPlaybackResult(played=True)
+    if isinstance(value, AudioPlaybackResult):
+        return value
+    return AudioPlaybackResult(played=False, error_code="audio_playback_invalid")

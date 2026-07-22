@@ -96,6 +96,31 @@ class ControllablePipeline:
         self.closed = True
 
 
+class CleanupFailureAfterCancellationPipeline:
+    """Model a native cleanup failure that races an explicit preemption."""
+
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.closed = False
+
+    async def run(
+        self,
+        _message: UserMessage,
+        _state: TurnState,
+        _token: CancellationToken,
+        _emit: Callable[[str, dict[str, Any]], Awaitable[None]],
+    ) -> TurnOutcome:
+        self.started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            raise PipelineFailure("cleanup_race") from None
+        raise AssertionError("cancellation test pipeline unexpectedly completed")
+
+    async def close(self) -> None:
+        self.closed = True
+
+
 class RecordingObserver:
     def __init__(self, *, fail: bool = False) -> None:
         self.fail = fail
@@ -299,6 +324,29 @@ def test_cancel_active_pipeline_and_shutdown_cleanup() -> None:
         await pipeline.started.wait()
         await service.shutdown()
         assert service.snapshot()["turns"][second.turn_id]["status"] == "cancelled"
+        assert pipeline.closed
+
+    asyncio.run(scenario())
+
+
+def test_preemption_wins_over_a_cleanup_error_that_races_cancellation() -> None:
+    async def scenario() -> None:
+        pipeline = CleanupFailureAfterCancellationPipeline()
+        service = TurnService(logger(), pipeline)
+        queue = await service.subscribe("local_session")
+        first = await service.accept(UserMessage(text="旧轮次"))
+        await pipeline.started.wait()
+
+        second = await service.accept(UserMessage(text="新轮次"))
+        cancelled = await receive_type(queue, "turn.cancelled")
+
+        assert cancelled.turn_id == first.turn_id
+        assert service.snapshot()["turns"][first.turn_id]["status"] == "cancelled"
+        assert service.snapshot()["turns"][second.turn_id]["status"] in {
+            "accepted",
+            "streaming",
+        }
+        await service.shutdown()
         assert pipeline.closed
 
     asyncio.run(scenario())

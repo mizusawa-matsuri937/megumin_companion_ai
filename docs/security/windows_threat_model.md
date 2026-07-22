@@ -1,6 +1,6 @@
 # Windows Gate W0 威胁模型
 
-> 版本：2026-07-17
+> 版本：2026-07-22
 > 状态：项目所有者自审通过；没有独立人工安全/隐私 reviewer
 > 范围：Windows 11 x64、标准用户、单交互会话、私人使用
 
@@ -36,7 +36,7 @@
 | TM-W00-03 | 另一账户读取 DB/token/temp | current-user DACL + DPAPI current-user | 两账户 effective access 与解密测试 | 管理员/内核攻击不在保证内 |
 | TM-W00-04 | 消息重放导致重复计费/播放 | 三元幂等键、有限状态、seq/replay、generation | 并发重复与断线 property tests | 远端在本地取消后可能继续计费 |
 | TM-W00-05 | 慢/恶意 provider 耗尽内存磁盘 | byte/token/segment/deadline、queue/temp/log 硬上限、背压 | slow consumer/fault/soak | 合理上限可能截断合法长回复 |
-| TM-W00-06 | native thread 卡死且继续持有敏感数据 | worker 进程、Job Object、hard deadline、kill、scavenger | hanging child/tree VM tests | 强杀不是物理内存/磁盘擦除证明 |
+| TM-W00-06 | native thread 卡死且继续持有敏感数据 | worker 进程、Job Object、hard deadline、kill、scavenger；W17 播放 wire 仅允许批准根相对引用，不传 PCM/WAV body/任意路径 | W12 hanging child/tree tests；W17 fake descriptor/device/cancel/deadline tests；真实驱动体验另列设备 Gate | 强杀不是物理内存/磁盘擦除证明；原生 driver abort 受设备差异影响 |
 | TM-W00-07 | 截图捕获错误窗口或包含敏感内容 | 指定窗口 recheck、Guard、锁屏/权限 fail closed、禁止全屏 fallback | 多显示器/DPI/UWP/管理员/RDP 人工 Gate | OCR/Guard false negative 不可能证明为零 |
 | TM-W00-08 | 云端收到未经脱敏截图 | cloud 默认关闭；显式启用；全 OCR bbox 遮挡；最终本地检查；未知即跳过 | sentinel、出口审计、真实敏感窗口 Gate | 本地检测 false negative 和 provider 保留策略 |
 | TM-W00-09 | 屏幕/云返回提示注入 | 标记 untrusted；不当用户命令；不产生长期记忆候选 | prompt injection tests | 模型仍可能受内容影响，需要最小权限和 UI 解释 |
@@ -67,5 +67,5 @@
 1. **RR-W00-01 非独立自审：** 所有人工角色由项目所有者本人兼任。私人开发可以继续，但不能表述为独立安全/隐私或许可证审查；公开发布前必须重新 Gate。
 2. **RR-W00-02 云视觉 false negative：** 项目所有者允许本地检查后上传脱敏图像，但本地检测不可能证明零漏检。实际启用必须经过 W21/W22 sentinel、真实敏感窗口和出口审计；失败则保持 cloud disabled。
 3. **RR-W00-03 安装器未冻结：** 只批准 per-user、无静默更新、备份回滚约束；具体技术在 W25 前决定。
-4. **RR-W00-04 设备声明未具象化：** “基本具备”不是验收证据，W4～W6 前必须登记具体声卡、麦克风、蓝牙/RDP、多显示器和第二账户结果。
+4. **RR-W00-04 设备声明未具象化：** “基本具备”不是验收证据；W4～W6 前必须登记具体内置/USB/蓝牙声卡、麦克风和多显示器结果。RDP、快速切用户、跨 session 与第二账户有效访问属于当前单机单用户私人范围的范围外项，不能写成通过或待本地人工 Gate。
 5. **RR-W00-05 私人未签名：** 当前不需要签名，只能用于私人构建；任何公开分发保持阻塞。

@@ -11,7 +11,6 @@ from app.clients.tts import MockTTSProvider
 from app.clients.tts import mock_tts as mock_tts_module
 from app.core import CancellationToken
 from app.paths import AppPaths
-from app.pipelines.audio_player import SystemAudioPlayer
 from app.schemas import TTSJob, UserMessage
 from app.temp_assets import TempAssetRegistry
 from app.windows_security import PortableDirectorySecurity
@@ -495,92 +494,3 @@ def test_mock_tts_repeated_waiter_cancellation_drains_owned_writer_before_cleanu
         await provider.close()
 
     asyncio.run(scenario())
-
-
-def test_system_player_reuses_one_stream_for_adjacent_segments(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    class FakeRawOutputStream:
-        def __init__(self, **_options: object) -> None:
-            self.active = False
-            self.start_count = 0
-            self.write_count = 0
-            self.stop_count = 0
-            self.abort_count = 0
-            self.close_count = 0
-
-        def start(self) -> None:
-            self.active = True
-            self.start_count += 1
-
-        def write(self, _frames: bytes) -> None:
-            self.write_count += 1
-
-        def abort(self) -> None:
-            self.active = False
-            self.abort_count += 1
-
-        def stop(self) -> None:
-            self.active = False
-            self.stop_count += 1
-
-        def close(self) -> None:
-            self.close_count += 1
-
-    streams: list[FakeRawOutputStream] = []
-
-    def make_stream(**options: object) -> FakeRawOutputStream:
-        stream = FakeRawOutputStream(**options)
-        streams.append(stream)
-        return stream
-
-    monkeypatch.setattr("app.pipelines.audio_player.sd.RawOutputStream", make_stream)
-
-    async def scenario() -> None:
-        provider = MockTTSProvider(
-            tmp_path,
-            sample_rate=48_000,
-            duration_ms=10,
-            synthesis_delay_seconds=0,
-        )
-        token = CancellationToken("turn_test")
-        results = []
-        for index in range(2):
-            result = await provider.synthesize(
-                TTSJob(
-                    turn_id="turn_test",
-                    segment_id=f"segment_{index}",
-                    text=f"第 {index} 段",
-                    connect_timeout_ms=80,
-                    first_byte_timeout_ms=80,
-                    timeout_ms=300,
-                    cancellation_timeout_ms=50,
-                    cancellation_token_id=token.token_id,
-                ),
-                segment_index=index,
-                token=token,
-            )
-            results.append(result)
-
-        player = SystemAudioPlayer()
-        for result in results:
-            await player.play(result, token)
-        await player.close()
-
-        interrupted_player = SystemAudioPlayer()
-        await interrupted_player.play(results[0], token)
-        await interrupted_player.stop(immediate=True)
-        for result in results:
-            await provider.discard(result)
-
-    asyncio.run(scenario())
-
-    assert len(streams) == 2
-    assert streams[0].start_count == 1
-    assert streams[0].write_count == 2
-    assert streams[0].stop_count == 1
-    assert streams[0].abort_count == 0
-    assert streams[0].close_count == 1
-    assert streams[1].stop_count == 0
-    assert streams[1].abort_count == 1
-    assert streams[1].close_count == 1
