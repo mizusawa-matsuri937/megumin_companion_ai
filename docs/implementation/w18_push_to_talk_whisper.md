@@ -7,8 +7,11 @@
 > [`6c66dc0`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/6c66dc0) 已推送。功能 head 的
 > [PR workflow](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29941194620) 与
 > [push workflow](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29941191361) 均通过。
-> Draft PR [#31](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/31) 未合并；本验证记录推送后仍须核验新的
-> 最终 PR head。最后本地核验：2026-07-23（Asia/Shanghai），分支 `codex/w18-ptt-whisper`，基线为 W17 合并提交
+> 仅文档验证记录 [`a577031`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/a577031) 的
+> [PR workflow](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29942329034) 与
+> [push workflow](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29942326396) 也均通过。
+> Draft PR [#31](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/31) 未合并；后续新 head 必须独立核验。
+> 最后本地核验：2026-07-23（Asia/Shanghai），分支 `codex/w18-ptt-whisper`，基线为 W17 合并提交
 > [`351da92`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/351da92bfd0232ce03a90a97b75c13ba8ee6a51b)。
 > 本文不把本地绿测、headless Qt 或 fake PortAudio/whisper 结果表述成真实麦克风、锁屏、IME 或全局热键体验。
 
@@ -86,8 +89,11 @@ AI 已覆盖可合成的 ring、worker lifecycle、进程树、路径、取消�
   [PR run 29941194620](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29941194620) 与
   [push run 29941191361](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29941191361)。
   初始 CI 失败是测试的 real-time watchdog 竞争和 macOS fake CLI 路径的 symlink 规范化问题；`69b46dd`/`6c66dc0`
-  只修正测试确定性，不放宽 production reparse-point 拒绝策略。本验证记录推送后仍必须核验新的最终 PR head；Draft PR
-  未获合并授权，且真实设备 Gate 未完成，因此不能报告为发布完成。
+  只修正测试确定性，不放宽 production reparse-point 拒绝策略。仅文档验证记录
+  [`a577031`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/a577031) 的
+  [PR run 29942329034](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29942329034) 与
+  [push run 29942326396](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29942326396) 再次通过。
+  Draft PR 未获合并授权，真实设备 Gate 未完成；任何后续新 head 都须重新核验，因此不能报告为发布完成。
 
 ## 关联资料
 

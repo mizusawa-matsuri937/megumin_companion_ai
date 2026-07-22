@@ -714,8 +714,11 @@ flowchart LR
 - **实现状态（2026-07-23）：** 实现及 CI 修复提交 `439fa88`、`69b46dd`、`6c66dc0` 已推送，Draft PR
   [#31](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/31) 的功能 head 已通过
   [PR workflow](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29941194620) 和
-  [push workflow](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29941191361)；本验证记录推送后仍待新的最终 PR head 检查。
-  按钮优先路径已实现；系统级 global hotkey 与 W20 的真实 lock/session adapter 尚未启用，不能把其真实行为写作已通过。
+  [push workflow](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29941191361)。仅文档验证记录
+  [`a577031`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/a577031) 也已通过
+  [PR workflow](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29942329034) 和
+  [push workflow](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29942326396)。按钮优先路径已实现；
+  系统级 global hotkey 与 W20 的真实 lock/session adapter 尚未启用，不能把其真实行为写作已通过；后续新 head 必须重新核验。
 - callback 写预分配有界 buffer，不对每 frame 向 asyncio loop 排队；overflow/设备断开成为显式事件。
 - UI 按钮先实现，global hotkey 后启用；start 才打开设备，stop 后本地 STT 并生成一个 voice `UserMessage`。
 - whisper executable/model 做版本、架构、hash/fingerprint 和路径预检；进程树纳入 Job Object。

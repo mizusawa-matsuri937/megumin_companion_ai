@@ -74,4 +74,4 @@
 - [W15：单实例、托盘和统一生命周期（已合并）](implementation/w15_single_instance_lifecycle.md)
 - [W16：设置、feature 与记忆管理最小 UI（已合并）](implementation/w16_settings_feature_memory_ui.md)
 - [W17：MediaWorker 播放、输出设备与 Gate A（已合并，PR #30）](implementation/w17_media_worker_audio.md)
-- [W18：Push-to-talk、麦克风 ring buffer 与 Whisper Job（Draft PR #31，功能 head CI 已通过；状态提交的最终 head 待核验）](implementation/w18_push_to_talk_whisper.md)
+- [W18：Push-to-talk、麦克风 ring buffer 与 Whisper Job（Draft PR #31，自动化 CI 已通过；人工 Gate/review 待完成）](implementation/w18_push_to_talk_whisper.md)

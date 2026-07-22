@@ -8,8 +8,11 @@
 > [`6c66dc0`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/6c66dc0) 已推送。功能 head `6c66dc0` 的
 > [PR workflow](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29941194620) 与
 > [push workflow](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29941191361) 均通过。
-> Draft PR [#31](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/31) 仍未合并；本验证记录推送后仍须核验其
-> 新的最终 PR head，不能写作“已合并”或“发布完成”。
+> 验证记录 [`a577031`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/a577031) 的
+> [PR workflow](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29942329034) 与
+> [push workflow](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29942326396) 也均通过。
+> Draft PR [#31](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/31) 仍未合并；任何后续新 head 都须独立核验，
+> 且真实设备 Gate 未完成，不能写作“已合并”或“发布完成”。
 
 ## 已确认事实
 
@@ -46,6 +49,8 @@
 - 功能 head `6c66dc0` 的 macOS/Windows `quality` 与 `installed-wheel` 均在上述 PR/push workflows 通过。此前失败分别是
   watchdog 测试依赖 real-time sleep 的竞争，以及 macOS fake CLI fixture 把 `sys.executable` 的 symlink 交给故意拒绝
   reparse point 的安全预检；修复只让测试注入可控等待并规范化 fixture 路径，没有放宽生产预检。
+- 仅文档的验证记录 `a577031` 在其 exact head 上再次通过 macOS/Windows `quality` 和 `installed-wheel`；它确认前述
+  修复不依赖已失效的旧 run。该记录不替代真实硬件、IME 或桌面体验证据。
 - 测试使用合成 PCM、合成 WAV、fake whisper 和 fake device；没有把真实录音、模型、角色资产、用户路径、token 或 secret
   写入仓库、fixture 或日志。
 
@@ -65,8 +70,8 @@
 
 - 回滚开关为 `stt.enabled=false`；文字输入继续，且不启动输入设备或 whisper helper。用户设置的模型/可执行路径不会被
   自动复制、上传或写入日志。
-- 接下来：推送本次仅文档的验证记录，并以 [Draft PR #31](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/31) 的
-  新最终 head 核验远端必需检查；随后等待 review 和上述真实设备 Gate。Draft PR 不在本任务中合并，W18 也不据此宣称发布完成。
+- 接下来：等待 [Draft PR #31](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/31) 的 review 和上述真实设备 Gate。
+  Draft PR 不在本任务中合并，W18 也不据此宣称发布完成；若其 head 后续变化，必须重新核验远端必需检查。
 
 ## 相关资料
 
