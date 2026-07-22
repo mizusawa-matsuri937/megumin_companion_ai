@@ -7,7 +7,7 @@ import os
 import sys
 import time
 import wave
-from collections.abc import Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -149,6 +149,7 @@ def _handler(
     monkeypatch: pytest.MonkeyPatch,
     *,
     maximum_recording_seconds: float = 1.0,
+    recording_watchdog_wait: Callable[[float], Awaitable[None]] | None = None,
 ) -> tuple[media_worker.MediaWorkerHandler, _VoiceBackend, Path]:
     _FakeWhisperRunner.instances.clear()
     _FakeWhisperRunner.failure_code = None
@@ -169,6 +170,7 @@ def _handler(
         maximum_recording_seconds=maximum_recording_seconds,
         transcription_timeout_seconds=2.0,
         language="zh",
+        recording_watchdog_wait=recording_watchdog_wait,
     )
     return handler, backend, root
 
@@ -269,15 +271,27 @@ def test_media_worker_ptt_enforces_the_120_second_design_cap_with_worker_watchdo
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     async def scenario() -> None:
+        watchdog_started = asyncio.Event()
+        watchdog_elapsed = asyncio.Event()
+
+        async def wait_for_limit(_seconds: float) -> None:
+            watchdog_started.set()
+            await watchdog_elapsed.wait()
+
         handler, backend, root = _handler(
             tmp_path,
             monkeypatch,
             maximum_recording_seconds=0.01,
+            recording_watchdog_wait=wait_for_limit,
         )
         assert await handler.run_job(
             "media.record_start", (), asyncio.Event(), job_id="timeout"
         ) == {"status": "recording"}
-        await asyncio.sleep(0.03)
+        await asyncio.wait_for(watchdog_started.wait(), timeout=1)
+        session = handler._recording
+        assert session is not None
+        watchdog_elapsed.set()
+        await asyncio.wait_for(session.watchdog, timeout=1)
         result = await handler.run_job(
             "media.record_stop", (), asyncio.Event(), job_id="timeout-stop"
         )

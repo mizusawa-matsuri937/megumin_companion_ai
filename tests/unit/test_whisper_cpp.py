@@ -85,7 +85,10 @@ def _runner(
     return (
         WhisperCppRunner(
             WhisperCppConfig(
-                executable=Path(sys.executable),
+                # CI can expose Python through a symlink. This fixture needs a
+                # canonical executable to exercise the fake CLI, while the
+                # production reparse-point rejection remains intentionally strict.
+                executable=Path(sys.executable).resolve(),
                 executable_prefix_args=(str(script), mode, str(audit)),
                 model_path=model,
                 terminate_grace_seconds=grace,

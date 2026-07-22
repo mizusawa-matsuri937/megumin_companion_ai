@@ -13,7 +13,7 @@ import os
 import shutil
 import threading
 import wave
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -321,6 +321,7 @@ class MediaWorkerHandler:
         maximum_recording_seconds: float = 120.0,
         transcription_timeout_seconds: float = 60.0,
         language: str = "auto",
+        recording_watchdog_wait: Callable[[float], Awaitable[None]] | None = None,
     ) -> None:
         if maximum_wave_bytes < 44:
             raise ValueError("media worker wave limit is invalid")
@@ -346,6 +347,8 @@ class MediaWorkerHandler:
             raise ValueError("voice transcription timeout must be within 120 seconds")
         if not language.strip() or "\x00" in language or len(language) > 64:
             raise ValueError("voice language invalid")
+        if recording_watchdog_wait is not None and not callable(recording_watchdog_wait):
+            raise ValueError("voice recording watchdog wait invalid")
         self._backend = backend or SoundDeviceBackend()
         self._selected_device_id = selected_device_id or None
         self._maximum_wave_bytes = maximum_wave_bytes
@@ -356,6 +359,9 @@ class MediaWorkerHandler:
         self._maximum_recording_seconds = float(maximum_recording_seconds)
         self._transcription_timeout_seconds = float(transcription_timeout_seconds)
         self._language = language
+        self._recording_watchdog_wait = (
+            asyncio.sleep if recording_watchdog_wait is None else recording_watchdog_wait
+        )
         self._recording_root = _validated_recording_root(recording_root) if recording_root else None
         self._stt = WhisperCppRunner(stt_config) if stt_config is not None else None
         self._recording: _RecordingSession | None = None
@@ -563,7 +569,7 @@ class MediaWorkerHandler:
         stream: _InputStream,
     ) -> None:
         try:
-            await asyncio.sleep(self._maximum_recording_seconds)
+            await self._recording_watchdog_wait(self._maximum_recording_seconds)
         except asyncio.CancelledError:
             raise
         ring.fail(_VOICE_ERROR_TOO_LONG)
