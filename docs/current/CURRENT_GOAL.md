@@ -3,7 +3,9 @@
 > 最后核验：2026-07-22（Asia/Shanghai）。当前活跃任务是 W18「Push-to-talk、麦克风 ring buffer 与
 > whisper Job」。工作分支为 `codex/w18-ptt-whisper`，基线为 W17 合并提交
 > [`351da92`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/351da92bfd0232ce03a90a97b75c13ba8ee6a51b)。
-> W18 已完成本地实现和自动化验证，尚未创建 W18 提交、推送或 Draft PR；因此不能写作“已交付”或“已合并”。
+> W18 实现提交 [`439fa88`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/439fa88) 已推送，并已创建
+> Draft PR [#31](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/31)。本次发布状态更新推送后，仍须以最终
+> PR head 核验远端必需检查；在此之前不能写作“发布完成”或“已合并”。
 
 ## 已确认事实
 
@@ -26,7 +28,7 @@
 
 ## 本地自动化证据
 
-- `uv run pytest`：最终重跑为 `1195 passed, 3 skipped in 166.48s`，总 coverage `90.18%`，达到项目 90% 硬门槛。三个 skip 分别为
+- `uv run pytest`：最后一次完整重跑为 `1195 passed, 3 skipped in 255.33s`，总 coverage `90.18%`，达到项目 90% 硬门槛。三个 skip 分别为
   未安装的可选 RapidOCR、Pillow，以及当前账户不能创建目录 symlink；pytest 已明确标记，均非 W18 断言失败。
 - W18 定向集：`uv run pytest --no-cov tests/unit/test_whisper_cpp.py tests/unit/test_media_voice.py tests/unit/test_stt_factory.py`
   → `74 passed in 7.90s`。覆盖预检/架构/指纹/版本失败、中文空格路径、转写 timeout/cancel、ring overflow/device status、
@@ -55,8 +57,8 @@
 
 - 回滚开关为 `stt.enabled=false`；文字输入继续，且不启动输入设备或 whisper helper。用户设置的模型/可执行路径不会被
   自动复制、上传或写入日志。
-- 接下来：审查并创建 W18 聚焦提交，推送 `codex/w18-ptt-whisper` 并建立 Draft PR。PR 创建、最终 head 的远端
-  检查和任何真实设备 Gate 发生前，W18 仍不是发布完成状态。
+- 接下来：推送本次发布状态更新，并以 [Draft PR #31](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/31) 的
+  最终 head 核验远端必需检查。远端检查和任何真实设备 Gate 发生前，W18 仍不是发布完成状态。
 
 ## 相关资料
 

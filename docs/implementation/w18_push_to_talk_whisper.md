@@ -2,8 +2,9 @@
 
 ## 状态与范围
 
-> 状态：本地实现与自动化验证完成，待创建聚焦提交、推送和 Draft PR。最后本地核验：2026-07-22
-> （Asia/Shanghai），分支 `codex/w18-ptt-whisper`，基线为 W17 合并提交
+> 状态：实现提交 [`439fa88`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/439fa88) 已推送，
+> Draft PR [#31](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/31) 已创建；本次状态更新推送后仍待最终
+> PR head 的远端检查。最后本地核验：2026-07-22（Asia/Shanghai），分支 `codex/w18-ptt-whisper`，基线为 W17 合并提交
 > [`351da92`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/351da92bfd0232ce03a90a97b75c13ba8ee6a51b)。
 > 本文不把本地绿测、headless Qt 或 fake PortAudio/whisper 结果表述成真实麦克风、锁屏、IME 或全局热键体验。
 
@@ -40,7 +41,7 @@ global hotkey 或 W20 的 Windows lock/session adapter。
 
 最终本地命令：
 
-- `uv run pytest` → 最终重跑 `1195 passed, 3 skipped in 166.48s`，coverage `90.18%`。
+- `uv run pytest` → 最后一次完整重跑 `1195 passed, 3 skipped in 255.33s`，coverage `90.18%`。
 - `uv run pytest --no-cov tests/unit/test_whisper_cpp.py tests/unit/test_media_voice.py tests/unit/test_stt_factory.py`
   → `74 passed in 7.90s`。
 
@@ -75,7 +76,9 @@ AI 已覆盖可合成的 ring、worker lifecycle、进程树、路径、取消�
 - 真正的 PortAudio/driver 卡死无法由 Python task cancellation 证明停止；安全收束依赖 W12 的 helper Job kill。删除/wipe
   是生命周期隔离和 best effort，不构成物理介质擦除承诺。
 - 真实模型文件、可执行文件、麦克风权限和性能仍是用户环境依赖。运行时预检以稳定错误码失败，不复制/上传模型或音频。
-- Draft PR 尚未创建；创建后必须以最终 PR head 重跑必需检查，PR URL、提交和远端状态将补入本节。
+- Draft PR [#31](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/31) 已创建，初始实现提交为
+  [`439fa88`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/439fa88)。本次发布状态更新推送后，必须以
+  最终 PR head 重跑并核验必需检查；未完成前不得报告为可合并或发布完成。
 
 ## 关联资料
 
