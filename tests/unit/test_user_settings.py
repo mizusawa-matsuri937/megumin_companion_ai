@@ -128,3 +128,20 @@ def test_explicit_schema_upgrade_writes_backup(tmp_path: Path) -> None:
     assert upgraded["schema_version"] == 1
     assert upgraded["logging"]["file_path"] == "app.jsonl"
     assert paths.settings_backup.read_bytes() == legacy
+
+
+def test_legacy_auto_stt_language_is_migrated_to_chinese_on_explicit_write(tmp_path: Path) -> None:
+    paths = paths_for(tmp_path)
+    paths.config.mkdir(parents=True)
+    legacy = b"schema_version: 1\nstt:\n  language: auto\n"
+    paths.settings.write_bytes(legacy)
+
+    effective = load_settings(app_paths=paths, environ={})
+    assert effective.stt.language == "zh"
+    assert effective.settings_schema_upgrade_required
+
+    result = upgrade_user_settings(app_paths=paths)
+
+    persisted = yaml.safe_load(paths.settings.read_text(encoding="utf-8"))
+    assert result.changed and result.backup_created
+    assert persisted["stt"]["language"] == "zh"

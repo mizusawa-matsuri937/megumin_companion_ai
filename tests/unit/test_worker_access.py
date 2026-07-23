@@ -333,7 +333,7 @@ def test_helper_capacity_configuration_is_bounded(maximum_active_jobs: object) -
     from app.workers.helper import HelperRuntime
 
     class Handler:
-        async def run_job(self, *_args: object) -> dict[str, object]:
+        async def run_job(self, *_args: object, **_kwargs: object) -> dict[str, object]:
             return {}
 
         async def close(self) -> None:
@@ -354,7 +354,7 @@ def test_helper_heartbeat_configuration_must_be_finite(
     from app.workers.helper import HelperRuntime
 
     class Handler:
-        async def run_job(self, *_args: object) -> dict[str, object]:
+        async def run_job(self, *_args: object, **_kwargs: object) -> dict[str, object]:
             return {}
 
         async def close(self) -> None:

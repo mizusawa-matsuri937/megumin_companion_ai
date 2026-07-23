@@ -1,9 +1,10 @@
-"""Explicit local whisper.cpp smoke tool; never downloads a model automatically."""
+"""Explicit local MediaWorker STT smoke tool; never downloads a model automatically."""
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import sys
 from pathlib import Path
 
@@ -11,11 +12,7 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.config import load_settings  # noqa: E402
-from desktop_client.inputs import (  # noqa: E402
-    TranscriptionRequest,
-    build_stt_provider,
-    build_voice_input,
-)
+from app.media.voice import VoiceCaptureError, create_media_worker_voice_input  # noqa: E402
 
 
 def _arguments() -> argparse.Namespace:
@@ -24,64 +21,69 @@ def _arguments() -> argparse.Namespace:
     parser.add_argument("--env-file", type=Path)
     parser.add_argument(
         "--mode",
-        choices=("check", "file", "microphone"),
+        choices=("check", "microphone"),
         default="check",
-        help="check 只检查本地文件；file 转写现有 WAV；microphone 需人工按回车录音。",
+        help="check 在 MediaWorker 内预检本地运行时；microphone 需人工按回车录音。",
     )
-    parser.add_argument("--audio", type=Path, help="file 模式所需的 16kHz 单声道 PCM WAV。")
+    parser.add_argument(
+        "--measure-working-set",
+        action="store_true",
+        help="仅在 microphone 模式输出 whisper-cli 的 Windows 峰值工作集；不会输出转写文本。",
+    )
     return parser.parse_args()
 
 
-async def _run() -> None:
+async def _wait_for_enter(prompt: str) -> None:
+    await asyncio.to_thread(input, prompt)
+
+
+def _print_error(code: str) -> None:
+    print(json.dumps({"status": "error", "reason_code": code}, ensure_ascii=False, sort_keys=True))
+
+
+async def _run() -> int:
     args = _arguments()
+    if args.measure_working_set and args.mode != "microphone":
+        raise SystemExit("--measure-working-set 仅支持 --mode microphone。")
     settings = load_settings(args.config, args.env_file)
     if not settings.stt.enabled:
         raise SystemExit("STT 默认关闭；请先在本地配置中显式设置 stt.enabled=true。")
 
-    executable = settings.stt_executable_path()
-    model = settings.stt_model_path()
-    missing = [str(path) for path in (executable, model) if not path.is_file()]
-    if missing:
-        raise SystemExit("缺少本地 whisper.cpp 运行文件：" + ", ".join(missing))
-
-    if args.mode == "check":
-        provider = build_stt_provider(settings)
-        assert provider is not None
-        await provider.close()
-        print(f"whisper-cli: {executable}")
-        print(f"model: {model}")
-        print("本地运行文件检查通过；未访问麦克风，未执行转写。")
-        return
-
-    if args.mode == "file":
-        if args.audio is None:
-            raise SystemExit("file 模式必须传入 --audio。")
-        provider = build_stt_provider(settings)
-        assert provider is not None
-        try:
-            result = await provider.transcribe(
-                TranscriptionRequest(
-                    audio_path=args.audio.expanduser().resolve(),
-                    language=settings.stt.language,
-                    timeout_seconds=settings.stt.transcription_timeout_seconds,
-                )
-            )
-            print(result.text)
-        finally:
-            await provider.close()
-        return
-
-    recorder = build_voice_input(settings)
+    recorder = create_media_worker_voice_input(settings)
     assert recorder is not None
     try:
-        await asyncio.to_thread(input, "按回车开始录音（可能触发系统麦克风权限提示）...")
-        await recorder.start()
-        await asyncio.to_thread(input, "正在录音；按回车停止并进行本地转写...")
-        message = await recorder.stop()
-        print(message.text)
+        if args.mode == "check":
+            try:
+                await recorder.preflight()
+            except VoiceCaptureError as exc:
+                _print_error(exc.code)
+                return 2
+            print("本地 STT 预检通过；未访问麦克风，未执行转写。")
+            return 0
+        try:
+            await _wait_for_enter("按回车开始录音（可能触发系统麦克风权限提示）...")
+            await recorder.start()
+            print("录音已开始：请说中文约 30 秒；完成后按一次回车停止并进行本地转写。", flush=True)
+            await _wait_for_enter("正在录音；按回车停止并进行本地转写...")
+            transcript = await recorder.stop()
+        except VoiceCaptureError as exc:
+            _print_error(exc.code)
+            return 2
+        except EOFError:
+            _print_error("stt_input_unavailable")
+            return 2
+        summary: dict[str, object] = {
+            "status": "transcribed",
+            "language": transcript.language,
+            "segment_count": transcript.segment_count,
+        }
+        if args.measure_working_set:
+            summary["peak_working_set_bytes"] = transcript.peak_working_set_bytes
+        print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
+        return 0
     finally:
         await recorder.close()
 
 
 if __name__ == "__main__":
-    asyncio.run(_run())
+    raise SystemExit(asyncio.run(_run()))

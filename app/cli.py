@@ -18,7 +18,7 @@ from app import __version__
 from app.api.security import DevAPIConfig, DevAPIScope, apply_hard_limits
 from app.clients.vts import DPAPITokenStore, read_legacy_plaintext_token
 from app.config import ConfigurationError, Settings, load_settings
-from app.config.user_settings import upgrade_user_settings
+from app.config.user_settings import patch_user_settings, upgrade_user_settings
 from app.diagnostics import DiagnosticExporter, DiagnosticExportError
 from app.legacy_migration import LegacyMigrationError, migrate_legacy_data
 from app.main import create_app
@@ -30,6 +30,11 @@ from app.secret_store import (
     SecretStoreErrorCode,
     llm_api_key_file,
     vts_token_file,
+)
+from app.stt_runtime import (
+    ManagedChineseSttRuntime,
+    SttRuntimeError,
+    managed_stt_settings_patch,
 )
 from app.windows_security import WindowsSecurityError
 
@@ -74,6 +79,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--upgrade-settings",
         action="store_true",
         help="Explicitly upgrade LocalAppData user settings with an atomic backup.",
+    )
+    action.add_argument(
+        "--install-chinese-stt",
+        action="store_true",
+        help=(
+            "Explicitly download and verify the managed local Chinese Whisper runtime. "
+            "It never enables the microphone automatically."
+        ),
     )
     action.add_argument(
         "--migrate-from",
@@ -196,6 +209,51 @@ def _upgrade_local_settings() -> int:
         )
     )
     return 0
+
+
+def _install_chinese_stt() -> int:
+    """Install the selected reviewed profile and persist only non-sensitive paths."""
+
+    try:
+        settings = _load_production_settings_for_secret_action()
+        profile = settings.stt.managed_profile
+        asyncio.run(ManagedChineseSttRuntime(settings.paths, profile=profile).install())
+        patch_user_settings(managed_stt_settings_patch(profile), app_paths=settings.paths)
+    except (
+        ConfigurationError,
+        AppPathError,
+        OSError,
+        WindowsSecurityError,
+        SttRuntimeError,
+    ) as exc:
+        code = exc.code if isinstance(exc, SttRuntimeError) else "stt_install_failed"
+        return _stt_install_error(code)
+    except Exception:
+        # This CLI surface intentionally never turns an internal exception into
+        # a traceback or a local path in output.
+        return _stt_install_error("stt_install_failed")
+    print(
+        json.dumps(
+            {
+                "status": "ok",
+                "reason_code": "stt_runtime_installed",
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
+def _stt_install_error(code: str) -> int:
+    print(
+        json.dumps(
+            {"status": "error", "reason_code": code},
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
+    return 2
 
 
 def _migrate_old_data(source: Path) -> int:
@@ -431,6 +489,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.config is not None or args.env_file is not None:
             parser.error("--upgrade-settings cannot be combined with development overrides")
         return _upgrade_local_settings()
+    if args.install_chinese_stt:
+        if args.config is not None or args.env_file is not None or args.delete_import_source:
+            print(
+                json.dumps(
+                    {"status": "error", "reason_code": "stt_install_options_invalid"},
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
+            )
+            return 2
+        return _install_chinese_stt()
     if args.migrate_from is not None:
         if args.config is not None or args.env_file is not None:
             parser.error("--migrate-from cannot be combined with development overrides")

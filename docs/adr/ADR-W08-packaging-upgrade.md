@@ -33,6 +33,15 @@ wheel 当前能构建但不能在仓库外独立导入；没有 GUI entry、冻�
 
 安装包不得包含角色图片、Live2D、声音模型、参考音频、whisper 模型、真实用户数据或密钥。Qt、ONNX、RapidOCR、PortAudio、whisper.cpp 和安装器依赖必须记录版本、来源、hash、许可证和目标架构。私人范围变化为公开分发时必须引入独立许可证/法律审查。
 
+### W18 受管 STT 的后安装资产边界（2026-07-23，`224e06f` code head 已核验）
+
+`whisper.cpp` v1.9.1 runtime 和 `ggml-base-q5_1.bin` 不是 wheel、onedir 或安装器输入。它们只可由当前 Windows
+用户在安装包外显式确认下载到 LocalAppData；固定 URL、大小、SHA-256 和 MIT 来源记录在
+[W18 runtime 决策](../decisions/w18_managed_chinese_stt_runtime.md)。不提供静默下载、自动更新或用户 URL/hash 覆盖。
+
+wheel 检查把 `.bin`、`.ggml`、`.gguf`、`.exe`、`.dll` 和 `.zip` STT 资产列为禁止成员。未来 W24/W25 的 SBOM/installer
+工作仍必须单独列出 runtime 选择、来源、许可证与 hash；本节不把运行时下载实现误写成已完成安装器或公开分发审计。
+
 ## 失败和恢复语义
 
 - 安装/升级事务失败时回滚应用文件，保留 DB/config backup 和清晰错误码。

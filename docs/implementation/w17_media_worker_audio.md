@@ -1,5 +1,11 @@
 # W17：MediaWorker 播放、输出设备与 Gate A
 
+> **状态修正（2026-07-22）：** PR [#30](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/30) 已合并到
+> `agent/windows-development-baseline`，merge commit 为
+> [`351da92`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/351da92bfd0232ce03a90a97b75c13ba8ee6a51b)。
+> 下文在合并前记录的 “Draft PR” 和旧分支/head 仅保留历史审计语境；当前目标以
+> [`CURRENT_GOAL.md`](../current/CURRENT_GOAL.md) 为准。
+
 ## 状态与范围
 
 > 状态：初始实现提交 [`3d76b0b`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/3d76b0bc31214dfbd7f8423b287d096182629b8a)

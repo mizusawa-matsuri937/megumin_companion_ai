@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -11,6 +12,13 @@ from app.config import Settings
 from app.config.settings import LoggingConfig, StorageConfig
 from app.config.user_settings import UserSettingsWriteResult
 from app.legacy_migration import LegacyMigrationError, LegacyMigrationResult
+from app.paths import AppPaths
+from app.stt_runtime import (
+    SttRuntimeError,
+    SttRuntimeInstallResult,
+    SttRuntimeState,
+    SttRuntimeStatus,
+)
 from desktop_client import entrypoint as desktop_entrypoint
 
 
@@ -78,6 +86,117 @@ def test_check_config_reports_safe_error(
     assert "configuration_error" in output
     assert "missing.yaml" in output
     assert "private-user-name" not in output
+
+
+def test_explicit_chinese_stt_install_uses_shared_installer_without_enabling_voice(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    settings = Settings()
+    settings._paths = AppPaths(root=tmp_path / "AppData" / "MeguminCompanion")
+    patches: list[dict[str, object]] = []
+
+    class _Installer:
+        async def install(self) -> SttRuntimeInstallResult:
+            return SttRuntimeInstallResult(
+                changed=True,
+                status=SttRuntimeStatus(SttRuntimeState.verified),
+            )
+
+    monkeypatch.setattr(cli, "_load_production_settings_for_secret_action", lambda: settings)
+    monkeypatch.setattr(
+        cli,
+        "ManagedChineseSttRuntime",
+        lambda _paths, *, profile: _Installer(),
+    )
+    monkeypatch.setattr(
+        cli,
+        "patch_user_settings",
+        lambda patch, *, app_paths: patches.append(dict(patch)),
+    )
+
+    assert cli.main(["--install-chinese-stt"]) == 0
+
+    output = json.loads(capsys.readouterr().out)
+    assert output == {"reason_code": "stt_runtime_installed", "status": "ok"}
+    assert patches == [
+        {
+            "stt": {
+                "managed_profile": "whispercpp_base_q5_1",
+                "provider": "whisper_cpp",
+                "executable": "stt/whispercpp/v1.9.1/bin/whisper-cli.exe",
+                "model_path": "stt/whispercpp/v1.9.1/model/ggml-base-q5_1.bin",
+                "language": "zh",
+            }
+        }
+    ]
+
+
+def test_chinese_stt_install_rejects_development_overrides_with_safe_result(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert cli.main(["--install-chinese-stt", "--config", "private-config.yaml"]) == 2
+    output = capsys.readouterr().out
+    assert json.loads(output) == {
+        "reason_code": "stt_install_options_invalid",
+        "status": "error",
+    }
+    assert "private-config" not in output
+
+
+def test_chinese_stt_install_failure_output_contains_only_status_and_reason_code(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    settings = Settings()
+    settings._paths = AppPaths(root=tmp_path / "AppData" / "MeguminCompanion")
+
+    class _Installer:
+        async def install(self) -> SttRuntimeInstallResult:
+            raise SttRuntimeError("stt_runtime_integrity_failed")
+
+    monkeypatch.setattr(cli, "_load_production_settings_for_secret_action", lambda: settings)
+    monkeypatch.setattr(
+        cli,
+        "ManagedChineseSttRuntime",
+        lambda _paths, *, profile: _Installer(),
+    )
+
+    assert cli.main(["--install-chinese-stt"]) == 2
+    assert json.loads(capsys.readouterr().out) == {
+        "reason_code": "stt_runtime_integrity_failed",
+        "status": "error",
+    }
+
+
+def test_chinese_stt_install_unexpected_failure_does_not_expose_local_detail(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    settings = Settings()
+    settings._paths = AppPaths(root=tmp_path / "AppData" / "MeguminCompanion")
+
+    class _Installer:
+        async def install(self) -> SttRuntimeInstallResult:
+            raise RuntimeError(r"C:\\private-user\\stt-install-failure")
+
+    monkeypatch.setattr(cli, "_load_production_settings_for_secret_action", lambda: settings)
+    monkeypatch.setattr(
+        cli,
+        "ManagedChineseSttRuntime",
+        lambda _paths, *, profile: _Installer(),
+    )
+
+    assert cli.main(["--install-chinese-stt"]) == 2
+    output = capsys.readouterr().out
+    assert json.loads(output) == {
+        "reason_code": "stt_install_failed",
+        "status": "error",
+    }
+    assert "private-user" not in output
 
 
 def test_explicit_dev_api_constructs_one_secured_app_and_passes_loopback_overrides(

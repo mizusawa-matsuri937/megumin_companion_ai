@@ -15,6 +15,7 @@ from app.schemas import (
     UserMessage,
 )
 from pydantic import ValidationError
+from PySide6.QtCore import QEvent
 from PySide6.QtGui import QCloseEvent, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QHBoxLayout,
@@ -46,6 +47,12 @@ from desktop_client.ui.contracts import (
     ManagementRefreshCommand,
     TurnCancelCommand,
     UserMessageCommand,
+    VoiceCancelCommand,
+    VoiceInputState,
+    VoiceStartCommand,
+    VoiceStateEvent,
+    VoiceStopCommand,
+    VoiceUserMessageEvent,
     is_stable_reason_code,
 )
 from desktop_client.ui.management import ManagementViewModel
@@ -68,6 +75,7 @@ class DesktopViewModel:
     def __init__(self) -> None:
         self.connection_state = BackendState.stopped
         self.capabilities = BackendCapabilities()
+        self.voice_state = VoiceInputState.disabled
         self.active_turn_id: str | None = None
         self.last_error_code: str | None = None
         self.last_seq = 0
@@ -101,6 +109,14 @@ class DesktopViewModel:
             return
         if isinstance(event, CommandRejectedEvent):
             self.last_error_code = event.reason_code
+            return
+        if isinstance(event, VoiceStateEvent):
+            self.voice_state = event.state
+            if event.reason_code is not None:
+                self.last_error_code = event.reason_code
+            return
+        if isinstance(event, VoiceUserMessageEvent):
+            self.add_user_message(event.message)
             return
         if isinstance(event, BridgeOverflowEvent):
             self.connection_state = BackendState.degraded
@@ -281,6 +297,7 @@ class DesktopViewModel:
         self._next_snapshot_chunk = 0
         self._turn_states.clear()
         self._shown_user_message_ids.clear()
+        self.voice_state = VoiceInputState.disabled
 
     def _clear_visible_bodies(self) -> None:
         for message in self._messages:
@@ -315,6 +332,7 @@ class MainWindow(QMainWindow):
         self._safe_mode = False
         self._lifecycle_notice: str | None = None
         self._settings_dialog: SettingsDialog | None = None
+        self._voice_press_active = False
         self._appearance = appearance or DefaultChatAppearance()
         self.setWindowTitle("Megumin Companion")
         self.resize(720, 560)
@@ -339,11 +357,15 @@ class MainWindow(QMainWindow):
         self.stop_button = QPushButton("停止", central)
         self.stop_button.setObjectName("chatStopButton")
         self.stop_button.setAccessibleName("停止当前回复")
+        self.voice_button = QPushButton("按住说话", central)
+        self.voice_button.setObjectName("chatVoiceButton")
+        self.voice_button.setAccessibleName("按住说话；松开后进行本地转写")
         self.settings_button = QPushButton("设置与隐私", central)
         self.settings_button.setObjectName("chatSettingsButton")
         self.settings_button.setAccessibleName("设置与隐私")
         button_row.addStretch(1)
         button_row.addWidget(self.settings_button)
+        button_row.addWidget(self.voice_button)
         button_row.addWidget(self.stop_button)
         button_row.addWidget(self.send_button)
         status_row = QHBoxLayout()
@@ -375,6 +397,7 @@ class MainWindow(QMainWindow):
                 editor=self.editor,
                 send_button=self.send_button,
                 stop_button=self.stop_button,
+                voice_button=self.voice_button,
                 settings_button=self.settings_button,
                 connection_status=self.connection_status,
                 feature_status=self.feature_status,
@@ -382,7 +405,8 @@ class MainWindow(QMainWindow):
             )
         )
         QWidget.setTabOrder(self.message_view, self.editor)
-        QWidget.setTabOrder(self.editor, self.stop_button)
+        QWidget.setTabOrder(self.editor, self.voice_button)
+        QWidget.setTabOrder(self.voice_button, self.stop_button)
         QWidget.setTabOrder(self.stop_button, self.send_button)
         QWidget.setTabOrder(self.send_button, self.settings_button)
 
@@ -390,6 +414,8 @@ class MainWindow(QMainWindow):
         self._send_shortcut.activated.connect(self._submit_message)
         self.send_button.clicked.connect(self._submit_message)
         self.stop_button.clicked.connect(self._stop_turn)
+        self.voice_button.pressed.connect(self._start_voice)
+        self.voice_button.released.connect(self._stop_voice)
         self.settings_button.clicked.connect(self._open_settings)
         self._bridge.events_available.connect(self._drain_events)
         self._bridge.command_rejected.connect(self._show_error)
@@ -427,6 +453,41 @@ class MainWindow(QMainWindow):
 
     def _stop_turn(self) -> None:
         self.stop_current_turn()
+
+    def _start_voice(self) -> None:
+        if (
+            self._closing
+            or self.model.connection_state is not BackendState.ready
+            or not self.model.capabilities.voice_input
+            or self.model.voice_state is VoiceInputState.transcribing
+        ):
+            return
+        if self._bridge.submit_command(VoiceStartCommand()):
+            # Bridge commands are FIFO. Keep this local latch until the
+            # release command is queued, even if the backend has not yet
+            # published its recording state.
+            self._voice_press_active = True
+            self._sync_view()
+
+    def _stop_voice(self) -> None:
+        if not self._voice_press_active:
+            return
+        self._voice_press_active = False
+        if not self._closing:
+            self._bridge.submit_command(VoiceStopCommand())
+        self._sync_view()
+
+    def _cancel_voice(self, reason_code: str) -> None:
+        if not self._voice_press_active and self.model.voice_state not in {
+            VoiceInputState.recording,
+            VoiceInputState.timed_out,
+            VoiceInputState.transcribing,
+        }:
+            return
+        self._voice_press_active = False
+        if not self._closing:
+            self._bridge.submit_command(VoiceCancelCommand(reason_code=reason_code))
+        self._sync_view()
 
     @property
     def can_stop_current_turn(self) -> bool:
@@ -474,6 +535,7 @@ class MainWindow(QMainWindow):
 
         if self._closing:
             return
+        self._cancel_voice("voice_shutdown")
         self._closing = True
         self.model.connection_state = BackendState.stopping
         self._sync_view()
@@ -502,7 +564,7 @@ class MainWindow(QMainWindow):
                 self._bridge.submit_command,
                 self,
             )
-            self._settings_dialog = dialog
+        self._settings_dialog = dialog
         dialog.show()
         dialog.raise_()
         dialog.activateWindow()
@@ -515,6 +577,13 @@ class MainWindow(QMainWindow):
         if isinstance(event, CommandRejectedEvent):
             self._pending_command_ids.discard(event.command_id)
             return
+        if isinstance(event, VoiceStateEvent) and event.state in {
+            VoiceInputState.idle,
+            VoiceInputState.disabled,
+            VoiceInputState.failed,
+            VoiceInputState.timed_out,
+        }:
+            self._voice_press_active = False
         if not isinstance(event, PipelineEvent) or event.type not in {
             "turn.accepted",
             "turn.snapshot",
@@ -559,6 +628,27 @@ class MainWindow(QMainWindow):
         self.feature_status.setAccessibleName(feature_status)
         self.send_button.setEnabled(chat_ready)
         self.stop_button.setEnabled(self.can_stop_current_turn)
+        voice_ready = (
+            self.model.connection_state is BackendState.ready
+            and self.model.capabilities.voice_input
+            and not self._closing
+        )
+        voice_active = (
+            self._voice_press_active or self.model.voice_state is VoiceInputState.recording
+        )
+        if self.model.voice_state is VoiceInputState.transcribing:
+            voice_label = "转写中"
+        elif voice_active:
+            voice_label = "松开以停止"
+        elif voice_ready:
+            voice_label = "按住说话"
+        else:
+            voice_label = "本地语音不可用"
+        self.voice_button.setText(voice_label)
+        self.voice_button.setAccessibleName(f"{voice_label}；默认不持续监听")
+        self.voice_button.setEnabled(
+            voice_ready and self.model.voice_state is not VoiceInputState.transcribing
+        )
         self.settings_button.setEnabled(
             not self._closing and self.model.connection_state is BackendState.ready
         )
@@ -590,6 +680,14 @@ class MainWindow(QMainWindow):
             self.begin_lifecycle_shutdown()
             self._backend_host.request_stop()
 
+    def changeEvent(self, event: QEvent) -> None:  # noqa: N802 - Qt API name
+        super().changeEvent(event)
+        if event.type() is QEvent.Type.ActivationChange and not self.isActiveWindow():
+            # The visible-button PTT path has no global-hotkey listener. Losing
+            # application focus therefore fails closed rather than leaving the
+            # microphone open if a release is lost during focus/session change.
+            self._cancel_voice("voice_focus_lost")
+
     def _backend_stopped(self) -> None:
         if self._closing and self._close_request_handler is None:
             self._allow_close = True
@@ -609,6 +707,7 @@ class MainWindow(QMainWindow):
         self._transcript_surface.clear_sensitive()
         self._pending_message = None
         self._pending_command_ids.clear()
+        self._voice_press_active = False
         self.model.clear_sensitive()
         self.management_model.clear_sensitive()
         self._bridge.clear_sensitive()

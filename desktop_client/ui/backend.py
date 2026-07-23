@@ -19,6 +19,8 @@ from app.schemas import InputMode, PipelineEvent, SessionReset, SessionSnapshotC
 from fastapi import FastAPI
 from PySide6.QtCore import QObject, QThread, QTimer, Signal
 
+from desktop_client.inputs import PushToTalkRecorder, build_voice_input
+from desktop_client.inputs.voice_input import VoiceInputError
 from desktop_client.ui.bridge import ApplicationBridge
 from desktop_client.ui.contracts import (
     BackendCapabilities,
@@ -28,6 +30,12 @@ from desktop_client.ui.contracts import (
     CommandRejectedEvent,
     TurnCancelCommand,
     UserMessageCommand,
+    VoiceCancelCommand,
+    VoiceInputState,
+    VoiceStartCommand,
+    VoiceStateEvent,
+    VoiceStopCommand,
+    VoiceUserMessageEvent,
     is_stable_reason_code,
 )
 from desktop_client.ui.management import DesktopManagementRuntime
@@ -120,6 +128,7 @@ class TurnServiceBackendRuntime:
         cursor: DesktopSessionCursor,
         *,
         text_chat_available: bool,
+        voice_input: PushToTalkRecorder | None = None,
         management: DesktopManagementRuntime | None = None,
         client_id: str = DESKTOP_CLIENT_ID,
     ) -> None:
@@ -128,8 +137,11 @@ class TurnServiceBackendRuntime:
         self._service = service
         self._cursor = cursor
         self._text_chat_available = text_chat_available
+        self._voice_input = voice_input
         self._management = management
         self._client_id = client_id
+        self._voice_stop_task: asyncio.Task[None] | None = None
+        self._voice_stop_cancel_reason: str | None = None
 
     async def run(self, context: BackendContext) -> None:
         subscription = await self._subscribe(force_snapshot=False)
@@ -137,10 +149,7 @@ class TurnServiceBackendRuntime:
             self._serve_commands(context),
             name=f"desktop-commands-{context.generation}",
         )
-        capabilities = BackendCapabilities(
-            text_chat=self._text_chat_available,
-            turn_cancel=self._text_chat_available,
-        )
+        capabilities = self._capabilities()
         context.bridge.publish_event(
             BackendStateEvent(
                 generation=context.generation,
@@ -150,6 +159,7 @@ class TurnServiceBackendRuntime:
         )
         if self._management is not None:
             await self._management.publish_initial(context.bridge, capabilities=capabilities)
+        self._publish_voice_state(context, command_id=None)
         try:
             while not context.stop_event.is_set():
                 if context.bridge.take_snapshot_request():
@@ -180,6 +190,14 @@ class TurnServiceBackendRuntime:
             self._service.unsubscribe(subscription)
             command_task.cancel()
             await asyncio.gather(command_task, return_exceptions=True)
+            voice_stop_task = self._voice_stop_task
+            if voice_stop_task is not None and not voice_stop_task.done():
+                voice_stop_task.cancel()
+                await asyncio.gather(voice_stop_task, return_exceptions=True)
+            voice_input = self._voice_input
+            if voice_input is not None:
+                with suppress(Exception):
+                    await voice_input.cancel()
 
     async def _subscribe(self, *, force_snapshot: bool) -> EventSubscription:
         return await self._service.subscribe(
@@ -199,13 +217,19 @@ class TurnServiceBackendRuntime:
             await management.dispatch(
                 context.bridge,
                 command,
-                capabilities=BackendCapabilities(
-                    text_chat=self._text_chat_available,
-                    turn_cancel=self._text_chat_available,
-                ),
+                capabilities=self._capabilities(),
             )
             return
-        if not isinstance(command, (UserMessageCommand, TurnCancelCommand)):
+        if not isinstance(
+            command,
+            (
+                UserMessageCommand,
+                TurnCancelCommand,
+                VoiceStartCommand,
+                VoiceStopCommand,
+                VoiceCancelCommand,
+            ),
+        ):
             self._reject(context, command.command_id, "feature_not_available")
             return
         if command.session_id != self._cursor.session_id:
@@ -215,6 +239,15 @@ class TurnServiceBackendRuntime:
             self._reject(context, command.command_id, "feature_not_available")
             return
         try:
+            if isinstance(command, VoiceStartCommand):
+                await self._voice_start(context, command)
+                return
+            if isinstance(command, VoiceStopCommand):
+                await self._voice_stop(context, command)
+                return
+            if isinstance(command, VoiceCancelCommand):
+                await self._voice_cancel(context, command)
+                return
             if isinstance(command, UserMessageCommand):
                 if command.payload.input_mode is not InputMode.text:
                     self._reject(context, command.command_id, "unsupported_input_mode")
@@ -230,7 +263,7 @@ class TurnServiceBackendRuntime:
                 if state is None:
                     self._reject(context, command.command_id, "turn_not_found")
                 return
-        except (IdempotencyError, TurnAccessError) as exc:
+        except (IdempotencyError, TurnAccessError, VoiceInputError) as exc:
             reason_code = str(exc)
             self._reject(
                 context,
@@ -239,6 +272,161 @@ class TurnServiceBackendRuntime:
             )
         except Exception:
             self._reject(context, command.command_id, "command_failed")
+
+    def _capabilities(self) -> BackendCapabilities:
+        return BackendCapabilities(
+            text_chat=self._text_chat_available,
+            turn_cancel=self._text_chat_available,
+            voice_input=self._text_chat_available and self._voice_input is not None,
+        )
+
+    async def _voice_start(self, context: BackendContext, command: VoiceStartCommand) -> None:
+        voice_input = self._voice_input
+        if voice_input is None:
+            self._reject(context, command.command_id, "feature_not_available")
+            return
+        try:
+            await voice_input.start()
+        except VoiceInputError as exc:
+            self._publish_voice_state(
+                context,
+                command_id=command.command_id,
+                failed_code=exc.code,
+            )
+            return
+        self._publish_voice_state(context, command_id=command.command_id)
+
+    async def _voice_stop(self, context: BackendContext, command: VoiceStopCommand) -> None:
+        voice_input = self._voice_input
+        if voice_input is None:
+            self._reject(context, command.command_id, "feature_not_available")
+            return
+        current = self._voice_stop_task
+        if current is not None and not current.done():
+            self._publish_voice_state(
+                context,
+                command_id=command.command_id,
+                failed_code="voice_invalid_state",
+            )
+            return
+        context.bridge.publish_event(
+            VoiceStateEvent(
+                state=VoiceInputState.transcribing,
+                command_id=command.command_id,
+            )
+        )
+        task = asyncio.create_task(
+            self._complete_voice_stop(context, command, voice_input),
+            name=f"desktop-voice-stop-{command.command_id}",
+        )
+        self._voice_stop_task = task
+
+    async def _complete_voice_stop(
+        self,
+        context: BackendContext,
+        command: VoiceStopCommand,
+        voice_input: PushToTalkRecorder,
+    ) -> None:
+        try:
+            message = await voice_input.stop(
+                session_id=self._cursor.session_id,
+                user_id="local_user",
+            )
+            await self._service.accept(message, client_id=self._client_id)
+            context.bridge.publish_event(
+                VoiceUserMessageEvent(message=message, command_id=command.command_id)
+            )
+        except asyncio.CancelledError:
+            raise
+        except VoiceInputError as exc:
+            if self._voice_stop_cancel_reason is not None:
+                return
+            self._publish_voice_state(
+                context,
+                command_id=command.command_id,
+                failed_code=exc.code,
+            )
+            return
+        except (IdempotencyError, TurnAccessError) as exc:
+            reason_code = str(exc)
+            self._reject(
+                context,
+                command.command_id,
+                reason_code if is_stable_reason_code(reason_code) else "command_failed",
+            )
+            self._publish_voice_state(
+                context,
+                command_id=command.command_id,
+                failed_code="voice_turn_failed",
+            )
+        except Exception:
+            self._reject(context, command.command_id, "command_failed")
+            self._publish_voice_state(
+                context,
+                command_id=command.command_id,
+                failed_code="voice_turn_failed",
+            )
+        else:
+            self._publish_voice_state(context, command_id=command.command_id)
+        finally:
+            if self._voice_stop_task is asyncio.current_task():
+                self._voice_stop_task = None
+                self._voice_stop_cancel_reason = None
+
+    async def _voice_cancel(self, context: BackendContext, command: VoiceCancelCommand) -> None:
+        voice_input = self._voice_input
+        if voice_input is None:
+            self._reject(context, command.command_id, "feature_not_available")
+            return
+        if self._voice_stop_task is not None and not self._voice_stop_task.done():
+            self._voice_stop_cancel_reason = command.reason_code
+        try:
+            await voice_input.cancel()
+        except VoiceInputError as exc:
+            self._publish_voice_state(
+                context,
+                command_id=command.command_id,
+                failed_code=exc.code,
+            )
+            return
+        self._publish_voice_state(
+            context,
+            command_id=command.command_id,
+            reason_code=command.reason_code,
+        )
+
+    def _publish_voice_state(
+        self,
+        context: BackendContext,
+        *,
+        command_id: str | None,
+        reason_code: str | None = None,
+        failed_code: str | None = None,
+    ) -> None:
+        if failed_code is not None:
+            context.bridge.publish_event(
+                VoiceStateEvent(
+                    state=VoiceInputState.failed,
+                    reason_code=(
+                        failed_code
+                        if is_stable_reason_code(failed_code)
+                        else "voice_capture_failed"
+                    ),
+                    command_id=command_id,
+                )
+            )
+            return
+        voice_input = self._voice_input
+        if voice_input is None:
+            state = VoiceInputState.disabled
+        else:
+            try:
+                state = VoiceInputState(voice_input.state.value)
+            except ValueError:
+                state = VoiceInputState.disabled
+        context.bridge.publish_event(
+            VoiceStateEvent(state=state, reason_code=reason_code, command_id=command_id)
+        )
 
     def _reject(self, context: BackendContext, command_id: str, reason_code: str) -> None:
         context.bridge.publish_event(
@@ -278,17 +466,33 @@ class DesktopChatRuntime:
                 if not isinstance(service, TurnService) or not isinstance(settings, Settings):
                     raise RuntimeError("desktop_runtime_unavailable")
                 memory_runtime = getattr(application.state, "memory_runtime", None)
-                runtime = TurnServiceBackendRuntime(
-                    service,
-                    self._cursor,
-                    text_chat_available=_text_chat_available(settings),
-                    management=DesktopManagementRuntime(
+                temp_registry = getattr(application.state, "temp_asset_registry", None)
+                try:
+                    voice_input = build_voice_input(
                         settings,
-                        memory_runtime if isinstance(memory_runtime, MemoryRuntime) else None,
-                    ),
-                    client_id=self._client_id,
-                )
-                await runtime.run(context)
+                        temp_registry=temp_registry,
+                    )
+                except VoiceInputError:
+                    # Invalid/unsupported local STT configuration must disable
+                    # only PTT; text chat stays usable and no device is opened.
+                    voice_input = None
+                try:
+                    runtime = TurnServiceBackendRuntime(
+                        service,
+                        self._cursor,
+                        text_chat_available=_text_chat_available(settings),
+                        voice_input=voice_input,
+                        management=DesktopManagementRuntime(
+                            settings,
+                            memory_runtime if isinstance(memory_runtime, MemoryRuntime) else None,
+                        ),
+                        client_id=self._client_id,
+                    )
+                    await runtime.run(context)
+                finally:
+                    if voice_input is not None:
+                        with suppress(Exception):
+                            await voice_input.close()
         except asyncio.CancelledError:
             raise
         except Exception:

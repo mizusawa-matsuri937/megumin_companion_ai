@@ -8,6 +8,7 @@ from typing import Any
 
 import app.media_entrypoint as media_entrypoint
 import pytest
+from app.media.stt import WhisperCppConfig
 from app.workers.access import ResourceAccessError
 
 
@@ -74,12 +75,53 @@ def test_media_entrypoint_builds_private_runtime_from_validated_options(
 
 
 def test_media_entrypoint_rejects_duplicate_or_invalid_authority(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     root = Path.cwd()
+    executable = tmp_path / "whisper.exe"
+    model = tmp_path / "model.bin"
     assert (
         asyncio.run(
             media_entrypoint.run(["--root", f"audio_temp={root}", "--root", f"audio_temp={root}"])
+        )
+        == 2
+    )
+    outside_root = tmp_path / "outside"
+    outside_root.mkdir()
+    assert (
+        asyncio.run(
+            media_entrypoint.run(
+                [
+                    "--root",
+                    f"stt_temp={root}",
+                    "--stt-executable",
+                    str(executable),
+                    "--stt-model",
+                    str(model),
+                    "--stt-temporary-root",
+                    str(outside_root),
+                ]
+            )
+        )
+        == 2
+    )
+    assert (
+        asyncio.run(
+            media_entrypoint.run(
+                [
+                    "--root",
+                    f"stt_temp={root}",
+                    "--stt-executable",
+                    str(executable),
+                    "--stt-model",
+                    str(model),
+                    "--stt-temporary-root",
+                    str(root),
+                    "--stt-language",
+                    "en",
+                ]
+            )
         )
         == 2
     )
@@ -98,3 +140,101 @@ def test_media_entrypoint_rejects_duplicate_or_invalid_authority(
 
     monkeypatch.setattr(media_entrypoint, "ApprovedResourcePolicy", FailingPolicy)
     assert asyncio.run(media_entrypoint.run(["--root", f"audio_temp={root}"])) == 2
+
+
+def test_media_entrypoint_passes_only_complete_stt_configuration_to_media_worker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict[str, Any] = {}
+
+    class FakePolicy:
+        def __init__(self, **_options: object) -> None:
+            return None
+
+    class FakeHandler:
+        def __init__(self, **options: object) -> None:
+            captured.update(options)
+
+    class FakeRuntime:
+        def __init__(self, **_options: object) -> None:
+            return None
+
+        async def run(self) -> int:
+            return 23
+
+    root = tmp_path / "私有临时根"
+    root.mkdir()
+    executable = tmp_path / "中文 whisper.exe"
+    model = tmp_path / "模型.bin"
+    monkeypatch.setattr(media_entrypoint, "ApprovedResourcePolicy", FakePolicy)
+    monkeypatch.setattr(media_entrypoint, "MediaWorkerHandler", FakeHandler)
+    monkeypatch.setattr(media_entrypoint, "HelperRuntime", FakeRuntime)
+
+    assert (
+        media_entrypoint.main(
+            [
+                "--root",
+                f"stt_temp={root}",
+                "--stt-executable",
+                str(executable),
+                "--stt-model",
+                str(model),
+                "--stt-temporary-root",
+                str(root),
+                "--stt-executable-prefix=--portable",
+                "--stt-language",
+                "zh",
+                "--stt-threads",
+                "2",
+                "--stt-maximum-recording-seconds",
+                "120",
+                "--stt-transcription-timeout-seconds",
+                "30",
+                "--input-device-name",
+                "Synthetic microphone",
+            ]
+        )
+        == 23
+    )
+    config = captured["stt_config"]
+    assert isinstance(config, WhisperCppConfig)
+    assert config.executable == executable
+    assert config.model_path == model
+    assert config.executable_prefix_args == ("--portable",)
+    assert captured["recording_root"] == root
+    assert captured["input_device"] == "Synthetic microphone"
+    assert captured["maximum_recording_seconds"] == 120.0
+    assert captured["transcription_timeout_seconds"] == 30.0
+
+    assert (
+        asyncio.run(
+            media_entrypoint.run(
+                [
+                    "--root",
+                    f"stt_temp={root}",
+                    "--stt-executable",
+                    str(executable),
+                ]
+            )
+        )
+        == 2
+    )
+    assert (
+        asyncio.run(
+            media_entrypoint.run(
+                [
+                    "--root",
+                    f"stt_temp={root}",
+                    "--stt-executable",
+                    str(executable),
+                    "--stt-model",
+                    str(model),
+                    "--stt-temporary-root",
+                    str(root),
+                    "--input-device-index",
+                    "-1",
+                ]
+            )
+        )
+        == 2
+    )

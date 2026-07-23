@@ -32,6 +32,12 @@ from app.provider_transport import (
     validate_endpoint,
     validate_proxy_url,
 )
+from app.stt_runtime import (
+    MANAGED_STT_EXECUTABLE_RELATIVE,
+    MANAGED_STT_MODEL_RELATIVE,
+    MANAGED_STT_PROFILE,
+    managed_stt_manifest,
+)
 
 DEFAULT_CONFIG_PACKAGE = "app.resources"
 DEFAULT_CONFIG_NAME = "default_config.yaml"
@@ -258,24 +264,71 @@ class ProactiveConfig(StrictModel):
 class STTConfig(StrictModel):
     enabled: bool = False
     provider: str = "whisper_cpp"
-    executable: Path = Path("vendor/whisper.cpp/build/bin/whisper-cli")
-    model_path: Path = Path("data/models/whisper/ggml-base.bin")
-    language: str = "auto"
+    managed_profile: str = MANAGED_STT_PROFILE
+    executable: Path = MANAGED_STT_EXECUTABLE_RELATIVE
+    model_path: Path = MANAGED_STT_MODEL_RELATIVE
+    language: str = "zh"
     threads: int | None = Field(default=None, ge=1)
     temporary_directory: Path = Path("data/private/stt")
     terminate_grace_seconds: float = Field(default=0.5, gt=0.0, le=30.0)
     max_audio_bytes: int = Field(default=64 * 1024 * 1024, ge=44)
     max_output_bytes: int = Field(default=2 * 1024 * 1024, ge=1)
-    max_recording_seconds: float = Field(default=120.0, gt=0.0, le=3_600.0)
-    transcription_timeout_seconds: float = Field(default=60.0, gt=0.0, le=3_600.0)
+    # W18 stores a complete PTT capture in a preallocated private worker ring;
+    # this hard 120-second ceiling is therefore both a privacy and memory bound.
+    max_recording_seconds: float = Field(default=120.0, gt=0.0, le=120.0)
+    transcription_timeout_seconds: float = Field(default=60.0, gt=0.0, le=120.0)
     device: int | str | None = None
     blocksize: int = Field(default=0, ge=0)
 
+    @field_validator("managed_profile", mode="before")
+    @classmethod
+    def validate_managed_profile(cls, value: object) -> str:
+        """Allow only a reviewed, built-in Whisper profile id."""
+
+        if not isinstance(value, str):
+            raise ValueError("受管 Whisper 配置档必须是已登记的名称")
+        try:
+            return managed_stt_manifest(value).profile
+        except ValueError as exc:
+            raise ValueError("受管 Whisper 配置档未登记") from exc
+
+    @field_validator("device", mode="before")
+    @classmethod
+    def validate_device(cls, value: object) -> int | str | None:
+        """Keep the helper command payload bounded and free of NUL values."""
+        if value is None:
+            return None
+        if isinstance(value, bool):
+            raise ValueError("STT device 必须是非负索引或非空名称")
+        if isinstance(value, int):
+            if value < 0:
+                raise ValueError("STT device 索引必须为非负数")
+            return value
+        if isinstance(value, str):
+            if not value.strip() or "\x00" in value or len(value) > 256:
+                raise ValueError("STT device 名称无效")
+            return value
+        raise ValueError("STT device 必须是非负索引或非空名称")
+
+    @field_validator("language", mode="before")
+    @classmethod
+    def normalize_chinese_language(cls, value: object) -> str:
+        """Keep the product surface Chinese-only while accepting legacy ``auto``."""
+
+        if value is None:
+            return "zh"
+        if not isinstance(value, str):
+            raise ValueError("当前仅支持中文 STT（language=zh）")
+        normalized = value.strip().casefold().replace("_", "-")
+        if normalized in {"auto", "zh", "zh-cn", "zh-hans"}:
+            return "zh"
+        raise ValueError("当前仅支持中文 STT（language=zh）")
+
     @model_validator(mode="after")
     def validate_runtime_names(self) -> STTConfig:
-        if not self.provider.strip():
+        if not self.provider.strip() or "\x00" in self.provider or len(self.provider) > 64:
             raise ValueError("STT provider 不能为空")
-        if not self.language.strip():
+        if not self.language.strip() or "\x00" in self.language or len(self.language) > 64:
             raise ValueError("STT language 不能为空")
         return self
 
@@ -457,6 +510,7 @@ ENV_OVERRIDES: dict[str, tuple[str, str]] = {
         "candidate_analysis_enabled",
     ),
     "MEGUMIN_STT_ENABLED": ("stt", "enabled"),
+    "MEGUMIN_STT_MANAGED_PROFILE": ("stt", "managed_profile"),
     "MEGUMIN_STT_EXECUTABLE": ("stt", "executable"),
     "MEGUMIN_STT_MODEL_PATH": ("stt", "model_path"),
 }
@@ -549,6 +603,12 @@ def _upgrade_config_data(data: Mapping[str, Any], *, source: str) -> tuple[dict[
         upgraded["schema_version"] = 1
         raw_version = 1
         changed = True
+    stt = upgraded.get("stt")
+    if isinstance(stt, dict):
+        legacy_language = stt.get("language")
+        if isinstance(legacy_language, str) and legacy_language.strip().casefold() == "auto":
+            stt["language"] = "zh"
+            changed = True
     if raw_version != CURRENT_SETTINGS_SCHEMA_VERSION:
         raise ConfigurationError(f"{source}无法升级到当前设置 schema。")
     return upgraded, changed

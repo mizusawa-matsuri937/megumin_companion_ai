@@ -45,8 +45,10 @@ class _SyntheticHandler:
         job_kind: str,
         resources: tuple[AuthorizedResource, ...],
         cancelled: asyncio.Event,
+        *,
+        job_id: str,
     ) -> dict[str, Any]:
-        del resources
+        del resources, job_id
         if job_kind == "complete":
             return {"status": "ok"}
         if job_kind == "console.check":
