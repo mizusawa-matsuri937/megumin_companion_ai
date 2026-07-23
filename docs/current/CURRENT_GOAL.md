@@ -102,7 +102,10 @@
   `uv run pytest` → **1241 passed, 3 skipped in 175.67s**，coverage **90.09%**。`uv run ruff check .`、
   `uv run ruff format --check .`（242 files）、`uv run mypy`（235 source）、`uv lock --check`、`git diff --check`、
   docs 相对链接检查，以及临时 wheel 的隔离安装 smoke 均通过；wheel/evidence 已删除，且未加入或下载任何更大模型。
-  这是尚未提交 head 的本地证据，不能由历史 CI 替代，后续提交仍须单独核验。
+  功能提交 [`7ca0067`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/7ca0067d42432a4ce8d68cd670309b6f3c08e7d4)
+  的 [PR workflow 30012917744](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/30012917744) 与
+  [push workflow 30012917469](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/30012917469) 均在
+  macOS/Windows `quality` / `installed-wheel` 通过；任何后续文档或代码 head 仍须单独核验，Draft PR 仍未合并。
 
 ## 已知安全与隐私状态
 

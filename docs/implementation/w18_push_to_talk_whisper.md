@@ -123,7 +123,11 @@ hard-termination 判定之间，watcher 可能已经完成但其结果尚未被�
   `uv run mypy`（235 source）、`uv lock --check`、`git diff --check` 和 docs 相对 Markdown 链接检查均通过。
 - `uv build --wheel --out-dir dist/w18-profile-interface-check` 与 `tools/w05_ci_smoke.py` 的隔离安装 smoke 通过：导入来自
   wheel 而非 source tree，STT model/native binary/audio/archive denylist 继续生效。临时 wheel 与 provenance evidence 已删除。
-  这些是**尚未提交 head** 的本地结果，不能把历史 exact-head CI 当作本接口的 CI 证据。
+- 功能提交 [`7ca0067`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/7ca0067d42432a4ce8d68cd670309b6f3c08e7d4)
+  的 [PR workflow 30012917744](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/30012917744) 与
+  [push workflow 30012917469](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/30012917469) 均在
+  macOS/Windows `quality` 与 `installed-wheel` 成功；此证据仅适用于该功能 code head。之后的文档或代码 head 仍须各自
+  通过 CI，且 Draft PR 不因此获得合并授权。
 
 ### `224e06f` exact-head CI（2026-07-23）
 
