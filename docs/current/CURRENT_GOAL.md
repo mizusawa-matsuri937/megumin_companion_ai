@@ -45,6 +45,16 @@
 > 低于 512 MiB 上限。没有保存录音、转写正文或临时状态日志。该输出证明确实完成离线转写并获得了真实采集数据；Windows
 > 麦克风权限提示/录音指示器的目视确认仍须由所有者明确反馈，不能由本记录臆测为已通过。终端摘要也不含实际录音时长，
 > 因而不能独立证实录制已满约 30 秒。
+>
+> 随后的诊断工具加固提交 [`63d6684`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/63d668479bf6462a73f90378b1bacd3123562b40)
+> 将 microphone-mode `VoiceCaptureError` / `EOFError` 收敛为有限 JSON reason code，并加入 `stt_empty_recording` 回归测试。
+> 本地完整测试为 **1225 passed, 3 skipped**，coverage **90.03%**；Ruff、格式、mypy、lock、相对 Markdown 链接和临时 wheel
+> 的隔离 smoke 均通过，wheel 未包含模型、原生 binary 或音频。该 SHA 的
+> [push workflow](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/30004642052) 首次通过全部 4 个
+> macOS/Windows checks；[PR workflow](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/30004645550)
+> 首次 Windows quality 仅失败于未改动的 GPT-SoVITS cache fixture（80 ms MockTransport first-byte deadline），同一 SHA 的
+> push Windows quality 已通过，PR 的失败 job 第 2 次重跑也通过。调度敏感是合理推测，不是已证明的永久稳定性；没有为此修改
+> 无关的 TTS product code。
 
 ## 本轮已确认的实现范围
 
@@ -98,8 +108,9 @@
 
 ## 未完成 Gate、范围外与下一步
 
-1. `2b0b858` 已完成最终状态记录的双 workflow exact-head 核验；CI 证据仍只能用于其对应 head，任何后续 head 都须独立完成
-   相同核验。未获授权不合并。
+1. `63d6684` 已完成 exact-head 的 push/PR 双 workflow 核验，macOS/Windows `quality` 与 `installed-wheel` 共 8 项均通过；
+   PR Windows quality 的首次失败及同 SHA 重跑通过已如实记录，不能把重跑结论写作已消除长期不稳定性。CI 证据仍只能用于其
+   对应 head，任何后续 head 都须独立完成相同核验。未获授权不合并。
 2. 真实 PTT 的可自动验证部分已通过：离线转写成功、`zh`、22 segments、`236,609,536` bytes（约 225.7 MiB，≤512 MiB）。
    仍待所有者反馈的是实际录音是否达到约 30 秒，以及 Windows 麦克风权限提示或录音指示器的目视确认；终端摘要不能替代
    这两项真实桌面/设备事实，未获反馈不得把完整 Gate 写成通过。任何超限仍阻止交付并重新选型；不得保存真实录音或转写正文。

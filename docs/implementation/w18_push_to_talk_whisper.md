@@ -19,6 +19,8 @@
 > `exit_code`。本轮已补上 watcher 结果 harvest 和受控回归测试；修复代码的 exact-head CI 已通过，详见下方记录；任何后续
 > head 仍须独立核验。
 > Draft PR [#31](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/31) 未合并，后续新 head 仍须独立核验。
+> 当前诊断工具加固 commit [`63d6684`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/63d668479bf6462a73f90378b1bacd3123562b40)
+> 的 exact-head CI 证据见下方；它不改变受管 runtime、GPT-SoVITS product code 或完整真实设备 Gate 的剩余确认项。
 > 基线为 W17 merge commit [`351da92`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/351da92bfd0232ce03a90a97b75c13ba8ee6a51b)。
 > 本文不把本地绿测、headless Qt 或 fake PortAudio/whisper 结果表述成真实麦克风、锁屏、IME 或全局热键体验。
 
@@ -140,6 +142,22 @@ hard-termination 判定之间，watcher 可能已经完成但其结果尚未被�
 - 此问题不在 W18 diff，未通过放宽 TTS product deadline 或改变断言来掩盖。后续 exact head 仍须独立 CI；真实中文 PTT
   Gate 也仍未执行。
 
+### `63d6684` diagnostics hardening 与 exact-head CI
+
+- `tools/stt_smoke.py` 的 microphone-mode 现在在 stream 已启动后明确提示说话，并将 `VoiceCaptureError` / `EOFError`
+  收敛为有限 JSON `status` / `reason_code` 与非零退出码；新增 `test_stt_smoke.py` 用受控 recorder 验证
+  `stt_empty_recording` 不输出 traceback 或本地路径，且无论错误仍关闭 recorder。
+- 本地验证：`uv run pytest` → **1225 passed, 3 skipped in 180.51s**，coverage **90.03%**；Ruff、格式、mypy、lock、
+  `git diff --check`、相对 Markdown links 和临时 wheel 的 installed-smoke 均通过。wheel 中没有 model、native binary 或音频；
+  验证用的临时 wheel/evidence 目录已删除。
+- 该 SHA 的 [push workflow 30004642052](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/30004642052)
+  首次通过 macOS/Windows `quality` 与 `installed-wheel` 共 4 项。对应
+  [PR workflow 30004645550](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/30004645550) 的首次
+  Windows quality 失败于未改动的 `test_cache_enforces_lru_capacity_and_ttl_without_deleting_leased_audio`：结果为
+  `tts_first_byte_timeout`，该 cache bookkeeping fixture 沿用 80 ms MockTransport first-byte default。相同 SHA 的 push
+  Windows quality 已首次成功，PR 失败 job 的第 2 次尝试也完整通过；因此 80 ms deadline 在负载 Windows runner 上的调度敏感
+  是合理推测，而非已证明的永久根因或修复。没有借 W18 修改无关 GPT-SoVITS product code 或放宽其 production deadline。
+
 ## 唯一真实设备 Gate、未验证项与范围外
 
 AI 已覆盖可合成的 ring、worker lifecycle、进程树、路径、取消、超时、清理和 Qt command/event 断言。本轮受管 runtime
@@ -205,8 +223,9 @@ AI 已覆盖可合成的 ring、worker lifecycle、进程树、路径、取消�
   [PR run 29942329034](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29942329034) 与
   [push run 29942326396](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29942326396) 再次通过。
   本轮受管 runtime 提交 [`224e06f`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/224e06f9cbb1d2ab0cc2260fb244b1f74cd7dfbc)
-  的精确 CI 证据见上文；这不替代后续文档 head 的 CI 或真实设备 Gate。
-  Draft PR 未获合并授权，真实设备 Gate 未完成；任何后续新 head 都须重新核验，因此不能报告为发布完成。
+  的历史精确 CI 证据以及当前 [`63d6684`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/63d668479bf6462a73f90378b1bacd3123562b40)
+  diagnostics hardening 的 exact-head 证据均见上文；它们不替代后续文档 head 的 CI 或完整真实设备 Gate。
+  Draft PR 未获合并授权，真实设备 Gate 仍欠所有者对实际时长及系统录音指示的确认；任何后续新 head 都须重新核验，因此不能报告为发布完成。
 
 ## 关联资料
 

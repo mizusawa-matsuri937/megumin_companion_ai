@@ -67,10 +67,13 @@ def test_microphone_empty_recording_is_stable_and_path_free(
 
     assert asyncio.run(tool._run()) == 2
     output = capsys.readouterr().out.splitlines()
+    assert len(output) == 2
     assert "录音已开始" in output[0]
     assert json.loads(output[1]) == {
         "reason_code": "stt_empty_recording",
         "status": "error",
     }
+    assert "Traceback" not in "\n".join(output)
+    assert str(Path.cwd()) not in "\n".join(output)
     assert recorder.started
     assert recorder.closed
