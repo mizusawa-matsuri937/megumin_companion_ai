@@ -118,11 +118,24 @@
   `PeakWorkingSetSize=236,609,536` bytes（约 225.7 MiB），但该测量不能外推给任何未来更大 profile；每个新增模型仍须
   单独通过真实设备峰值验证。
 
+## 所有者授权的受保护合并记录（2026-07-23）
+
+所有者已明确要求合并 Draft PR #31。本记录将该指令视为对下列**已知残余发布风险**的接受；它不把任何未验证项写作通过：
+
+- 真实 PTT 已自动验证离线转写、`zh`、22 segments 和 225.7 MiB 峰值工作集，但终端摘要不证明实际录音达到约 30 秒；
+  Windows 麦克风权限提示或录音指示器的目视确认也仍只能由所有者提供。
+- [上游 issue #3807](https://github.com/ggml-org/whisper.cpp/issues/3807) 仍 open；NVD 仅列至 1.8.2 不是 v1.9.1 已修复的证明。
+- 默认仍为 `stt.enabled=false`，没有新增模型、云端转写、后台下载或任意模型入口；如需回退，只须保持 STT 关闭。
+
+合并仍受保护：本 closure-record head 必须先通过其自身 macOS/Windows `quality` 与 `installed-wheel`，随后必须重读
+PR 的 base/head/diff/review/conversation/mergeability/draft 状态，并使用 expected-head guard 合并。合并后还须从远端确认
+merge commit、同步基线并重跑完整测试；未获新的明确授权不得把这次合并扩展为对上述真实设备 Gate 的通过结论。
+
 ## 未完成 Gate、范围外与下一步
 
 1. `63d6684` 已完成 exact-head 的 push/PR 双 workflow 核验，macOS/Windows `quality` 与 `installed-wheel` 共 8 项均通过；
    PR Windows quality 的首次失败及同 SHA 重跑通过已如实记录，不能把重跑结论写作已消除长期不稳定性。CI 证据仍只能用于其
-   对应 head，任何后续 head 都须独立完成相同核验。未获授权不合并。
+   对应 head，任何后续 head 都须独立完成相同核验。当前合并授权和 closure 条件见上节。
 2. 真实 PTT 的可自动验证部分已通过：离线转写成功、`zh`、22 segments、`236,609,536` bytes（约 225.7 MiB，≤512 MiB）。
    仍待所有者反馈的是实际录音是否达到约 30 秒，以及 Windows 麦克风权限提示或录音指示器的目视确认；终端摘要不能替代
    这两项真实桌面/设备事实，未获反馈不得把完整 Gate 写成通过。任何超限仍阻止交付并重新选型；不得保存真实录音或转写正文。

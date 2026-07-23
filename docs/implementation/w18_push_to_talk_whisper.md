@@ -234,6 +234,10 @@ AI 已覆盖可合成的 ring、worker lifecycle、进程树、路径、取消�
 - [CVE-2026-10298](https://nvd.nist.gov/vuln/detail/CVE-2026-10298) 的 NVD 记录仅列范围至 1.8.2，但
   [upstream issue #3807](https://github.com/ggml-org/whisper.cpp/issues/3807) 在本次复核仍为 open；不得宣称 v1.9.1
   已修复。受管模型 hash 只缓解替换/错误输入，不能替代上游修复或保护手工非受管模型。
+- **所有者合并授权（2026-07-23）：** 所有者明确要求合并 PR #31。此指令接受的残余发布风险是：真实 PTT 摘要不能独立证明
+  约 30 秒录音时长，且 Windows 麦克风权限提示/录音指示器仍没有所有者的目视确认；上游 issue #3807 也仍 open。
+  这不是把任一 Gate 写作已通过。closure-record head 必须先完成自身双 OS `quality`/`installed-wheel`，之后才可用
+  expected-head guard 合并；合并后还须远端确认 merge commit、同步基线并重跑完整测试。
 - Draft PR [#31](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/31) 已创建，初始实现提交为
   [`439fa88`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/439fa88)。功能 head
   [`6c66dc0`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/6c66dc0) 的两套 workflow 已通过：
@@ -247,7 +251,8 @@ AI 已覆盖可合成的 ring、worker lifecycle、进程树、路径、取消�
   本轮受管 runtime 提交 [`224e06f`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/224e06f9cbb1d2ab0cc2260fb244b1f74cd7dfbc)
   的历史精确 CI 证据以及当前 [`63d6684`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/63d668479bf6462a73f90378b1bacd3123562b40)
   diagnostics hardening 的 exact-head 证据均见上文；它们不替代后续文档 head 的 CI 或完整真实设备 Gate。
-  Draft PR 未获合并授权，真实设备 Gate 仍欠所有者对实际时长及系统录音指示的确认；任何后续新 head 都须重新核验，因此不能报告为发布完成。
+  本记录之前 Draft PR 尚未获合并授权；现在仅按上文的受保护合并条件处理，真实设备 Gate 仍欠所有者对实际时长及系统录音指示的确认，
+  因此不能报告为其已通过。
 
 ## 关联资料
 
