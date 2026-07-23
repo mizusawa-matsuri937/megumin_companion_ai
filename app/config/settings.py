@@ -32,6 +32,7 @@ from app.provider_transport import (
     validate_endpoint,
     validate_proxy_url,
 )
+from app.stt_runtime import MANAGED_STT_EXECUTABLE_RELATIVE, MANAGED_STT_MODEL_RELATIVE
 
 DEFAULT_CONFIG_PACKAGE = "app.resources"
 DEFAULT_CONFIG_NAME = "default_config.yaml"
@@ -258,9 +259,9 @@ class ProactiveConfig(StrictModel):
 class STTConfig(StrictModel):
     enabled: bool = False
     provider: str = "whisper_cpp"
-    executable: Path = Path("vendor/whisper.cpp/build/bin/whisper-cli")
-    model_path: Path = Path("data/models/whisper/ggml-base.bin")
-    language: str = "auto"
+    executable: Path = MANAGED_STT_EXECUTABLE_RELATIVE
+    model_path: Path = MANAGED_STT_MODEL_RELATIVE
+    language: str = "zh"
     threads: int | None = Field(default=None, ge=1)
     temporary_directory: Path = Path("data/private/stt")
     terminate_grace_seconds: float = Field(default=0.5, gt=0.0, le=30.0)
@@ -290,6 +291,20 @@ class STTConfig(StrictModel):
                 raise ValueError("STT device 名称无效")
             return value
         raise ValueError("STT device 必须是非负索引或非空名称")
+
+    @field_validator("language", mode="before")
+    @classmethod
+    def normalize_chinese_language(cls, value: object) -> str:
+        """Keep the product surface Chinese-only while accepting legacy ``auto``."""
+
+        if value is None:
+            return "zh"
+        if not isinstance(value, str):
+            raise ValueError("当前仅支持中文 STT（language=zh）")
+        normalized = value.strip().casefold().replace("_", "-")
+        if normalized in {"auto", "zh", "zh-cn", "zh-hans"}:
+            return "zh"
+        raise ValueError("当前仅支持中文 STT（language=zh）")
 
     @model_validator(mode="after")
     def validate_runtime_names(self) -> STTConfig:
@@ -569,6 +584,12 @@ def _upgrade_config_data(data: Mapping[str, Any], *, source: str) -> tuple[dict[
         upgraded["schema_version"] = 1
         raw_version = 1
         changed = True
+    stt = upgraded.get("stt")
+    if isinstance(stt, dict):
+        legacy_language = stt.get("language")
+        if isinstance(legacy_language, str) and legacy_language.strip().casefold() == "auto":
+            stt["language"] = "zh"
+            changed = True
     if raw_version != CURRENT_SETTINGS_SCHEMA_VERSION:
         raise ConfigurationError(f"{source}无法升级到当前设置 schema。")
     return upgraded, changed

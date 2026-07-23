@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import platform
@@ -151,7 +152,7 @@ def test_preflight_probes_version_architecture_and_fingerprints_then_transcribes
 
         result = await runner.transcribe(
             audio,
-            language="auto",
+            language="zh",
             timeout_seconds=2,
             cancelled=asyncio.Event(),
         )
@@ -189,7 +190,7 @@ def test_typed_failures_do_not_expose_cli_output(tmp_path: Path, mode: str, expe
         with pytest.raises(WhisperRuntimeError) as caught:
             await runner.transcribe(
                 audio,
-                language="auto",
+                language="zh",
                 timeout_seconds=2,
                 cancelled=asyncio.Event(),
             )
@@ -218,6 +219,100 @@ def test_preflight_fails_closed_for_missing_runtime_or_bad_version(tmp_path: Pat
     asyncio.run(scenario())
 
 
+def test_managed_hash_mismatch_fails_before_version_probe_and_rechecks_changed_model(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        baseline, audit = _runner(tmp_path, "success")
+        config = baseline._config
+        expected_model_hash = hashlib.sha256(config.model_path.read_bytes()).hexdigest()
+        runner = WhisperCppRunner(
+            WhisperCppConfig(
+                executable=config.executable,
+                model_path=config.model_path,
+                executable_prefix_args=config.executable_prefix_args,
+                expected_model_sha256=expected_model_hash,
+            )
+        )
+        await runner.preflight()
+        assert audit.read_text(encoding="ascii") == "version"
+
+        config.model_path.write_bytes(b"tampered-model")
+        with pytest.raises(WhisperRuntimeError) as caught:
+            await runner.preflight()
+        assert caught.value.code == "stt_runtime_integrity_failed"
+        assert audit.read_text(encoding="ascii") == "version"
+        await runner.close()
+
+    asyncio.run(scenario())
+
+
+def test_managed_executable_hash_mismatch_fails_before_version_probe(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        baseline, audit = _runner(tmp_path, "success")
+        config = baseline._config
+        runner = WhisperCppRunner(
+            WhisperCppConfig(
+                executable=config.executable,
+                model_path=config.model_path,
+                executable_prefix_args=config.executable_prefix_args,
+                expected_executable_sha256="0" * 64,
+            )
+        )
+
+        with pytest.raises(WhisperRuntimeError) as caught:
+            await runner.preflight()
+        assert caught.value.code == "stt_runtime_integrity_failed"
+        assert not audit.exists()
+        await runner.close()
+
+    asyncio.run(scenario())
+
+
+def test_runner_rejects_non_chinese_language_before_starting_cli(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        runner, audit = _runner(tmp_path, "success")
+        audio = tmp_path / "input.wav"
+        _write_pcm_wav(audio)
+
+        with pytest.raises(WhisperRuntimeError) as caught:
+            await runner.transcribe(
+                audio,
+                language="en",
+                timeout_seconds=2,
+                cancelled=asyncio.Event(),
+            )
+
+        assert caught.value.code == "stt_language_unsupported"
+        assert not audit.exists()
+        await runner.close()
+
+    asyncio.run(scenario())
+
+
+def test_implicit_threads_are_capped_to_four(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(os, "cpu_count", lambda: 128)
+    assert WhisperCppConfig(Path("cli"), Path("model")).effective_threads == 4
+    monkeypatch.setattr(os, "cpu_count", lambda: None)
+    assert WhisperCppConfig(Path("cli"), Path("model")).effective_threads == 1
+
+
+@pytest.mark.skipif(os.name != "nt", reason="PeakWorkingSetSize is a Windows diagnostic")
+def test_windows_peak_working_set_is_available_after_owned_child_exit() -> None:
+    child = subprocess.Popen(
+        (sys.executable, "-c", "buffer = bytearray(8 * 1024 * 1024)"),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    assert child.wait(timeout=5) == 0
+
+    peak_working_set_bytes = stt_module._peak_working_set_bytes(child.pid)
+
+    assert isinstance(peak_working_set_bytes, int)
+    assert peak_working_set_bytes > 0
+
+
 def test_timeout_and_cancellation_reap_the_direct_whisper_process(tmp_path: Path) -> None:
     async def scenario() -> None:
         runner, audit = _runner(tmp_path, "sleep", grace=0.02)
@@ -226,7 +321,7 @@ def test_timeout_and_cancellation_reap_the_direct_whisper_process(tmp_path: Path
         with pytest.raises(WhisperRuntimeError) as caught:
             await runner.transcribe(
                 audio,
-                language="auto",
+                language="zh",
                 timeout_seconds=0.25,
                 cancelled=asyncio.Event(),
             )
@@ -238,7 +333,7 @@ def test_timeout_and_cancellation_reap_the_direct_whisper_process(tmp_path: Path
         task = asyncio.create_task(
             runner.transcribe(
                 audio,
-                language="auto",
+                language="zh",
                 timeout_seconds=30,
                 cancelled=cancellation,
             )

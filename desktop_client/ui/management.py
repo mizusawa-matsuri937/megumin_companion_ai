@@ -30,6 +30,13 @@ from app.memory.service import (
 )
 from app.schemas import FeatureName, FeatureState
 from app.secret_store import SecretStoreError, llm_api_key_file, vts_token_file
+from app.stt_runtime import (
+    ManagedChineseSttRuntime,
+    SttRuntimeError,
+    SttRuntimeState,
+    SttRuntimeStatus,
+    managed_stt_settings_patch,
+)
 
 from desktop_client.ui.bridge import ApplicationBridge
 from desktop_client.ui.contracts import (
@@ -63,6 +70,7 @@ from desktop_client.ui.contracts import (
     SettingsSaveCommand,
     SettingsSnapshot,
     SettingsSnapshotEvent,
+    SttInstallCommand,
 )
 
 LOCAL_DESKTOP_USER_ID = "local_user"
@@ -124,11 +132,13 @@ class DesktopManagementRuntime:
         *,
         secrets: DesktopSecretStore | None = None,
         audio_device_lister: Callable[[Settings], Awaitable[OutputDeviceList]] | None = None,
+        stt_runtime: ManagedChineseSttRuntime | None = None,
     ) -> None:
         self._settings = settings
         self._memory_runtime = memory_runtime
         self._secrets = secrets or DPAPIDesktopSecretStore()
         self._audio_device_lister = audio_device_lister or _list_audio_output_devices
+        self._stt_runtime = stt_runtime or ManagedChineseSttRuntime(settings.paths)
 
     @staticmethod
     def handles(command: object) -> TypeGuard[ManagementCommand]:
@@ -137,6 +147,7 @@ class DesktopManagementRuntime:
             (
                 ManagementRefreshCommand,
                 SettingsSaveCommand,
+                SttInstallCommand,
                 AudioOutputDevicesCommand,
                 SecretStoreCommand,
                 SecretRevokeCommand,
@@ -185,6 +196,9 @@ class DesktopManagementRuntime:
                 return
             if isinstance(command, SettingsSaveCommand):
                 await self._save_settings(bridge, command)
+                return
+            if isinstance(command, SttInstallCommand):
+                await self._install_stt_runtime(bridge, command)
                 return
             if isinstance(command, AudioOutputDevicesCommand):
                 await self._publish_audio_output_devices(bridge, command_id=command.command_id)
@@ -318,6 +332,49 @@ class DesktopManagementRuntime:
         self._result(
             bridge,
             operation="settings_saved",
+            command_id=command.command_id,
+            restart_required=True,
+        )
+
+    async def _install_stt_runtime(
+        self,
+        bridge: ApplicationBridge,
+        command: SttInstallCommand,
+    ) -> None:
+        """Run the explicit managed installer entirely on BackendThread."""
+
+        install_task = asyncio.create_task(
+            self._stt_runtime.install(),
+            name="managed-chinese-stt-install",
+        )
+        # Let the installer enter its in-flight state before publishing a
+        # snapshot so Qt can disable duplicate activation immediately.
+        await asyncio.sleep(0)
+        await self._publish_settings(bridge, command_id=command.command_id)
+        try:
+            await install_task
+            await asyncio.to_thread(
+                patch_user_settings,
+                managed_stt_settings_patch(),
+                app_paths=self._settings.paths,
+            )
+            self._settings = await asyncio.to_thread(
+                load_settings,
+                app_paths=self._settings.paths,
+                environ={},
+            )
+        except Exception as exc:
+            self._result(
+                bridge,
+                operation="stt_runtime_install",
+                command_id=command.command_id,
+                reason_code=_management_error_code(exc),
+            )
+            return
+        await self._publish_settings(bridge, command_id=command.command_id)
+        self._result(
+            bridge,
+            operation="stt_runtime_installed",
             command_id=command.command_id,
             restart_required=True,
         )
@@ -731,6 +788,13 @@ class DesktopManagementRuntime:
                     command_id=command_id,
                     reason_code=_management_error_code(exc),
                 )
+        try:
+            stt_runtime = await asyncio.to_thread(
+                self._stt_runtime.status_for_settings,
+                self._settings,
+            )
+        except Exception:
+            stt_runtime = SttRuntimeStatus(SttRuntimeState.integrity_failed)
         bridge.publish_event(
             SettingsSnapshotEvent(
                 snapshot=SettingsSnapshot(
@@ -738,6 +802,7 @@ class DesktopManagementRuntime:
                     llm_secret_configured=llm_configured,
                     vts_secret_configured=vts_configured,
                     settings_schema_upgrade_required=self._settings.settings_schema_upgrade_required,
+                    stt_runtime=stt_runtime,
                 ),
                 command_id=command_id,
             )
@@ -953,6 +1018,8 @@ class _ManagementFailure(RuntimeError):
 
 
 def _management_error_code(exc: Exception) -> str:
+    if isinstance(exc, SttRuntimeError):
+        return exc.code
     if isinstance(exc, _ManagementFailure):
         return exc.code
     if isinstance(exc, SecretStoreError):

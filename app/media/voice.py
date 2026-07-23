@@ -21,6 +21,7 @@ from typing import Any, Protocol
 from uuid import uuid4
 
 from app.config import ConfigurationError, Settings
+from app.stt_runtime import ManagedRuntimeHashes, managed_runtime_hashes_for_paths
 from app.temp_assets import TempAssetKind, TempAssetRegistry
 from app.windows_security import directory_security_for_current_platform
 from app.workers import (
@@ -58,6 +59,7 @@ class VoiceTranscription:
     text: str
     language: str | None
     segment_count: int
+    peak_working_set_bytes: int | None = None
 
     def __post_init__(self) -> None:
         normalized = self.text.strip()
@@ -69,6 +71,12 @@ class VoiceTranscription:
             raise ValueError("voice transcription language is invalid")
         if self.segment_count < 0:
             raise ValueError("voice transcription segment count is invalid")
+        if self.peak_working_set_bytes is not None and (
+            isinstance(self.peak_working_set_bytes, bool)
+            or not isinstance(self.peak_working_set_bytes, int)
+            or self.peak_working_set_bytes < 0
+        ):
+            raise ValueError("voice transcription peak working set is invalid")
         object.__setattr__(self, "text", normalized)
 
 
@@ -153,6 +161,7 @@ class MediaWorkerVoiceInput:
         except (ConfigurationError, ValueError) as exc:
             raise VoiceCaptureError("stt_config_invalid") from exc
         roots = {_ROOT_STT_TEMP: root}
+        expected_hashes = managed_runtime_hashes_for_paths(settings.paths, executable, model)
         client: MediaWorkerVoiceInput
 
         def prepare_roots() -> None:
@@ -170,6 +179,7 @@ class MediaWorkerVoiceInput:
                     roots,
                     executable=executable,
                     model=model,
+                    expected_hashes=expected_hashes,
                     language=settings.stt.language,
                     threads=settings.stt.threads,
                     terminate_grace_seconds=settings.stt.terminate_grace_seconds,
@@ -486,6 +496,7 @@ def _voice_worker_command(
     transcription_timeout_seconds: float,
     input_device: int | str | None,
     input_blocksize: int,
+    expected_hashes: ManagedRuntimeHashes | None = None,
 ) -> tuple[str, ...]:
     command: list[str] = [str(Path(sys.executable).resolve()), "-m", "app.media_entrypoint"]
     for root_id, root in sorted(roots.items()):
@@ -514,6 +525,15 @@ def _voice_worker_command(
     )
     if threads is not None:
         command.extend(("--stt-threads", str(threads)))
+    if expected_hashes is not None:
+        command.extend(
+            (
+                "--stt-expected-executable-sha256",
+                expected_hashes.executable_sha256,
+                "--stt-expected-model-sha256",
+                expected_hashes.model_sha256,
+            )
+        )
     if isinstance(input_device, int) and not isinstance(input_device, bool):
         command.extend(("--input-device-index", str(input_device)))
     elif isinstance(input_device, str) and input_device:
@@ -553,26 +573,32 @@ def _parse_transcription(payload: object) -> VoiceTranscription:
             raise VoiceCaptureError(code)
     if payload == {"status": "cancelled"}:
         raise VoiceCaptureError("voice_cancelled")
-    if not isinstance(payload, dict) or set(payload) != {
-        "status",
-        "text",
-        "language",
-        "segment_count",
-    }:
+    if not isinstance(payload, dict) or set(payload) not in (
+        {"status", "text", "language", "segment_count"},
+        {"status", "text", "language", "segment_count", "peak_working_set_bytes"},
+    ):
         raise VoiceCaptureError("stt_worker_protocol")
     if payload["status"] != "transcribed":
         raise VoiceCaptureError("stt_worker_protocol")
     text = payload["text"]
     language = payload["language"]
     segments = payload["segment_count"]
+    peak_working_set_bytes = payload.get("peak_working_set_bytes")
     if (
         not isinstance(text, str)
         or not isinstance(language, str)
         or (isinstance(segments, bool) or not isinstance(segments, int))
+        or (
+            peak_working_set_bytes is not None
+            and (
+                isinstance(peak_working_set_bytes, bool)
+                or not isinstance(peak_working_set_bytes, int)
+            )
+        )
     ):
         raise VoiceCaptureError("stt_worker_protocol")
     try:
-        return VoiceTranscription(text, language or None, segments)
+        return VoiceTranscription(text, language or None, segments, peak_working_set_bytes)
     except ValueError as exc:
         raise VoiceCaptureError("stt_worker_protocol") from exc
 

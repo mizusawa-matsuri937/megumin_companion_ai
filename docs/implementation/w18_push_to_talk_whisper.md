@@ -2,17 +2,12 @@
 
 ## 状态与范围
 
-> 状态：实现及 CI 修复提交 [`439fa88`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/439fa88)、
+> 状态：先前 W18 worker 实现与 CI 修复提交 [`439fa88`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/439fa88)、
 > [`69b46dd`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/69b46dd) 和
-> [`6c66dc0`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/6c66dc0) 已推送。功能 head 的
-> [PR workflow](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29941194620) 与
-> [push workflow](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29941191361) 均通过。
-> 仅文档验证记录 [`a577031`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/a577031) 的
-> [PR workflow](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29942329034) 与
-> [push workflow](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29942326396) 也均通过。
-> Draft PR [#31](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/31) 未合并；后续新 head 必须独立核验。
-> 最后本地核验：2026-07-23（Asia/Shanghai），分支 `codex/w18-ptt-whisper`，基线为 W17 合并提交
-> [`351da92`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/351da92bfd0232ce03a90a97b75c13ba8ee6a51b)。
+> [`6c66dc0`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/6c66dc0) 的 CI 均为已确认**历史证据**。
+> 2026-07-23 本轮新增受管中文 runtime，已经超过当时的 exact head；完整 exact-head 核验与 CI 仍待完成。
+> Draft PR [#31](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/31) 未合并，不能把旧绿灯用于本轮改动。
+> 基线为 W17 merge commit [`351da92`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/351da92bfd0232ce03a90a97b75c13ba8ee6a51b)。
 > 本文不把本地绿测、headless Qt 或 fake PortAudio/whisper 结果表述成真实麦克风、锁屏、IME 或全局热键体验。
 
 W18 实现按住说话的本地转写路径，解决计划中的 P1-15（whisper 子进程树）和 P1-16（逐帧 callback backlog）。
@@ -27,13 +22,33 @@ global hotkey 或 W20 的 Windows lock/session adapter。
 | 父进程语音控制 | `app.media.voice.MediaWorkerVoiceInput` | 仅持有状态、受限 `VoiceTranscription` 和 temp registry 租约；不导入音频 binding、不持有 PCM/WAV/JSON、也不启动 whisper CLI |
 | 麦克风采集 | `MediaWorkerHandler` / `SoundDeviceBackend.RawInputStream` | 仅 start 后打开；16 kHz mono int16 预分配 ring，最多 120 秒（约 3.84 MiB）；callback 不逐帧排入 asyncio loop |
 | callback 故障 | MediaWorker ring | overflow、非完整 sample 和 PortAudio status 变为 `stt_capture_overflow` / `stt_capture_device_lost`；ring 被 wipe，stream 收束 |
-| 本地转写 | helper 内 `WhisperCppRunner` | 无 shell argv、无内容 stdout/stderr；预检普通文件/重解析点、架构、可执行 SHA-256、模型采样指纹和 `--version` |
+| 本地转写 | helper 内 `WhisperCppRunner` | 无 shell argv、无内容 stdout/stderr；预检普通文件/重解析点、架构和 `--version`；canonical 受管路径额外完整校验 CLI/model SHA-256，不匹配不启动 CLI |
+| 受管中文 runtime | `app.stt_runtime.ManagedChineseSttRuntime`，由 BackendThread UI command 或显式 CLI 调用 | 固定 HTTPS URL/版本/hash/上限；拒绝 ZIP Slip/link/reparse，私有 staging 后原子切换；默认不下载、不启用 STT 或麦克风，手工路径显示非受管 |
 | 进程终止 | runner + W12 Job Object | 取消/超时先 terminate、等待 grace、再 kill；W12 Job Object `KILL_ON_JOB_CLOSE` 兜底收束 CLI 子树 |
 | 临时文件 | MediaWorker 每次录音私有目录 | PCM 仅 ring；WAV/JSON 不跨 pipe。成功、失败、取消、watchdog 和 shutdown 都删除；删除未知时返回 `stt_temp_cleanup_pending`，不泄露成功 transcript |
 | 结果回流 | typed helper payload → UI/backend | 只接受有界 text/language/segment_count；成功时恰好创建一条 `InputMode.voice` `UserMessage`，不传 raw audio |
 
 `desktop_client/inputs/whisper_cpp.py` 的旧父进程实现已移除。`tools/stt_smoke.py` 也只提供 worker preflight 或显式
 麦克风 PTT 路径，不提供任意本地文件转写入口。
+
+## 受管中文 STT runtime（待新 head 核验）
+
+受管 profile 固定采用 CPU 离线的 [`whisper.cpp` v1.9.1](https://github.com/ggml-org/whisper.cpp/releases/tag/v1.9.1)
+`whisper-bin-x64.zip` 和 [immutable `ggml-base-q5_1.bin`](https://huggingface.co/ggerganov/whisper.cpp/blob/87cd18b47b941d2f65d09981dad23bb7d0481c77/ggml-base-q5_1.bin)。
+安装位置是 `%LOCALAPPDATA%\MeguminCompanion\models\stt\whispercpp\v1.9.1\`，而不是仓库、wheel 或安装包。
+
+- 设置默认路径指向该 profile，`language` 统一为 `zh`；旧 `auto` 在显式设置升级时迁移为 `zh`，其他语言以稳定失败拒绝。
+  `threads=null` 时 worker 使用 `min(max(os.cpu_count(), 1), 4)`。
+- `SttInstallCommand`、确认文案和 `--install-chinese-stt` 共用同一服务。安装成功只持久化 provider/path/language，绝不修改
+  `stt.enabled`、设备或线程；UI 继续允许手工路径，但明确显示 `unmanaged`。
+- 下载只在用户确认后发起，使用固定 URL、HTTPS、10 分钟总 timeout、大小上限、archive/model 全量 SHA-256；archive 内仅
+  提取 CLI 所在目录的平级 runtime 文件，拒绝 traversal、link、encrypted ZIP 和 reparse path。验证和 `--version` 成功后
+  才原子切换，取消/失败只删除 staging。
+- 每个 MediaWorker 的首次 preflight 会为 canonical profile 全量重新 hash CLI 与模型；完整性失败返回
+  `stt_runtime_integrity_failed`，在 `whisper-cli` 之前停止。完整来源、hash、许可证和安全残余风险见
+  [W18 runtime 决策](../decisions/w18_managed_chinese_stt_runtime.md)。
+- `tools/stt_smoke.py --mode microphone --measure-working-set` 是唯一显式峰值诊断入口；它不打印转写正文。模型约 57 MiB
+  是文件体积，不能当作内存测量结论。
 
 ## 自动化验收与证据
 
@@ -45,33 +60,45 @@ global hotkey 或 W20 的 Windows lock/session adapter。
 | whisper runtime 安全预检与受控终止 | `test_whisper_cpp.py` 覆盖路径、架构、hash/fingerprint、version、中文空格路径、malformed/oversize JSON、timeout、cancel、terminate→kill | fake CLI 不能证明真实模型准确率 |
 | helper 子进程树 | Windows-only `test_media_worker_job_closure_reaps_whisper_version_probe_child_tree` 启动 synthetic child，关闭 `WorkerSupervisor` 后检查 child PID 已消失 | Job Object 证明可控 synthetic tree；真实 driver/native 行为仍需设备 Gate |
 | 配置与入口安全 | STT provider/language/device 边界、entrypoint 三参数原子性和 parent 无 raw-audio import 均由 unit test 覆盖 | 用户提供的真实模型/可执行文件尚未配置或验收 |
+| 受管 runtime 供应与修复 | `test_stt_runtime.py` 使用 fake HTTP/ZIP/CLI 覆盖无启动下载、HTTPS→HTTP 降级拒绝、hash/timeout、Zip Slip/既有 reparse tree 拒绝、取消、同 service 并发、原子修复、手工路径和安装不访问麦克风 binding；`test_whisper_cpp.py` 验证 hash 不匹配不会启动 CLI，并以 synthetic child 读取 Windows `PeakWorkingSetSize`；UI/CLI bridge 使用 fake installer | CI 不下载真实 runtime/model、录音或转写，不测真实 Windows DACL、网络 CDN、模型准确率或真实 PTT 峰值工作集 |
 
-最终本地命令：
+历史 exact head 的最终本地命令（不替代本轮新 head 验证）：
 
 - `uv run pytest` → 最后一次完整重跑 `1195 passed, 3 skipped in 190.60s`，coverage `90.18%`。
 - `uv run pytest --no-cov tests/unit/test_media_voice.py tests/unit/test_whisper_cpp.py` → `56 passed in 7.88s`；余下
   fixture 规范化后再次执行 `tests/unit/test_whisper_cpp.py` → `24 passed in 4.84s`。
 
-完整测试的 skip 是可选 RapidOCR、可选 Pillow 和当前账户的 directory-symlink 权限限制，pytest 已明确标记；没有 W18
+上述完整测试的 skip 是可选 RapidOCR、可选 Pillow 和当前账户的 directory-symlink 权限限制，pytest 已明确标记；没有 W18
 断言失败。提交前一次全仓运行曾单独失败既有的
 `test_successful_handshake_job_and_orderly_shutdown`：随后该单测连续 20 次、完整 WorkerSupervisor 子套件 45 项、最终全仓
 重跑和功能 head 跨 OS CI 都通过。失败根因仍**未验证**，故将其作为残余时序风险而不是报告为已修复。Ruff、格式、mypy、
-`uv lock --check` 和 `git diff --check` 已在当前工作树通过。
+`uv lock --check` 和 `git diff --check` 已在提交前本地树通过。
 
-## 人工 Gate、未验证项与范围外
+### 本轮受管 runtime 的提交前本地核验（2026-07-23）
 
-AI 已覆盖可合成的 ring、worker lifecycle、进程树、路径、取消、超时、清理和 Qt command/event 断言。以下剩余项无法由
-当前 fake/headless 条件忠实证明，且需要在 W18 exact PR head 上记录：
+- `uv run pytest --no-cov tests/unit/test_stt_runtime.py tests/unit/test_stt_factory.py tests/unit/test_whisper_cpp.py
+  tests/unit/test_media_voice.py tests/unit/test_media_entrypoint.py tests/unit/test_cli.py tests/unit/test_user_settings.py
+  tests/unit/test_w05_ci.py tests/unit/ui/test_w16_management.py` → **192 passed in 10.79s**。
+- `uv run pytest` → **1223 passed, 3 skipped in 191.56s**，coverage **90.01%**；skip 为 optional RapidOCR、optional
+  Pillow 与当前账户的 directory-symlink 权限，不是 W18 失败。
+- `uv run ruff check .`、`uv run ruff format --check .`（241 files）、`uv run mypy`（234 source）、`uv lock --check`、
+  `git diff --check` 和全部 `docs/` 相对 Markdown 链接检查通过。
+- `uv build --wheel --out-dir dist/w18-wheel-check` 后的 `tools/w05_ci_smoke.py` 隔离安装 smoke 通过；wheel 由隔离环境
+  导入，且 STT model/binary/archive denylist 生效。验证产物和为选择 archive hash 下载的临时 ZIP 已在检查后删除。
 
-1. **麦克风授权、中文准确率与延迟。** 在实际 Windows 麦克风上，以可公开的无敏感短句按住、释放；通过标准是系统授权语义
-   清楚、无授权时稳定失败、有授权时只在按住期间采集、转写内容/延迟符合所有者体验判断。不得把录音或转写正文写入仓库。
-2. **设备灯/系统录音指示与桌面 UI。** 观察按住前无指示、按住期间有对应指示、释放/取消/关闭后消失，且按钮状态与实际一致。
-   这验证真实 OS/hardware UX，不被 fake stream 覆盖。
-3. **真实 IME、高 DPI 和焦点交互。** 在实际 Qt 桌面窗口确认鼠标按住/释放、焦点丢失和中文输入候选不会造成意外录音。
-4. **锁屏后不录音。** 未验证：当前没有 W20 lock adapter，不能以 focus-cancel 模拟声称真实锁屏通过。
+这些仅证明提交前本地树；它们不替代 Draft PR exact-head 的 macOS/Windows `quality`/`installed-wheel`，
+因此不构成最终交付或发布证据。
 
-全局 hotkey 没有在此阶段注册；“hotkey 冲突/按键丢失”因此没有通过或失败结论。计划明确采用按钮优先、hotkey 后启用，
-后续接入时必须单独提供注册冲突、key-up 丢失、focus/lock/shutdown 收束的自动化和真实 Windows 证据。
+## 唯一真实设备 Gate、未验证项与范围外
+
+AI 已覆盖可合成的 ring、worker lifecycle、进程树、路径、取消、超时、清理和 Qt command/event 断言。本轮受管 runtime
+唯一保留的真实设备 Gate 是：在 W18 exact PR head 上执行一次约 30 秒、不含敏感内容的中文 PTT，并以
+`tools/stt_smoke.py --mode microphone --measure-working-set` 确认离线转写、真实麦克风/系统录音提示，以及
+`whisper-cli` 的 Windows `PeakWorkingSetSize`。验收上限为 **≤512 MiB**；未测量或超限均阻止交付并重新选型，且不得把
+录音或转写正文写入仓库，也不能用模型约 57 MiB 文件体积代替。
+
+真实 IME/高 DPI、锁屏与系统级 hotkey 当前都没有通过结论：前两项不由 fake/headless 条件冒充，后两项尚未在本阶段
+启用/实现。这些是后续桌面体验或 W20 工作，不是本轮受管 runtime 的额外发布 Gate。
 
 产品仍限单机、单 Windows 用户、个人私用。RDP、快速切换用户、跨 session 与跨用户 SID/DACL 有效访问均为范围外，
 不得写作已通过，也不列为本 W18 人工 Gate。
@@ -83,6 +110,9 @@ AI 已覆盖可合成的 ring、worker lifecycle、进程树、路径、取消�
 - 真正的 PortAudio/driver 卡死无法由 Python task cancellation 证明停止；安全收束依赖 W12 的 helper Job kill。删除/wipe
   是生命周期隔离和 best effort，不构成物理介质擦除承诺。
 - 真实模型文件、可执行文件、麦克风权限和性能仍是用户环境依赖。运行时预检以稳定错误码失败，不复制/上传模型或音频。
+- [CVE-2026-10298](https://nvd.nist.gov/vuln/detail/CVE-2026-10298) 的 NVD 记录仅列范围至 1.8.2，但
+  [upstream issue #3807](https://github.com/ggml-org/whisper.cpp/issues/3807) 在本次复核仍为 open；不得宣称 v1.9.1
+  已修复。受管模型 hash 只缓解替换/错误输入，不能替代上游修复或保护手工非受管模型。
 - Draft PR [#31](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/31) 已创建，初始实现提交为
   [`439fa88`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/439fa88)。功能 head
   [`6c66dc0`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/6c66dc0) 的两套 workflow 已通过：
@@ -99,5 +129,7 @@ AI 已覆盖可合成的 ring、worker lifecycle、进程树、路径、取消�
 
 - [W18 权威计划](../windows_development_plan.md)
 - [ADR-W07：native worker 隔离](../adr/ADR-W07-native-worker-isolation.md)
+- [ADR-W08：包与升级边界](../adr/ADR-W08-packaging-upgrade.md)
+- [W18 受管中文 STT runtime 决策](../decisions/w18_managed_chinese_stt_runtime.md)
 - [Windows 数据流与保留清单](../architecture/windows_data_flow_inventory.md)
 - [Windows 威胁模型](../security/windows_threat_model.md)

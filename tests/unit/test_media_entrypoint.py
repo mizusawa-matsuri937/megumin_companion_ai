@@ -109,6 +109,25 @@ def test_media_entrypoint_rejects_duplicate_or_invalid_authority(
     assert (
         asyncio.run(
             media_entrypoint.run(
+                [
+                    "--root",
+                    f"stt_temp={root}",
+                    "--stt-executable",
+                    str(executable),
+                    "--stt-model",
+                    str(model),
+                    "--stt-temporary-root",
+                    str(root),
+                    "--stt-language",
+                    "en",
+                ]
+            )
+        )
+        == 2
+    )
+    assert (
+        asyncio.run(
+            media_entrypoint.run(
                 ["--root", f"audio_temp={root}", "--output-device-id", "not-a-device"]
             )
         )

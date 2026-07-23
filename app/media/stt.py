@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 import platform
 import stat
 import struct
@@ -20,7 +21,7 @@ from collections.abc import Sequence
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from app.windows_security import ReparsePointError, assert_no_reparse_points
 
@@ -47,6 +48,8 @@ class WhisperCppConfig:
     model_path: Path
     executable_prefix_args: tuple[str, ...] = ()
     threads: int | None = None
+    expected_executable_sha256: str | None = None
+    expected_model_sha256: str | None = None
     terminate_grace_seconds: float = 0.5
     max_audio_bytes: int = 64 * 1024 * 1024
     max_output_bytes: int = 2 * 1024 * 1024
@@ -60,6 +63,19 @@ class WhisperCppConfig:
             raise ValueError("音频和输出大小上限无效")
         if any(not argument or "\x00" in argument for argument in self.executable_prefix_args):
             raise ValueError("whisper 前缀参数无效")
+        for value in (self.expected_executable_sha256, self.expected_model_sha256):
+            if value is not None and (
+                len(value) != 64 or any(character not in "0123456789abcdef" for character in value)
+            ):
+                raise ValueError("whisper 预期 SHA-256 无效")
+
+    @property
+    def effective_threads(self) -> int:
+        """Bound implicit worker parallelism without changing explicit settings."""
+
+        if self.threads is not None:
+            return self.threads
+        return min(max(os.cpu_count() or 1, 1), 4)
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,6 +85,7 @@ class TranscriptionResult:
     text: str
     language: str | None = None
     segment_count: int = 0
+    peak_working_set_bytes: int | None = None
 
     def __post_init__(self) -> None:
         normalized = self.text.strip()
@@ -82,6 +99,12 @@ class TranscriptionResult:
             raise ValueError("转写语言无效")
         if self.segment_count < 0:
             raise ValueError("segment_count 不能为负数")
+        if self.peak_working_set_bytes is not None and (
+            isinstance(self.peak_working_set_bytes, bool)
+            or not isinstance(self.peak_working_set_bytes, int)
+            or self.peak_working_set_bytes < 0
+        ):
+            raise ValueError("peak_working_set_bytes 无效")
         object.__setattr__(self, "text", normalized)
 
 
@@ -95,6 +118,7 @@ class WhisperRuntimeFingerprint:
     model_size: int
     model_mtime_ns: int
     model_fingerprint: str
+    model_sha256: str | None
     architecture: str
 
 
@@ -124,13 +148,14 @@ class WhisperCppRunner:
             async with self._lock:
                 if self._closed:
                     raise WhisperRuntimeError("stt_worker_closed")
-            signature, fingerprint, runtime_paths = await asyncio.to_thread(self._inspect_runtime)
+            signature, runtime_paths = await asyncio.to_thread(self._runtime_paths_and_signature)
             async with self._lock:
                 if self._closed:
                     raise WhisperRuntimeError("stt_worker_closed")
                 if signature == self._fingerprint_signature and self._fingerprint is not None:
                     self._runtime_paths = runtime_paths
                     return
+            signature, fingerprint, runtime_paths = await asyncio.to_thread(self._inspect_runtime)
             await self._probe_version(runtime_paths[0])
             async with self._lock:
                 if self._closed:
@@ -149,6 +174,10 @@ class WhisperCppRunner:
     ) -> TranscriptionResult:
         if timeout_seconds <= 0:
             raise WhisperRuntimeError("stt_timeout_invalid")
+        # The product deliberately exposes one offline Chinese profile.  Do
+        # not let a private helper invocation broaden that public contract.
+        if language != "zh":
+            raise WhisperRuntimeError("stt_language_unsupported")
         await self.preflight()
         async with self._lock:
             if self._closed or self._runtime_paths is None:
@@ -169,7 +198,16 @@ class WhisperCppRunner:
             await self._wait_for_process(process, timeout_seconds, cancelled)
             if process.returncode != 0:
                 raise WhisperRuntimeError("stt_process_failed")
-            return await asyncio.to_thread(self._read_result, output_base.with_suffix(".json"))
+            parsed = await asyncio.to_thread(self._read_result, output_base.with_suffix(".json"))
+            return TranscriptionResult(
+                text=parsed.text,
+                language=parsed.language,
+                segment_count=parsed.segment_count,
+                peak_working_set_bytes=await asyncio.to_thread(
+                    _peak_working_set_bytes,
+                    process.pid,
+                ),
+            )
         finally:
             await self._terminate(process)
 
@@ -185,6 +223,38 @@ class WhisperCppRunner:
     def _inspect_runtime(
         self,
     ) -> tuple[tuple[int, int, int, int], WhisperRuntimeFingerprint, tuple[Path, Path]]:
+        signature, runtime_paths = self._runtime_paths_and_signature()
+        executable, model = runtime_paths
+        executable_stat = executable.stat()
+        model_stat = model.stat()
+        executable_sha256 = _sha256_file(executable)
+        if (
+            self._config.expected_executable_sha256 is not None
+            and executable_sha256 != self._config.expected_executable_sha256
+        ):
+            raise WhisperRuntimeError("stt_runtime_integrity_failed")
+        model_sha256: str | None = None
+        if self._config.expected_model_sha256 is not None:
+            model_sha256 = _sha256_file(model)
+            if model_sha256 != self._config.expected_model_sha256:
+                raise WhisperRuntimeError("stt_runtime_integrity_failed")
+        architecture = _executable_architecture(executable)
+        return (
+            signature,
+            WhisperRuntimeFingerprint(
+                executable_size=executable_stat.st_size,
+                executable_mtime_ns=executable_stat.st_mtime_ns,
+                executable_sha256=executable_sha256,
+                model_size=model_stat.st_size,
+                model_mtime_ns=model_stat.st_mtime_ns,
+                model_fingerprint=_sampled_fingerprint(model),
+                model_sha256=model_sha256,
+                architecture=architecture or _host_architecture(),
+            ),
+            runtime_paths,
+        )
+
+    def _runtime_paths_and_signature(self) -> tuple[tuple[int, int, int, int], tuple[Path, Path]]:
         executable = _validated_regular_file(self._config.executable, "stt_executable_missing")
         model = _validated_regular_file(self._config.model_path, "stt_model_missing")
         executable_stat = executable.stat()
@@ -201,15 +271,6 @@ class WhisperCppRunner:
                 executable_stat.st_mtime_ns,
                 model_stat.st_size,
                 model_stat.st_mtime_ns,
-            ),
-            WhisperRuntimeFingerprint(
-                executable_size=executable_stat.st_size,
-                executable_mtime_ns=executable_stat.st_mtime_ns,
-                executable_sha256=_sha256_file(executable),
-                model_size=model_stat.st_size,
-                model_mtime_ns=model_stat.st_mtime_ns,
-                model_fingerprint=_sampled_fingerprint(model),
-                architecture=architecture or host_architecture,
             ),
             (executable, model),
         )
@@ -262,8 +323,7 @@ class WhisperCppRunner:
             str(output_base),
             "--no-prints",
         ]
-        if self._config.threads is not None:
-            command.extend(("--threads", str(self._config.threads)))
+        command.extend(("--threads", str(self._config.effective_threads)))
         return tuple(command)
 
     async def _start_process(self, command: Sequence[str]) -> asyncio.subprocess.Process:
@@ -426,6 +486,56 @@ def _sampled_fingerprint(path: Path) -> str:
             source.seek(max(0, stat_result.st_size - _FINGERPRINT_SAMPLE_BYTES))
             digest.update(source.read(_FINGERPRINT_SAMPLE_BYTES))
     return digest.hexdigest()
+
+
+def _peak_working_set_bytes(process_id: int | None) -> int | None:
+    """Read an owned Windows child's OS-maintained peak working set when available."""
+
+    if process_id is None or process_id < 1 or os.name != "nt":
+        return None
+    import ctypes
+
+    ctypes_api = cast(Any, ctypes)
+    try:
+        kernel32 = ctypes_api.WinDLL("kernel32", use_last_error=True)
+        psapi = ctypes_api.WinDLL("psapi", use_last_error=True)
+        open_process = kernel32.OpenProcess
+        open_process.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32]
+        open_process.restype = ctypes.c_void_p
+        close_handle = kernel32.CloseHandle
+        close_handle.argtypes = [ctypes.c_void_p]
+        close_handle.restype = ctypes.c_int
+
+        class _ProcessMemoryCounters(ctypes.Structure):
+            _fields_ = [
+                ("cb", ctypes.c_uint32),
+                ("page_fault_count", ctypes.c_uint32),
+                ("peak_working_set_size", ctypes.c_size_t),
+                ("working_set_size", ctypes.c_size_t),
+                ("quota_peak_paged_pool_usage", ctypes.c_size_t),
+                ("quota_paged_pool_usage", ctypes.c_size_t),
+                ("quota_peak_non_paged_pool_usage", ctypes.c_size_t),
+                ("quota_non_paged_pool_usage", ctypes.c_size_t),
+                ("pagefile_usage", ctypes.c_size_t),
+                ("peak_pagefile_usage", ctypes.c_size_t),
+            ]
+
+        get_process_memory_info = psapi.GetProcessMemoryInfo
+        get_process_memory_info.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint32]
+        get_process_memory_info.restype = ctypes.c_int
+        handle = open_process(0x0400 | 0x0010, 0, process_id)
+        if not handle:
+            return None
+        try:
+            counters = _ProcessMemoryCounters()
+            counters.cb = ctypes.sizeof(counters)
+            if not get_process_memory_info(handle, ctypes.byref(counters), counters.cb):
+                return None
+            return int(counters.peak_working_set_size)
+        finally:
+            close_handle(handle)
+    except (AttributeError, OSError):
+        return None
 
 
 def _host_architecture() -> str:

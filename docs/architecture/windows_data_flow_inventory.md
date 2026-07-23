@@ -1,8 +1,10 @@
 # Windows 数据流与保留清单
 
-> 版本：2026-07-22
-> 状态：Gate W0 已批准的目标契约；W17/W18 的 MediaWorker 音频路径已在本地实现并验证，其他行仍不代表代码已经实现
-> 关联：[`../adr/README.md`](../adr/README.md)、[`../decisions/w00_owner_decisions.md`](../decisions/w00_owner_decisions.md)
+> 版本：2026-07-23
+> 状态：Gate W0 已批准的目标契约；W17/W18 的 MediaWorker 音频路径已在本地实现并验证。受管中文 STT
+> runtime 已加入当前工作树，新的提交/CI 与真实设备 Gate 尚未完成；其他行仍不代表代码已经实现。
+> 关联：[`../adr/README.md`](../adr/README.md)、[`../decisions/w00_owner_decisions.md`](../decisions/w00_owner_decisions.md)、
+> [`../decisions/w18_managed_chinese_stt_runtime.md`](../decisions/w18_managed_chinese_stt_runtime.md)
 
 ## Trust boundary
 
@@ -14,21 +16,29 @@ flowchart LR
     A --> B
     B <-->|"继承匿名 pipe + typed JSON"| M["MediaWorker / Job Object"]
     B <-->|"继承匿名 pipe + typed JSON"| P["PerceptionWorker / Job Object"]
+    B <-->|"仅显式确认：固定 HTTPS STT 资产"| R["GitHub / Hugging Face"]
     B -->|"HTTPS/WSS"| E["外部 LLM/TTS/VTS"]
     P -->|"显式 opt-in + 脱敏图像 + TLS"| C["云视觉 provider"]
     B --> S[("LocalAppData state")]
 ```
 
-用户输入、dev API、helper protocol、外部 provider 和屏幕内容都属于不可信边界。截图/PCM 原始数据留在 worker；云视觉是独立网络出口，不因 vision 本地启用而自动启用。
+用户输入、dev API、helper protocol、外部 provider 和屏幕内容都属于不可信边界。截图/PCM 原始数据留在 worker；云视觉
+是独立网络出口，不因 vision 本地启用而自动启用。STT runtime 下载也是单独网络边界：仅用户确认安装/修复时访问固定
+GitHub/Hugging Face HTTPS URL，绝不发送录音、转写、设备名或用户路径。
 
-## W18 实现状态（2026-07-22）
+## W18 实现状态（2026-07-23）
 
 - 已确认：PTT 按钮仅在按下后让 MediaWorker 打开麦克风；原始 PCM 留在预分配 ring，WAV/JSON 留在该 worker 的私有
   录音目录。helper pipe 回传的只有有界转写元数据，backend 将成功结果转为一条 voice `UserMessage`。
 - 已确认：取消、超时、callback overflow/device status 和 helper shutdown 走 wipe/删除或 retryable temp-registry 清理；
   无法确认删除时不将转写报告为成功。
+- 已确认（当前工作树，待新 head 核验）：受管 profile 只在显式 UI/CLI 操作后下载固定的 `whisper.cpp` v1.9.1 archive 和
+  `ggml-base-q5_1.bin`；无启动下载、默认 `stt.enabled=false`。assets 在私有 staging 验证 archive/model/CLI hash 后原子
+  切换到 LocalAppData，MediaWorker 首次使用时再验证 CLI/model 全量 hash。状态、稳定 reason code 和 `NOTICE.txt` 不含录音、
+  转写或完整用户路径。
 - 未验证：真实 Windows 麦克风、录音指示、锁屏和系统级 global hotkey。W18 未启用 global hotkey，W20 lock/session
-  adapter 也尚未实现，因此这些不能从本文推导为通过。
+  adapter 也尚未实现，因此这些不能从本文推导为通过。真实 `PeakWorkingSetSize` 也尚未测量，57 MiB 模型文件不能代替
+  ≤512 MiB 的峰值工作集 Gate。
 
 ## 数据分类
 
@@ -49,6 +59,7 @@ flowchart LR
 | 用户设置 | Config owner | UI command → config service | `config/settings.yaml`，带 schema version | 无，除非对应 provider 请求需要最小配置 | 升级迁移/卸载选择 | 只记 schema/version/字段类别 |
 | 日志/健康/诊断 | 单 writer/exporter | allowlist event | `logs`，10 MiB × 5 且最多 14 天 | 用户显式导出脱敏诊断包 | rotation + retention | 禁止正文、截图、OCR、音频、secret、完整路径 |
 | TTS 临时 WAV | TTS owner；播放期间由 MediaWorker 独占消费 | 父侧只提交批准根下的 `ResourceReference`；helper 打开/复核 descriptor，wire 不含绝对路径、PCM、WAV body 或 native device index | `temp/audio`；可选 `cache/audio` 默认关闭 | 本地 MediaWorker playback | 取消/消费后 release；W12 terminal cleanup 与 scavenger；受 W07 在途音频预算约束 | 只记 job id、bytes、duration、稳定 error/notice code |
+| 受管中文 STT runtime/model | 显式安装服务 | BackendThread/CLI 只下载固定公开 URL；worker 只读本地已验证文件 | `%LOCALAPPDATA%\MeguminCompanion\models\stt\whispercpp\v1.9.1\`，安装包/wheel/CI artifact 外 | 仅用户确认时从 GitHub/Hugging Face 下载 asset bytes；**不发送音频或转写** | staging 失败/取消清理；已验证资产保留到用户修复/删除；不后台更新 | 不记完整本地路径、下载 token、音频或转写；本地 NOTICE 仅含公开来源/许可证/hash |
 | 模型/角色/参考音频 | 用户/外部路径 | worker/provider 读取批准路径 | 安装包外；只记录路径和 fingerprint | 只发给用户明确配置的本地/远端服务 | 用户管理；卸载不复制或删除原资产 | 不记录完整路径或内容 |
 
 ## 云视觉序列

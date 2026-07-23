@@ -77,6 +77,14 @@ def test_factory_maps_invalid_stt_paths_to_a_body_free_capability_error() -> Non
     assert caught.value.code == "stt_config_invalid"
 
 
+def test_stt_configuration_normalizes_legacy_auto_to_chinese_only() -> None:
+    assert STTConfig().language == "zh"
+    assert STTConfig(language="auto").language == "zh"
+    assert STTConfig(language="zh-CN").language == "zh"
+    with pytest.raises(ValueError, match="仅支持中文"):
+        STTConfig(language="ja")
+
+
 @pytest.mark.parametrize(
     "options",
     [

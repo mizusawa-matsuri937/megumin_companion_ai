@@ -6,6 +6,7 @@ from collections.abc import Callable
 from typing import Literal
 
 from app.schemas import FeatureActualState, FeatureName
+from app.stt_runtime import SttRuntimeState
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -46,6 +47,7 @@ from desktop_client.ui.contracts import (
     SecretRevokeCommand,
     SecretStoreCommand,
     SettingsSaveCommand,
+    SttInstallCommand,
 )
 from desktop_client.ui.management import ManagementViewModel
 
@@ -92,6 +94,14 @@ _MANAGEMENT_REASON_TEXT = {
     "tts_provider_unsupported": "当前仅支持 mock 或已配置的 GPT-SoVITS。",
     "tts_preset_required": "GPT-SoVITS 需要先配置默认 preset；请在 W19 配置向导完成预检。",
     "settings_invalid": "设置未通过本地 schema 校验。",
+    "stt_platform_unsupported": "受管中文 STT 仅支持 Windows x64。",
+    "stt_install_busy": "中文 STT 安装已在进行中。",
+    "stt_download_failed": "中文 STT 运行时下载失败，请检查网络后重试。",
+    "stt_download_too_large": "中文 STT 下载超过安全大小上限。",
+    "stt_runtime_archive_invalid": "中文 STT 运行时压缩包不符合安全要求。",
+    "stt_runtime_integrity_failed": "中文 STT 运行时完整性校验失败。",
+    "stt_version_probe_failed": "中文 STT 运行时无法通过本地版本预检。",
+    "stt_install_failed": "中文 STT 安装或修复失败。",
     "invalid_management_input": "输入无效或超出允许范围。",
     "private_state_runtime_disabled": "当前后端未提供本地记忆/功能运行时。",
     "memory_not_found": "这条长期记忆已不存在。",
@@ -122,6 +132,7 @@ _MANAGEMENT_OPERATION_TEXT = {
     "memories_cleared": "长期记忆已清空",
     "memory_confirmed": "记忆建议已处理",
     "memory_exported": "长期记忆已导出",
+    "stt_runtime_installed": "中文离线 STT 已安装",
 }
 
 
@@ -190,6 +201,12 @@ class SettingsDialog(QDialog):
         self.stt_executable = self._line_edit("Whisper 可执行文件")
         self.stt_model_path = self._line_edit("Whisper 模型")
         self.stt_device = self._line_edit("音频设备")
+        self.stt_runtime_status = QLabel("中文离线 STT：正在检查", page)
+        self.stt_runtime_status.setWordWrap(True)
+        self.stt_runtime_status.setAccessibleName("内置中文离线 STT 运行时状态")
+        self.install_stt_runtime = QPushButton("安装/修复内置中文离线 STT（约 68 MB）", page)
+        self.install_stt_runtime.setAccessibleName("安装或修复内置中文离线 STT")
+        self.install_stt_runtime.clicked.connect(self._install_chinese_stt)
         self.output_device = QComboBox(page)
         self.output_device.setAccessibleName("播放输出设备")
         self.output_device.currentIndexChanged.connect(self._mark_form_dirty_index)
@@ -220,6 +237,8 @@ class SettingsDialog(QDialog):
         form.addRow("STT 可执行文件", self.stt_executable)
         form.addRow("STT 模型", self.stt_model_path)
         form.addRow("STT 设备（编号或名称）", self.stt_device)
+        form.addRow("中文 STT 运行时", self.stt_runtime_status)
+        form.addRow("中文 STT 安装", self.install_stt_runtime)
         form.addRow("本地系统播放", self.system_playback_enabled)
         form.addRow("播放输出设备", output_device_row)
         form.addRow("播放设备说明", self.audio_device_hint)
@@ -443,6 +462,18 @@ class SettingsDialog(QDialog):
     def _refresh_audio_devices(self) -> None:
         self._submit(AudioOutputDevicesCommand())
 
+    def _install_chinese_stt(self) -> None:
+        if not self._confirm(
+            "安装中文离线 STT",
+            "将从公开的 GitHub 与 Hugging Face 来源下载约 68 MB 的 whisper.cpp 运行时和模型。"
+            "下载内容会校验完整性并只保存到当前 Windows 用户的本地目录；不会访问麦克风，"
+            "也不会自动启用语音输入。是否继续？",
+        ):
+            return
+        if self._submit(SttInstallCommand()):
+            self.install_stt_runtime.setEnabled(False)
+            self.stt_runtime_status.setText("中文离线 STT：安装中…")
+
     def _selected_output_device_id(self) -> str:
         value = self.output_device.currentData()
         return value if isinstance(value, str) else ""
@@ -652,6 +683,17 @@ class SettingsDialog(QDialog):
         self.vts_secret_state.setText(
             "VTS 令牌：已配置" if snapshot.vts_secret_configured else "VTS 令牌：未配置"
         )
+        runtime_state = snapshot.stt_runtime.state
+        runtime_text = {
+            SttRuntimeState.missing: "未安装",
+            SttRuntimeState.installing: "安装中",
+            SttRuntimeState.verified: "已验证，可离线使用",
+            SttRuntimeState.integrity_failed: "完整性校验失败，可执行修复",
+            SttRuntimeState.unmanaged: "使用手动配置的非受管运行时",
+            SttRuntimeState.unsupported: "当前平台不受支持",
+        }[runtime_state]
+        self.stt_runtime_status.setText(f"中文离线 STT：{runtime_text}")
+        self.install_stt_runtime.setEnabled(runtime_state is not SttRuntimeState.installing)
 
     def _sync_audio_output_devices(self, selected_device_id: str) -> None:
         self.output_device.blockSignals(True)
@@ -791,6 +833,8 @@ class SettingsDialog(QDialog):
         if result is None:
             return
         if result.reason_code is not None:
+            if result.operation == "stt_runtime_install":
+                self.install_stt_runtime.setEnabled(True)
             reason = _MANAGEMENT_REASON_TEXT.get(
                 result.reason_code,
                 f"操作未完成（{result.reason_code}）。",

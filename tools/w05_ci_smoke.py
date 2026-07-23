@@ -58,6 +58,8 @@ _FORBIDDEN_SUFFIXES = (
     ".ckpt",
     ".db",
     ".dotenv",
+    ".dll",
+    ".exe",
     ".exp3.json",
     ".flac",
     ".ggml",
@@ -92,6 +94,7 @@ _FORBIDDEN_SUFFIXES = (
     ".wal",
     ".wav",
     ".webp",
+    ".zip",
 )
 _FORBIDDEN_CONFIG_NAMES = frozenset(
     {

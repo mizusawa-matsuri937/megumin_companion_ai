@@ -12,7 +12,7 @@ from typing import cast
 import desktop_client.ui.management as management_module
 import pytest
 from app.clients.vts import VTSToken
-from app.config import ConfigurationError, Settings, read_user_settings
+from app.config import ConfigurationError, Settings, read_user_settings, write_user_settings
 from app.config.settings import LLMConfig, LoggingConfig, StorageConfig
 from app.memory.models import (
     MemoryClaim,
@@ -33,6 +33,13 @@ from app.memory.service import (
 from app.paths import AppPaths
 from app.schemas import FeatureActualState, FeatureName, FeatureState
 from app.secret_store import SecretStoreError, SecretStoreErrorCode
+from app.stt_runtime import (
+    ManagedChineseSttRuntime,
+    SttRuntimeError,
+    SttRuntimeInstallResult,
+    SttRuntimeState,
+    SttRuntimeStatus,
+)
 from desktop_client.ui.backend import BackendThreadHost, SkeletonBackendRuntime
 from desktop_client.ui.bridge import ApplicationBridge
 from desktop_client.ui.contracts import (
@@ -64,6 +71,7 @@ from desktop_client.ui.contracts import (
     SettingsSaveCommand,
     SettingsSnapshot,
     SettingsSnapshotEvent,
+    SttInstallCommand,
 )
 from desktop_client.ui.management import (
     DesktopManagementRuntime,
@@ -105,6 +113,23 @@ class _Secrets(DesktopSecretStore):
         changed = self.vts is not None
         self.vts = None
         return changed
+
+
+class _SttRuntime:
+    def __init__(self, failure_code: str | None = None) -> None:
+        self.failure_code = failure_code
+        self.install_calls = 0
+        self.state = SttRuntimeState.missing
+
+    def status_for_settings(self, _settings: Settings) -> SttRuntimeStatus:
+        return SttRuntimeStatus(self.state)
+
+    async def install(self) -> SttRuntimeInstallResult:
+        self.install_calls += 1
+        if self.failure_code is not None:
+            raise SttRuntimeError(self.failure_code)
+        self.state = SttRuntimeState.verified
+        return SttRuntimeInstallResult(changed=True, status=SttRuntimeStatus(self.state))
 
 
 def _settings(root: Path) -> Settings:
@@ -212,6 +237,86 @@ def _memory_item(memory_id: str = "mem_ui") -> MemoryItem:
 
 def _events(bridge: ApplicationBridge) -> list[object]:
     return list(bridge.drain_events())
+
+
+def test_explicit_stt_install_updates_only_managed_paths_and_publishes_status(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        settings = _settings(tmp_path / "MeguminCompanion")
+        write_user_settings(
+            {
+                "stt": {
+                    "enabled": True,
+                    "device": "preserve-device",
+                    "threads": 3,
+                    "executable": "manual/whisper-cli.exe",
+                    "model_path": "manual/model.bin",
+                    "language": "zh",
+                }
+            },
+            app_paths=settings.paths,
+        )
+        stt_runtime = _SttRuntime()
+        management = DesktopManagementRuntime(
+            settings,
+            None,
+            secrets=_Secrets(),
+            stt_runtime=cast(ManagedChineseSttRuntime, stt_runtime),
+        )
+        bridge = ApplicationBridge()
+        await management.dispatch(
+            bridge,
+            SttInstallCommand(command_id="stt-install"),
+            capabilities=BackendCapabilities(),
+        )
+        events = _events(bridge)
+        assert stt_runtime.install_calls == 1
+        snapshot = next(event for event in events if isinstance(event, SettingsSnapshotEvent))
+        assert snapshot.snapshot.stt_runtime.state is SttRuntimeState.verified
+        assert any(
+            isinstance(event, ManagementResultEvent)
+            and event.operation == "stt_runtime_installed"
+            and event.restart_required
+            for event in events
+        )
+        layer = read_user_settings(app_paths=settings.paths)
+        assert layer["stt"] == {
+            "enabled": True,
+            "device": "preserve-device",
+            "threads": 3,
+            "provider": "whisper_cpp",
+            "executable": "stt/whispercpp/v1.9.1/bin/whisper-cli.exe",
+            "model_path": "stt/whispercpp/v1.9.1/model/ggml-base-q5_1.bin",
+            "language": "zh",
+        }
+
+    asyncio.run(scenario())
+
+
+def test_stt_install_failure_reports_stable_code(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        settings = _settings(tmp_path / "MeguminCompanion")
+        management = DesktopManagementRuntime(
+            settings,
+            None,
+            secrets=_Secrets(),
+            stt_runtime=cast(ManagedChineseSttRuntime, _SttRuntime("stt_download_failed")),
+        )
+        bridge = ApplicationBridge()
+        await management.dispatch(
+            bridge,
+            SttInstallCommand(command_id="stt-install-failed"),
+            capabilities=BackendCapabilities(),
+        )
+        assert any(
+            isinstance(event, ManagementResultEvent)
+            and event.operation == "stt_runtime_install"
+            and event.reason_code == "stt_download_failed"
+            for event in _events(bridge)
+        )
+
+    asyncio.run(scenario())
 
 
 def test_w16_settings_secret_and_feature_disable_wait_for_barrier(

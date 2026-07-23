@@ -44,8 +44,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--stt-model", type=_absolute_path_argument)
     parser.add_argument("--stt-temporary-root", type=_absolute_path_argument)
     parser.add_argument("--stt-executable-prefix", action="append", default=[])
-    parser.add_argument("--stt-language", default="auto")
+    parser.add_argument("--stt-language", default="zh")
     parser.add_argument("--stt-threads", type=int)
+    parser.add_argument("--stt-expected-executable-sha256")
+    parser.add_argument("--stt-expected-model-sha256")
     parser.add_argument("--stt-terminate-grace-seconds", type=float, default=0.5)
     parser.add_argument("--stt-max-audio-bytes", type=int, default=64 * 1024 * 1024)
     parser.add_argument("--stt-max-output-bytes", type=int, default=2 * 1024 * 1024)
@@ -71,6 +73,13 @@ async def run(argv: Sequence[str] | None = None) -> int:
         value is not None for value in stt_values
     ):
         return 2
+    expected_hashes = (args.stt_expected_executable_sha256, args.stt_expected_model_sha256)
+    if any(value is not None for value in expected_hashes) and not all(
+        value is not None for value in expected_hashes
+    ):
+        return 2
+    if args.stt_language != "zh":
+        return 2
     if args.stt_temporary_root is not None and args.stt_temporary_root.resolve(
         strict=False
     ) not in {root.resolve(strict=False) for root in roots.values()}:
@@ -91,6 +100,8 @@ async def run(argv: Sequence[str] | None = None) -> int:
                 model_path=args.stt_model,
                 executable_prefix_args=tuple(args.stt_executable_prefix),
                 threads=args.stt_threads,
+                expected_executable_sha256=args.stt_expected_executable_sha256,
+                expected_model_sha256=args.stt_expected_model_sha256,
                 terminate_grace_seconds=args.stt_terminate_grace_seconds,
                 max_audio_bytes=args.stt_max_audio_bytes,
                 max_output_bytes=args.stt_max_output_bytes,

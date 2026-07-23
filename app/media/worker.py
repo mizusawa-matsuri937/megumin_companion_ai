@@ -320,7 +320,7 @@ class MediaWorkerHandler:
         input_blocksize: int = 0,
         maximum_recording_seconds: float = 120.0,
         transcription_timeout_seconds: float = 60.0,
-        language: str = "auto",
+        language: str = "zh",
         recording_watchdog_wait: Callable[[float], Awaitable[None]] | None = None,
     ) -> None:
         if maximum_wave_bytes < 44:
@@ -520,16 +520,17 @@ class MediaWorkerHandler:
                             else _voice_failed(exc.code)
                         )
                     else:
-                        response = (
-                            {"status": "cancelled"}
-                            if cancelled.is_set()
-                            else {
+                        if cancelled.is_set():
+                            response = {"status": "cancelled"}
+                        else:
+                            response = {
                                 "status": "transcribed",
                                 "text": result.text,
                                 "language": result.language or "",
                                 "segment_count": result.segment_count,
                             }
-                        )
+                            if result.peak_working_set_bytes is not None:
+                                response["peak_working_set_bytes"] = result.peak_working_set_bytes
         except asyncio.CancelledError:
             raise
         except Exception:

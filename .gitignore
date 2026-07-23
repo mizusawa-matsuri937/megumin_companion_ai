@@ -71,6 +71,15 @@ assets/user_imported/
 *.jpeg
 *.webp
 
+# W18 managed STT downloads are per-user LocalAppData assets, never source or package inputs.
+*.ggml
+*.gguf
+ggml-*.bin
+whisper-bin-*.zip
+whisper-*.exe
+whisper.dll
+ggml*.dll
+
 # Explicitly allow future synthetic/licensed fixtures and placeholders
 !assets/placeholder/**/*.wav
 !assets/placeholder/**/*.png

@@ -1,6 +1,6 @@
 # Windows Gate W0 威胁模型
 
-> 版本：2026-07-22
+> 版本：2026-07-23
 > 状态：项目所有者自审通过；没有独立人工安全/隐私 reviewer
 > 范围：Windows 11 x64、标准用户、单交互会话、私人使用
 
@@ -46,6 +46,7 @@
 | TM-W00-13 | 崩溃重启造成 crash loop/后台录音捕获 | crash marker、budget/quarantine、feature actual state reconcile；W18 只有显式 PTT start 才打开输入设备，默认不持续监听 | repeated crash/restart tests；W18 start/cancel/watchdog/worker cleanup tests | 设备/驱动特定问题、真实锁屏和系统级 hotkey 仍需真实环境/后续 adapter |
 | TM-W00-14 | 安装包夹带资产、密钥或用户数据 | artifact allowlist、manifest、SBOM、sentinel 和许可证清单 | clean build + artifact scan | 当前无独立许可证 reviewer |
 | TM-W00-15 | 未签名私人包被误作公开发布 | 文档标记私人/未签名；公开发布重新 Gate | release checklist | 用户手工转发仍可能产生信任警告 |
+| TM-W00-16 | 受管 STT 下载被篡改、ZIP 越界或恶意模型导致 CLI 崩溃 | 固定 HTTPS URL/版本/大小/hash；有限重定向、staging、拒绝 Zip Slip/link/reparse point、原子切换；MediaWorker 首次使用前全量 CLI/model SHA-256，失败不启动 CLI；Job Object 约束子树 | 合成 archive/hash/timeout/cancel/repair、受管/手工路径、worker integrity-fail-before-CLI、wheel asset denylist；真实模型/内存另列设备 Gate | 当前用户完全受控、手工非受管模型和 upstream parser 缺陷不在此控制的保证内；不得宣称上游 issue 已修复 |
 
 ## 反方审查清单
 
@@ -69,3 +70,7 @@
 3. **RR-W00-03 安装器未冻结：** 只批准 per-user、无静默更新、备份回滚约束；具体技术在 W25 前决定。
 4. **RR-W00-04 设备声明未具象化：** “基本具备”不是验收证据；W4～W6 前必须登记具体内置/USB/蓝牙声卡、麦克风和多显示器结果。RDP、快速切用户、跨 session 与第二账户有效访问属于当前单机单用户私人范围的范围外项，不能写成通过或待本地人工 Gate。
 5. **RR-W00-05 私人未签名：** 当前不需要签名，只能用于私人构建；任何公开分发保持阻塞。
+6. **RR-W00-06 whisper.cpp 上游模型解析风险：** [CVE-2026-10298](https://nvd.nist.gov/vuln/detail/CVE-2026-10298)
+   的 NVD 记录列出范围至 1.8.2，未把受管的 v1.9.1 列为受影响版本；但
+   [issue #3807](https://github.com/ggml-org/whisper.cpp/issues/3807) 在本次复核时仍为 open，不能据此声称 v1.9.1
+   已修复。固定 hash 的受管模型减少意外/替换输入，不能替代上游修复、独立审计或对非受管模型的防护。

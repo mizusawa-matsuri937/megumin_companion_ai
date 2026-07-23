@@ -14,6 +14,8 @@
 
 - [`../adr/README.md`](../adr/README.md)：Architecture Decision Records。
 - [`../decisions/w00_owner_decisions.md`](../decisions/w00_owner_decisions.md)：所有者决定。
+- [`../decisions/w18_managed_chinese_stt_runtime.md`](../decisions/w18_managed_chinese_stt_runtime.md)：受管中文
+  whisper.cpp runtime 的固定来源、hash、许可与残余风险。
 - [`../security/windows_threat_model.md`](../security/windows_threat_model.md)：威胁模型。
 
 修改架构、协议、数据流或隐私边界前，先阅读上述资料和当前计划，再以当前代码/测试核验实际实现范围。

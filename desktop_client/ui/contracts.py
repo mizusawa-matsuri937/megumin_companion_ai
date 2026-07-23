@@ -22,6 +22,7 @@ from app.schemas import (
     utc_now,
 )
 from app.schemas.messages import prefixed_id
+from app.stt_runtime import SttRuntimeState, SttRuntimeStatus
 
 BRIDGE_PROTOCOL_VERSION: Literal[1] = 1
 _REASON_CODE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
@@ -190,6 +191,9 @@ class SettingsSnapshot:
     llm_secret_configured: bool
     vts_secret_configured: bool
     settings_schema_upgrade_required: bool
+    stt_runtime: SttRuntimeStatus = field(
+        default_factory=lambda: SttRuntimeStatus(SttRuntimeState.missing)
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -208,6 +212,18 @@ class SettingsSaveCommand:
     command_id: str = field(default_factory=lambda: prefixed_id("cmd"))
     protocol_version: Literal[1] = field(default=BRIDGE_PROTOCOL_VERSION, init=False)
     type: Literal["settings.save"] = field(default="settings.save", init=False)
+
+    def __post_init__(self) -> None:
+        _validate_command_id(self.command_id)
+
+
+@dataclass(frozen=True, slots=True)
+class SttInstallCommand:
+    """Explicitly install or repair the one managed local Chinese STT runtime."""
+
+    command_id: str = field(default_factory=lambda: prefixed_id("cmd"))
+    protocol_version: Literal[1] = field(default=BRIDGE_PROTOCOL_VERSION, init=False)
+    type: Literal["stt.install"] = field(default="stt.install", init=False)
 
     def __post_init__(self) -> None:
         _validate_command_id(self.command_id)
@@ -380,6 +396,7 @@ class ManagementDebugCommand:
 ManagementCommand: TypeAlias = (
     ManagementRefreshCommand
     | SettingsSaveCommand
+    | SttInstallCommand
     | AudioOutputDevicesCommand
     | SecretStoreCommand
     | SecretRevokeCommand

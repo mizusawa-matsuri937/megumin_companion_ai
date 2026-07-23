@@ -22,6 +22,7 @@ from app.media.voice import (
     VoiceTranscription,
 )
 from app.paths import AppPaths
+from app.stt_runtime import ManagedRuntimeHashes
 from app.temp_assets import TempAssetRegistry
 from app.windows_security import PortableDirectorySecurity
 from app.workers import (
@@ -769,7 +770,7 @@ def test_voice_worker_command_includes_only_explicit_safe_configuration(tmp_path
         {"stt_temp": root},
         executable=tmp_path / "whisper-cli.exe",
         model=tmp_path / "model.bin",
-        language="auto",
+        language="zh",
         threads=None,
         terminate_grace_seconds=0.5,
         max_audio_bytes=100,
@@ -785,7 +786,7 @@ def test_voice_worker_command_includes_only_explicit_safe_configuration(tmp_path
         {"stt_temp": root},
         executable=tmp_path / "whisper-cli.exe",
         model=tmp_path / "model.bin",
-        language="auto",
+        language="zh",
         threads=None,
         terminate_grace_seconds=0.5,
         max_audio_bytes=100,
@@ -797,6 +798,27 @@ def test_voice_worker_command_includes_only_explicit_safe_configuration(tmp_path
     )
     assert "--input-device-index" not in bool_device_command
     assert "--input-device-name" not in bool_device_command
+
+    managed_command = voice_module._voice_worker_command(
+        {"stt_temp": root},
+        executable=tmp_path / "whisper-cli.exe",
+        model=tmp_path / "model.bin",
+        language="zh",
+        threads=None,
+        terminate_grace_seconds=0.5,
+        max_audio_bytes=100,
+        max_output_bytes=200,
+        maximum_recording_seconds=120,
+        transcription_timeout_seconds=60,
+        input_device=None,
+        input_blocksize=0,
+        expected_hashes=ManagedRuntimeHashes(
+            executable_sha256="a" * 64,
+            model_sha256="b" * 64,
+        ),
+    )
+    assert "--stt-expected-executable-sha256" in managed_command
+    assert "--stt-expected-model-sha256" in managed_command
 
 
 def test_parent_voice_lifecycle_rejects_invalid_states_and_cleans_cancelled_calls(

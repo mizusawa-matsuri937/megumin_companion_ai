@@ -119,13 +119,14 @@ proactive:
   quiet_start_hour: 23
   quiet_end_hour: 8
 
-# 默认禁用，且不会下载模型或请求麦克风权限。启用后需自行配置本机 whisper-cli 与模型。
+# 默认禁用，且不会下载模型或请求麦克风权限。用户可在设置中显式安装受管中文离线 STT，
+# 或继续配置自己的 whisper-cli 与模型。
 stt:
   enabled: false
   provider: whisper_cpp
-  executable: whisper/whisper-cli.exe
-  model_path: whisper/ggml-base.bin
-  language: auto
+  executable: stt/whispercpp/v1.9.1/bin/whisper-cli.exe
+  model_path: stt/whispercpp/v1.9.1/model/ggml-base-q5_1.bin
+  language: zh
   threads: null
   temporary_directory: stt
   terminate_grace_seconds: 0.5
