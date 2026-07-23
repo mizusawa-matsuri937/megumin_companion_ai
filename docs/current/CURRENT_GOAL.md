@@ -27,6 +27,14 @@
 > quality 在无关的 GPT-SoVITS fake-response 测试将预期 `tts_invalid_audio` 误报为 `tts_first_byte_timeout`；同一 head 的
 > [push workflow](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29979956583) 成功，失败 job 重跑也成功。
 > 本机该参数化测试连续 20 次通过；80 ms MockTransport first-byte fixture 在 Windows 满载时调度敏感是**合理推测**，不是已证明永久稳定。
+>
+> 最终状态记录 head [`2b0b858`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/2b0b858bb01c684056d764bce460c6a213767091)
+> 的 [PR workflow](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29980501223) 与
+> [push workflow](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29980499672) 均通过双 OS 的
+> `quality` / `installed-wheel`。在本机获得明确授权后，受管安装实际尝试未完成：第一次命令的外层终端在 64 秒超时，子进程随后
+> 退出而未激活资产，因输出管道已关闭不能取得原因码；第二次受控单实例重试返回稳定
+> `stt_download_failed`。随后状态为 `missing`、`stt.enabled=false`、零 staging 目录；没有访问麦克风、录音、转写或测量
+> `PeakWorkingSetSize`。这不是设备 Gate 通过，而是固定来源下载失败的已记录阻塞；CLI 有意不公开更细的网络原因，不能臆测其根因。
 
 ## 本轮已确认的实现范围
 
@@ -80,10 +88,10 @@
 
 ## 未完成 Gate、范围外与下一步
 
-1. `30f265b` 已完成修复代码的双 workflow exact-head 核验；CI 证据仍只能用于其对应 head，任何后续 head（包括本条状态
-   记录）都须独立完成相同核验。未获授权不合并。
-2. 唯一保留的真实设备 Gate：一次约 30 秒中文 PTT，确认离线转写、真实麦克风/系统提示和
-   `PeakWorkingSetSize ≤512 MiB`。任何超限阻止交付并重新选型；不得保存真实录音或转写正文。
+1. `2b0b858` 已完成最终状态记录的双 workflow exact-head 核验；CI 证据仍只能用于其对应 head，任何后续 head 都须独立完成
+   相同核验。未获授权不合并。
+2. 唯一真实设备 Gate 仍未通过：先恢复对固定 GitHub/Hugging Face 资产的受管下载，随后一次约 30 秒中文 PTT 确认离线转写、
+   真实麦克风/系统提示和 `PeakWorkingSetSize ≤512 MiB`。任何超限阻止交付并重新选型；不得保存真实录音或转写正文。
 
 真实 IME/高 DPI、锁屏和系统级 hotkey 没有通过结论，且不被 fake/headless 条件冒充；它们是后续桌面体验工作，不是本轮
 受管 runtime 的额外发布 Gate。RDP、快速切换用户、跨 session 和跨用户访问属于单机单用户私人范围外，不能写作通过或

@@ -148,6 +148,17 @@ AI 已覆盖可合成的 ring、worker lifecycle、进程树、路径、取消�
 `whisper-cli` 的 Windows `PeakWorkingSetSize`。验收上限为 **≤512 MiB**；未测量或超限均阻止交付并重新选型，且不得把
 录音或转写正文写入仓库，也不能用模型约 57 MiB 文件体积代替。
 
+### 已授权实际尝试（2026-07-23；未通过）
+
+- 所有者明确授权下载、受管安装与短时麦克风 Gate。第一次 `--install-chinese-stt` 尝试的外层终端在 64 秒超时，安装子进程
+  随后退出且没有激活资产；由于该输出管道已关闭，不能可靠恢复其 reason code。
+- 第二次单实例、受限状态输出的相同 CLI 尝试返回 `{"status":"error","reason_code":"stt_download_failed"}`。这是可公开的
+  稳定原因码；它没有区分 CDN、连接、读取或总超时，故不能据此宣称具体网络根因。
+- 结束后以受管状态 API 复核：`state=missing`、`stt.enabled=false`、零 staging 目录。没有受管 CLI/model 被激活，也没有
+  更改设备或线程设置；被取消副本遗留的一个 staging 目录已按受管树安全检查后移除。
+- 因安装前置条件失败，未运行 `tools/stt_smoke.py --mode microphone --measure-working-set`，未访问麦克风或系统权限提示，
+  未录音、未转写、未输出 `PeakWorkingSetSize`。所以真实 Gate 仍是**未通过/被下载阻塞**，不能报告为完成。
+
 真实 IME/高 DPI、锁屏与系统级 hotkey 当前都没有通过结论：前两项不由 fake/headless 条件冒充，后两项尚未在本阶段
 启用/实现。这些是后续桌面体验或 W20 工作，不是本轮受管 runtime 的额外发布 Gate。
 
