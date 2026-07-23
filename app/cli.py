@@ -212,12 +212,13 @@ def _upgrade_local_settings() -> int:
 
 
 def _install_chinese_stt() -> int:
-    """Install the fixed local profile and persist only its non-sensitive paths."""
+    """Install the selected reviewed profile and persist only non-sensitive paths."""
 
     try:
         settings = _load_production_settings_for_secret_action()
-        asyncio.run(ManagedChineseSttRuntime(settings.paths).install())
-        patch_user_settings(managed_stt_settings_patch(), app_paths=settings.paths)
+        profile = settings.stt.managed_profile
+        asyncio.run(ManagedChineseSttRuntime(settings.paths, profile=profile).install())
+        patch_user_settings(managed_stt_settings_patch(profile), app_paths=settings.paths)
     except (
         ConfigurationError,
         AppPathError,

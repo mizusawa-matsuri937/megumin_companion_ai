@@ -138,7 +138,11 @@ class DesktopManagementRuntime:
         self._memory_runtime = memory_runtime
         self._secrets = secrets or DPAPIDesktopSecretStore()
         self._audio_device_lister = audio_device_lister or _list_audio_output_devices
-        self._stt_runtime = stt_runtime or ManagedChineseSttRuntime(settings.paths)
+        self._uses_default_stt_runtime = stt_runtime is None
+        self._stt_runtime = stt_runtime or ManagedChineseSttRuntime(
+            settings.paths,
+            profile=settings.stt.managed_profile,
+        )
 
     @staticmethod
     def handles(command: object) -> TypeGuard[ManagementCommand]:
@@ -320,6 +324,7 @@ class DesktopManagementRuntime:
                 app_paths=self._settings.paths,
                 environ={},
             )
+            self._refresh_default_stt_runtime()
         except Exception as exc:
             self._result(
                 bridge,
@@ -355,7 +360,7 @@ class DesktopManagementRuntime:
             await install_task
             await asyncio.to_thread(
                 patch_user_settings,
-                managed_stt_settings_patch(),
+                managed_stt_settings_patch(self._settings.stt.managed_profile),
                 app_paths=self._settings.paths,
             )
             self._settings = await asyncio.to_thread(
@@ -363,6 +368,7 @@ class DesktopManagementRuntime:
                 app_paths=self._settings.paths,
                 environ={},
             )
+            self._refresh_default_stt_runtime()
         except Exception as exc:
             self._result(
                 bridge,
@@ -883,6 +889,19 @@ class DesktopManagementRuntime:
             reason_code="private_state_runtime_disabled",
         )
 
+    def _refresh_default_stt_runtime(self) -> None:
+        """Bind the next explicit install to the newly saved profile selection.
+
+        Test doubles remain intact; production only replaces its small
+        management service after the persisted, validated settings reload.
+        """
+
+        if self._uses_default_stt_runtime:
+            self._stt_runtime = ManagedChineseSttRuntime(
+                self._settings.paths,
+                profile=self._settings.stt.managed_profile,
+            )
+
 
 async def _list_audio_output_devices(settings: Settings) -> OutputDeviceList:
     """Enumerate only when the user explicitly asks the settings UI to do so."""
@@ -907,6 +926,7 @@ def _settings_form(settings: Settings) -> DesktopSettingsForm:
         vts_plugin_name=settings.vts.plugin_name,
         vts_plugin_developer=settings.vts.plugin_developer,
         stt_enabled=settings.stt.enabled,
+        stt_profile=settings.stt.managed_profile,
         stt_executable=str(settings.stt.executable),
         stt_model_path=str(settings.stt.model_path),
         stt_device="" if settings.stt.device is None else str(settings.stt.device),
@@ -944,6 +964,7 @@ def _settings_patch(form: DesktopSettingsForm) -> dict[str, object]:
         },
         "stt": {
             "enabled": form.stt_enabled,
+            "managed_profile": form.stt_profile,
             "executable": form.stt_executable.strip(),
             "model_path": form.stt_model_path.strip(),
             "device": device,

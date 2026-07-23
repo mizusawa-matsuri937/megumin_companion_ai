@@ -11,6 +11,7 @@ import asyncio
 import hashlib
 import os
 import platform
+import re
 import shutil
 import stat
 import subprocess
@@ -49,6 +50,8 @@ _CREATE_NO_WINDOW = int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
 MANAGED_STT_PROFILE = "whispercpp_base_q5_1"
 MANAGED_STT_EXECUTABLE_RELATIVE = Path("stt/whispercpp/v1.9.1/bin/whisper-cli.exe")
 MANAGED_STT_MODEL_RELATIVE = Path("stt/whispercpp/v1.9.1/model/ggml-base-q5_1.bin")
+_PROFILE_ID = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+_RUNTIME_VERSION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,13 +75,50 @@ class SttAsset:
 
 @dataclass(frozen=True, slots=True)
 class ManagedSttRuntimeManifest:
-    """Version-pinned source and integrity metadata for the supported profile."""
+    """Version-pinned source and integrity metadata for one Whisper profile.
+
+    A profile is deliberately more than a model filename: it pins the
+    compatible whisper.cpp archive, its executable hash, the immutable model
+    source, its hash, and a bounded download size.  This lets later, larger
+    Whisper models use the existing worker contract without creating an
+    arbitrary local-model input surface.
+    """
 
     profile: str
     version: str
     runtime_archive: SttAsset
     executable_sha256: str
     model: SttAsset
+    model_filename: str = MANAGED_STT_MODEL_RELATIVE.name
+    display_name: str = "Whisper base · Q5_1"
+    language: str = "zh"
+
+    def __post_init__(self) -> None:
+        if not _PROFILE_ID.fullmatch(self.profile):
+            raise ValueError("managed Whisper profile id is invalid")
+        if not _RUNTIME_VERSION.fullmatch(self.version):
+            raise ValueError("managed Whisper runtime version is invalid")
+        if len(self.executable_sha256) != 64 or any(
+            character not in "0123456789abcdef" for character in self.executable_sha256
+        ):
+            raise ValueError("managed Whisper executable hash must be lowercase SHA-256")
+        if (
+            not self.model_filename
+            or self.model_filename in {".", ".."}
+            or "/" in self.model_filename
+            or "\\" in self.model_filename
+            or "\x00" in self.model_filename
+            or len(self.model_filename) > 255
+        ):
+            raise ValueError("managed Whisper model filename is invalid")
+        if (
+            not self.display_name.strip()
+            or "\x00" in self.display_name
+            or len(self.display_name) > 128
+        ):
+            raise ValueError("managed Whisper display name is invalid")
+        if self.language != "zh":
+            raise ValueError("managed Whisper profiles must remain Chinese-only")
 
 
 MANAGED_CHINESE_STT_MANIFEST = ManagedSttRuntimeManifest(
@@ -99,6 +139,46 @@ MANAGED_CHINESE_STT_MANIFEST = ManagedSttRuntimeManifest(
         maximum_bytes=80 * 1024 * 1024,
     ),
 )
+
+# This is the only catalogue an update may extend.  Do not turn it into a
+# user-editable URL/path/hash list: every entry remains a reviewed, immutable
+# whisper.cpp profile.  The current base profile stays first for backward
+# compatibility with its established local directory.
+MANAGED_WHISPER_STT_PROFILES: tuple[ManagedSttRuntimeManifest, ...] = (
+    MANAGED_CHINESE_STT_MANIFEST,
+)
+
+
+def managed_stt_profiles() -> tuple[ManagedSttRuntimeManifest, ...]:
+    """Return the reviewed, built-in Whisper profile catalogue.
+
+    A duplicate id is a packaging/programming error, not a condition that a
+    user setting may resolve ambiguously.
+    """
+
+    profiles = MANAGED_WHISPER_STT_PROFILES
+    profile_ids = {manifest.profile for manifest in profiles}
+    if not profiles or len(profile_ids) != len(profiles):
+        raise RuntimeError("managed Whisper profile catalogue is invalid")
+    return profiles
+
+
+def managed_stt_manifest(profile: str) -> ManagedSttRuntimeManifest:
+    """Resolve one registered Whisper profile without accepting arbitrary input."""
+
+    if not isinstance(profile, str):
+        raise ValueError("managed Whisper profile must be text")
+    normalized = profile.strip().casefold()
+    for manifest in managed_stt_profiles():
+        if manifest.profile == normalized:
+            return manifest
+    raise ValueError("managed Whisper profile is not registered")
+
+
+def managed_stt_relative_paths(profile: str) -> tuple[Path, Path]:
+    """Return the canonical asset paths for one registered Whisper profile."""
+
+    return _managed_runtime_relative_paths(managed_stt_manifest(profile))
 
 
 class SttRuntimeState(StrEnum):
@@ -138,19 +218,22 @@ class SttRuntimeError(RuntimeError):
         super().__init__(code)
 
 
-def managed_stt_settings_patch() -> dict[str, object]:
+def managed_stt_settings_patch(profile: str = MANAGED_STT_PROFILE) -> dict[str, object]:
     """Return the narrow patch applied after a successful explicit installation.
 
     ``enabled``, device selection, and thread choice deliberately remain owned
     by the existing user configuration and are never changed here.
     """
 
+    manifest = managed_stt_manifest(profile)
+    executable, model = _managed_runtime_relative_paths(manifest)
     return {
         "stt": {
+            "managed_profile": manifest.profile,
             "provider": "whisper_cpp",
-            "executable": MANAGED_STT_EXECUTABLE_RELATIVE.as_posix(),
-            "model_path": MANAGED_STT_MODEL_RELATIVE.as_posix(),
-            "language": "zh",
+            "executable": executable.as_posix(),
+            "model_path": model.as_posix(),
+            "language": manifest.language,
         }
     }
 
@@ -162,64 +245,77 @@ def managed_runtime_hashes_for_paths(
 ) -> ManagedRuntimeHashes | None:
     """Return expected hashes only for the canonical managed runtime paths."""
 
-    expected_executable, expected_model = _managed_runtime_paths(paths)
-    if (
-        executable.absolute() != expected_executable.absolute()
-        or model_path.absolute() != expected_model.absolute()
-    ):
+    manifest = _managed_stt_manifest_for_paths(paths, executable, model_path)
+    if manifest is None:
         return None
     return ManagedRuntimeHashes(
-        executable_sha256=MANAGED_CHINESE_STT_MANIFEST.executable_sha256,
-        model_sha256=MANAGED_CHINESE_STT_MANIFEST.model.sha256,
+        executable_sha256=manifest.executable_sha256,
+        model_sha256=manifest.model.sha256,
     )
 
 
 class ManagedChineseSttRuntime:
-    """Install and inspect the one supported x64 Windows Chinese STT profile."""
+    """Install and inspect one registered x64 Windows Chinese Whisper profile."""
 
     def __init__(
         self,
         paths: AppPaths,
         *,
+        profile: str = MANAGED_STT_PROFILE,
         client_factory: Callable[[], httpx.AsyncClient] | None = None,
         platform_supported: Callable[[], bool] | None = None,
         version_probe: Callable[[Path], None] | None = None,
         directory_security: DirectorySecurity | None = None,
     ) -> None:
         self._paths = paths
+        self._manifest = managed_stt_manifest(profile)
         self._client_factory = client_factory or _new_http_client
         self._platform_supported = platform_supported or _windows_x64_supported
         self._version_probe = version_probe or _probe_version
         self._directory_security = directory_security or directory_security_for_current_platform()
         self._install_lock = asyncio.Lock()
         self._installing = False
-        self._verification_cache: tuple[tuple[int, int, int, int], bool] | None = None
+        self._verification_cache: dict[str, tuple[tuple[int, int, int, int], bool]] = {}
 
     @property
     def installing(self) -> bool:
         return self._installing
 
+    @property
+    def profile(self) -> str:
+        """Return the profile selected for this installer instance."""
+
+        return self._manifest.profile
+
     def status_for_settings(self, settings: Settings) -> SttRuntimeStatus:
         """Inspect persisted settings without creating directories or networking."""
 
         try:
+            configured_manifest = managed_stt_manifest(settings.stt.managed_profile)
             executable = settings.stt_executable_path()
             model = settings.stt_model_path()
         except Exception:
-            return SttRuntimeStatus(SttRuntimeState.integrity_failed)
-        return self.status_for_paths(executable, model)
+            return SttRuntimeStatus(SttRuntimeState.integrity_failed, profile=self.profile)
+        status = self.status_for_paths(executable, model)
+        if (
+            status.state is SttRuntimeState.unmanaged
+            or status.profile != configured_manifest.profile
+        ):
+            return SttRuntimeStatus(SttRuntimeState.unmanaged, profile=configured_manifest.profile)
+        return status
 
     def status_for_paths(self, executable: Path, model_path: Path) -> SttRuntimeStatus:
-        if self._installing:
-            return SttRuntimeStatus(SttRuntimeState.installing)
-        if not self._platform_supported():
-            return SttRuntimeStatus(SttRuntimeState.unsupported)
-        if managed_runtime_hashes_for_paths(self._paths, executable, model_path) is None:
+        manifest = _managed_stt_manifest_for_paths(self._paths, executable, model_path)
+        if manifest is None:
             return SttRuntimeStatus(SttRuntimeState.unmanaged)
+        if self._installing and manifest.profile == self.profile:
+            return SttRuntimeStatus(SttRuntimeState.installing, profile=manifest.profile)
+        if not self._platform_supported():
+            return SttRuntimeStatus(SttRuntimeState.unsupported, profile=manifest.profile)
         state = SttRuntimeState.verified
-        if not self._verify_installed():
-            state = self._missing_or_invalid_state()
-        return SttRuntimeStatus(state)
+        if not self._verify_installed(manifest):
+            state = self._missing_or_invalid_state(manifest)
+        return SttRuntimeStatus(state, profile=manifest.profile)
 
     async def install(self) -> SttRuntimeInstallResult:
         """Explicitly download, verify, and atomically activate the pinned profile."""
@@ -233,39 +329,44 @@ class ManagedChineseSttRuntime:
             self._installing = True
             staging: Path | None = None
             try:
-                if self._verify_installed():
+                if self._verify_installed(self._manifest):
                     return SttRuntimeInstallResult(
                         changed=False,
-                        status=SttRuntimeStatus(SttRuntimeState.verified),
+                        status=SttRuntimeStatus(SttRuntimeState.verified, profile=self.profile),
                     )
-                staging = await asyncio.to_thread(self._create_staging_directory)
+                staging = await asyncio.to_thread(self._create_staging_directory, self._manifest)
                 runtime_archive = staging / "whisper-bin-x64.zip"
                 await self._download_asset(
-                    MANAGED_CHINESE_STT_MANIFEST.runtime_archive,
+                    self._manifest.runtime_archive,
                     runtime_archive,
                 )
                 await asyncio.to_thread(
                     self._extract_runtime_archive,
                     runtime_archive,
                     staging / "bin",
+                    self._manifest,
                 )
                 await asyncio.to_thread(self._remove_staging_file, runtime_archive)
                 await asyncio.to_thread(
                     self._version_probe,
-                    staging / "bin" / MANAGED_STT_EXECUTABLE_RELATIVE.name,
+                    staging / "bin" / "whisper-cli.exe",
                 )
-                model_path = staging / "model" / MANAGED_STT_MODEL_RELATIVE.name
+                model_path = staging / "model" / self._manifest.model_filename
                 model_path.parent.mkdir(parents=True, exist_ok=True)
-                await self._download_asset(MANAGED_CHINESE_STT_MANIFEST.model, model_path)
-                await asyncio.to_thread(self._write_notice, staging)
-                await asyncio.to_thread(self._activate_staging_directory, staging)
+                await self._download_asset(self._manifest.model, model_path)
+                await asyncio.to_thread(self._write_notice, staging, self._manifest)
+                await asyncio.to_thread(
+                    self._activate_staging_directory,
+                    staging,
+                    self._manifest,
+                )
                 staging = None
-                self._verification_cache = None
-                if not self._verify_installed():
+                self._verification_cache.pop(self.profile, None)
+                if not self._verify_installed(self._manifest):
                     raise SttRuntimeError("stt_runtime_integrity_failed")
                 return SttRuntimeInstallResult(
                     changed=True,
-                    status=SttRuntimeStatus(SttRuntimeState.verified),
+                    status=SttRuntimeStatus(SttRuntimeState.verified, profile=self.profile),
                 )
             except asyncio.CancelledError:
                 raise
@@ -345,8 +446,8 @@ class ManagedChineseSttRuntime:
                 with suppress(OSError):
                     destination.unlink()
 
-    def _create_staging_directory(self) -> Path:
-        parent = _managed_runtime_root(self._paths).parent
+    def _create_staging_directory(self, manifest: ManagedSttRuntimeManifest) -> Path:
+        parent = _managed_runtime_root(self._paths, manifest).parent
         self._directory_security.ensure_private_tree(self._paths.root, (parent,))
         assert_no_reparse_points(self._paths.root, parent)
         staging = parent / f".install-{uuid4().hex}"
@@ -354,7 +455,12 @@ class ManagedChineseSttRuntime:
         assert_no_reparse_points(self._paths.root, staging)
         return staging
 
-    def _extract_runtime_archive(self, archive_path: Path, destination: Path) -> None:
+    def _extract_runtime_archive(
+        self,
+        archive_path: Path,
+        destination: Path,
+        manifest: ManagedSttRuntimeManifest,
+    ) -> None:
         """Extract only the unique CLI directory after validating all ZIP members."""
 
         total_uncompressed = 0
@@ -386,25 +492,25 @@ class ManagedChineseSttRuntime:
                 target = destination / path.name
                 with archive.open(info, "r") as source, target.open("xb") as output:
                     shutil.copyfileobj(source, output, length=_DOWNLOAD_CHUNK_BYTES)
-        executable = destination / MANAGED_STT_EXECUTABLE_RELATIVE.name
+        executable = destination / "whisper-cli.exe"
         _validated_regular_file(executable, "stt_runtime_archive_invalid", self._paths.root)
-        if not _matches_sha256(executable, MANAGED_CHINESE_STT_MANIFEST.executable_sha256):
+        if not _matches_sha256(executable, manifest.executable_sha256):
             raise SttRuntimeError("stt_runtime_integrity_failed")
 
-    def _write_notice(self, staging: Path) -> None:
+    def _write_notice(self, staging: Path, manifest: ManagedSttRuntimeManifest) -> None:
         notice = staging / "NOTICE.txt"
         notice.write_text(
             "Managed Chinese STT runtime\n"
-            f"profile: {MANAGED_CHINESE_STT_MANIFEST.profile}\n"
-            f"whisper.cpp version: {MANAGED_CHINESE_STT_MANIFEST.version}\n"
+            f"profile: {manifest.profile}\n"
+            f"whisper.cpp version: {manifest.version}\n"
             "whisper.cpp license: MIT\n"
-            f"runtime source: {MANAGED_CHINESE_STT_MANIFEST.runtime_archive.url}\n"
-            f"runtime sha256: {MANAGED_CHINESE_STT_MANIFEST.runtime_archive.sha256}\n"
-            f"whisper-cli sha256: {MANAGED_CHINESE_STT_MANIFEST.executable_sha256}\n"
-            "model: ggml-base-q5_1.bin\n"
+            f"runtime source: {manifest.runtime_archive.url}\n"
+            f"runtime sha256: {manifest.runtime_archive.sha256}\n"
+            f"whisper-cli sha256: {manifest.executable_sha256}\n"
+            f"model: {manifest.model_filename}\n"
             "model license: MIT\n"
-            f"model source: {MANAGED_CHINESE_STT_MANIFEST.model.url}\n"
-            f"model sha256: {MANAGED_CHINESE_STT_MANIFEST.model.sha256}\n",
+            f"model source: {manifest.model.url}\n"
+            f"model sha256: {manifest.model.sha256}\n",
             encoding="utf-8",
         )
 
@@ -412,12 +518,16 @@ class ManagedChineseSttRuntime:
         _validated_regular_file(path, "stt_install_failed", self._paths.root)
         path.unlink()
 
-    def _activate_staging_directory(self, staging: Path) -> None:
-        target = _managed_runtime_root(self._paths)
+    def _activate_staging_directory(
+        self,
+        staging: Path,
+        manifest: ManagedSttRuntimeManifest,
+    ) -> None:
+        target = _managed_runtime_root(self._paths, manifest)
         parent = target.parent
         assert_no_reparse_points(self._paths.root, parent)
         if _path_exists(target):
-            if self._verify_installed():
+            if self._verify_installed(manifest):
                 self._remove_managed_tree(staging)
                 return
             _assert_tree_has_no_reparse_points(self._paths.root, target)
@@ -446,8 +556,8 @@ class ManagedChineseSttRuntime:
         _assert_tree_has_no_reparse_points(self._paths.root, target)
         shutil.rmtree(target)
 
-    def _verify_installed(self) -> bool:
-        executable, model = _managed_runtime_paths(self._paths)
+    def _verify_installed(self, manifest: ManagedSttRuntimeManifest) -> bool:
+        executable, model = _managed_runtime_paths(self._paths, manifest)
         try:
             executable = _validated_regular_file(
                 executable,
@@ -458,22 +568,23 @@ class ManagedChineseSttRuntime:
             signature = _runtime_signature(executable, model)
         except SttRuntimeError:
             return False
-        if self._verification_cache is not None and self._verification_cache[0] == signature:
-            return self._verification_cache[1]
+        cached = self._verification_cache.get(manifest.profile)
+        if cached is not None and cached[0] == signature:
+            return cached[1]
         valid = _matches_sha256(
             executable,
-            MANAGED_CHINESE_STT_MANIFEST.executable_sha256,
-        ) and _matches_sha256(model, MANAGED_CHINESE_STT_MANIFEST.model.sha256)
+            manifest.executable_sha256,
+        ) and _matches_sha256(model, manifest.model.sha256)
         # The archive is checked before extraction and the installed CLI is
         # pinned independently. MediaWorker repeats its own version probe before
         # any voice capture starts.
         if valid:
             valid = executable.stat().st_size > 0
-        self._verification_cache = (signature, valid)
+        self._verification_cache[manifest.profile] = (signature, valid)
         return valid
 
-    def _missing_or_invalid_state(self) -> SttRuntimeState:
-        executable, model = _managed_runtime_paths(self._paths)
+    def _missing_or_invalid_state(self, manifest: ManagedSttRuntimeManifest) -> SttRuntimeState:
+        executable, model = _managed_runtime_paths(self._paths, manifest)
         if not _path_exists(executable) or not _path_exists(model):
             return SttRuntimeState.missing
         return SttRuntimeState.integrity_failed
@@ -492,15 +603,41 @@ def _windows_x64_supported() -> bool:
     return os.name == "nt" and platform.machine().casefold() in {"amd64", "x86_64", "x64"}
 
 
-def _managed_runtime_root(paths: AppPaths) -> Path:
-    return paths.models / "stt" / "whispercpp" / f"v{MANAGED_CHINESE_STT_MANIFEST.version}"
+def _managed_runtime_relative_paths(manifest: ManagedSttRuntimeManifest) -> tuple[Path, Path]:
+    """Build immutable local locations without exposing a user path choice."""
+
+    if manifest.profile == MANAGED_STT_PROFILE:
+        return MANAGED_STT_EXECUTABLE_RELATIVE, MANAGED_STT_MODEL_RELATIVE
+    root = Path("stt") / "whispercpp" / "profiles" / manifest.profile / f"v{manifest.version}"
+    return root / "bin" / "whisper-cli.exe", root / "model" / manifest.model_filename
 
 
-def _managed_runtime_paths(paths: AppPaths) -> tuple[Path, Path]:
-    return (
-        paths.models / MANAGED_STT_EXECUTABLE_RELATIVE,
-        paths.models / MANAGED_STT_MODEL_RELATIVE,
-    )
+def _managed_runtime_root(paths: AppPaths, manifest: ManagedSttRuntimeManifest) -> Path:
+    executable, _model = _managed_runtime_relative_paths(manifest)
+    return (paths.models / executable).parent.parent
+
+
+def _managed_runtime_paths(
+    paths: AppPaths,
+    manifest: ManagedSttRuntimeManifest,
+) -> tuple[Path, Path]:
+    executable, model = _managed_runtime_relative_paths(manifest)
+    return paths.models / executable, paths.models / model
+
+
+def _managed_stt_manifest_for_paths(
+    paths: AppPaths,
+    executable: Path,
+    model_path: Path,
+) -> ManagedSttRuntimeManifest | None:
+    for manifest in managed_stt_profiles():
+        expected_executable, expected_model = _managed_runtime_paths(paths, manifest)
+        if (
+            executable.absolute() == expected_executable.absolute()
+            and model_path.absolute() == expected_model.absolute()
+        ):
+            return manifest
+    return None
 
 
 def _runtime_signature(executable: Path, model: Path) -> tuple[int, int, int, int]:
@@ -603,12 +740,17 @@ __all__ = [
     "MANAGED_STT_EXECUTABLE_RELATIVE",
     "MANAGED_STT_MODEL_RELATIVE",
     "MANAGED_STT_PROFILE",
+    "MANAGED_WHISPER_STT_PROFILES",
     "ManagedChineseSttRuntime",
+    "ManagedSttRuntimeManifest",
     "ManagedRuntimeHashes",
     "SttRuntimeError",
     "SttRuntimeInstallResult",
     "SttRuntimeState",
     "SttRuntimeStatus",
+    "managed_stt_manifest",
+    "managed_stt_profiles",
+    "managed_stt_relative_paths",
     "managed_runtime_hashes_for_paths",
     "managed_stt_settings_patch",
 ]

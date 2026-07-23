@@ -22,7 +22,12 @@ from app.schemas import (
     utc_now,
 )
 from app.schemas.messages import prefixed_id
-from app.stt_runtime import SttRuntimeState, SttRuntimeStatus
+from app.stt_runtime import (
+    MANAGED_STT_PROFILE,
+    SttRuntimeState,
+    SttRuntimeStatus,
+    managed_stt_manifest,
+)
 
 BRIDGE_PROTOCOL_VERSION: Literal[1] = 1
 _REASON_CODE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
@@ -153,6 +158,7 @@ class DesktopSettingsForm:
     startup_enabled: bool
     output_device_id: str = ""
     system_playback_enabled: bool = False
+    stt_profile: str = MANAGED_STT_PROFILE
 
     def __post_init__(self) -> None:
         for field_name, value, maximum, allow_empty in (
@@ -181,6 +187,10 @@ class DesktopSettingsForm:
             raise ValueError("output_device_id is outside the bridge bound")
         if not isinstance(self.system_playback_enabled, bool):
             raise ValueError("system_playback_enabled is outside the bridge bound")
+        try:
+            object.__setattr__(self, "stt_profile", managed_stt_manifest(self.stt_profile).profile)
+        except ValueError as exc:
+            raise ValueError("stt_profile is outside the managed Whisper catalogue") from exc
 
 
 @dataclass(frozen=True, slots=True)

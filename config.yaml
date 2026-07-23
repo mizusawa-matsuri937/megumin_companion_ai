@@ -124,6 +124,9 @@ proactive:
 stt:
   enabled: false
   provider: whisper_cpp
+  # 只接受内置受管 Whisper 配置档；未来更大模型会以独立配置档登记，
+  # 继续固定 runtime/model 来源、版本、大小和 SHA-256。
+  managed_profile: whispercpp_base_q5_1
   executable: stt/whispercpp/v1.9.1/bin/whisper-cli.exe
   model_path: stt/whispercpp/v1.9.1/model/ggml-base-q5_1.bin
   language: zh

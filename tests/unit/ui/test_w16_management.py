@@ -11,6 +11,7 @@ from typing import cast
 
 import desktop_client.ui.management as management_module
 import pytest
+from app import stt_runtime as stt_runtime_module
 from app.clients.vts import VTSToken
 from app.config import ConfigurationError, Settings, read_user_settings, write_user_settings
 from app.config.settings import LLMConfig, LoggingConfig, StorageConfig
@@ -285,6 +286,7 @@ def test_explicit_stt_install_updates_only_managed_paths_and_publishes_status(
             "enabled": True,
             "device": "preserve-device",
             "threads": 3,
+            "managed_profile": "whispercpp_base_q5_1",
             "provider": "whisper_cpp",
             "executable": "stt/whispercpp/v1.9.1/bin/whisper-cli.exe",
             "model_path": "stt/whispercpp/v1.9.1/model/ggml-base-q5_1.bin",
@@ -796,18 +798,21 @@ def test_w16_management_helpers_cover_device_normalization_and_error_codes() -> 
     )
     assert _settings_patch(replace(form, stt_device="")).get("stt") == {
         "enabled": False,
+        "managed_profile": "whispercpp_base_q5_1",
         "executable": "whisper/whisper-cli.exe",
         "model_path": "whisper/ggml-base.bin",
         "device": None,
     }
     assert _settings_patch(replace(form, stt_device="7"))["stt"] == {
         "enabled": False,
+        "managed_profile": "whispercpp_base_q5_1",
         "executable": "whisper/whisper-cli.exe",
         "model_path": "whisper/ggml-base.bin",
         "device": 7,
     }
     assert _settings_patch(form)["stt"] == {
         "enabled": False,
+        "managed_profile": "whispercpp_base_q5_1",
         "executable": "whisper/whisper-cli.exe",
         "model_path": "whisper/ggml-base.bin",
         "device": "device name",
@@ -1094,6 +1099,45 @@ def test_w16_settings_dialog_has_accessible_surface_and_wipes_on_final_close(
     window.close()
 
 
+def test_stt_profile_selector_only_uses_registered_whisper_paths(
+    qapp: QApplication,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    del qapp
+    larger = replace(
+        stt_runtime_module.MANAGED_CHINESE_STT_MANIFEST,
+        profile="whispercpp_small_q5_1",
+        model_filename="ggml-small-q5_1.bin",
+        display_name="Whisper small · Q5_1",
+    )
+    monkeypatch.setattr(
+        stt_runtime_module,
+        "MANAGED_WHISPER_STT_PROFILES",
+        (stt_runtime_module.MANAGED_CHINESE_STT_MANIFEST, larger),
+    )
+    model = ManagementViewModel()
+    model.settings = SettingsSnapshot(
+        form=_form(),
+        llm_secret_configured=False,
+        vts_secret_configured=False,
+        settings_schema_upgrade_required=False,
+    )
+    dialog = SettingsDialog(model, lambda _command: True)
+
+    assert dialog.stt_profile.count() == 2
+    dialog.stt_profile.setCurrentIndex(1)
+
+    assert dialog.stt_profile.currentData() == larger.profile
+    assert dialog.stt_executable.text() == (
+        "stt/whispercpp/profiles/whispercpp_small_q5_1/v1.9.1/bin/whisper-cli.exe"
+    )
+    assert dialog.stt_model_path.text() == (
+        "stt/whispercpp/profiles/whispercpp_small_q5_1/v1.9.1/model/ggml-small-q5_1.bin"
+    )
+    assert dialog._form_dirty
+    dialog.clear_sensitive()
+
+
 class _ConfirmingSettingsDialog(SettingsDialog):
     def __init__(
         self,
@@ -1107,6 +1151,43 @@ class _ConfirmingSettingsDialog(SettingsDialog):
 
     def _confirm(self, _title: str, _message: str) -> bool:
         return self._confirmations.pop(0)
+
+
+def test_stt_install_requires_saved_whisper_profile_selection(
+    qapp: QApplication,
+) -> None:
+    del qapp
+    model = ManagementViewModel()
+    model.settings = SettingsSnapshot(
+        form=_form(),
+        llm_secret_configured=False,
+        vts_secret_configured=False,
+        settings_schema_upgrade_required=False,
+    )
+    submitted: list[ManagementCommand] = []
+
+    def submit(command: ManagementCommand) -> bool:
+        submitted.append(command)
+        return True
+
+    dialog = _ConfirmingSettingsDialog(
+        model,
+        submit,
+        confirmations=[True],
+    )
+
+    dialog._form_dirty = True
+    dialog._install_chinese_stt()
+    assert submitted == []
+    assert "保存设置" in dialog.status_label.text()
+
+    dialog._form_dirty = False
+    dialog._install_chinese_stt()
+    assert len(submitted) == 1
+    assert isinstance(submitted[0], SttInstallCommand)
+    assert not dialog.install_stt_runtime.isEnabled()
+    assert "安装中" in dialog.stt_runtime_status.text()
+    dialog.clear_sensitive()
 
 
 def test_w16_settings_dialog_renders_empty_and_validation_states(

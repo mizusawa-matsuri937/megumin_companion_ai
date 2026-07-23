@@ -32,7 +32,12 @@ from app.provider_transport import (
     validate_endpoint,
     validate_proxy_url,
 )
-from app.stt_runtime import MANAGED_STT_EXECUTABLE_RELATIVE, MANAGED_STT_MODEL_RELATIVE
+from app.stt_runtime import (
+    MANAGED_STT_EXECUTABLE_RELATIVE,
+    MANAGED_STT_MODEL_RELATIVE,
+    MANAGED_STT_PROFILE,
+    managed_stt_manifest,
+)
 
 DEFAULT_CONFIG_PACKAGE = "app.resources"
 DEFAULT_CONFIG_NAME = "default_config.yaml"
@@ -259,6 +264,7 @@ class ProactiveConfig(StrictModel):
 class STTConfig(StrictModel):
     enabled: bool = False
     provider: str = "whisper_cpp"
+    managed_profile: str = MANAGED_STT_PROFILE
     executable: Path = MANAGED_STT_EXECUTABLE_RELATIVE
     model_path: Path = MANAGED_STT_MODEL_RELATIVE
     language: str = "zh"
@@ -273,6 +279,18 @@ class STTConfig(StrictModel):
     transcription_timeout_seconds: float = Field(default=60.0, gt=0.0, le=120.0)
     device: int | str | None = None
     blocksize: int = Field(default=0, ge=0)
+
+    @field_validator("managed_profile", mode="before")
+    @classmethod
+    def validate_managed_profile(cls, value: object) -> str:
+        """Allow only a reviewed, built-in Whisper profile id."""
+
+        if not isinstance(value, str):
+            raise ValueError("受管 Whisper 配置档必须是已登记的名称")
+        try:
+            return managed_stt_manifest(value).profile
+        except ValueError as exc:
+            raise ValueError("受管 Whisper 配置档未登记") from exc
 
     @field_validator("device", mode="before")
     @classmethod
@@ -492,6 +510,7 @@ ENV_OVERRIDES: dict[str, tuple[str, str]] = {
         "candidate_analysis_enabled",
     ),
     "MEGUMIN_STT_ENABLED": ("stt", "enabled"),
+    "MEGUMIN_STT_MANAGED_PROFILE": ("stt", "managed_profile"),
     "MEGUMIN_STT_EXECUTABLE": ("stt", "executable"),
     "MEGUMIN_STT_MODEL_PATH": ("stt", "model_path"),
 }

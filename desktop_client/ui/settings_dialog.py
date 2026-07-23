@@ -6,7 +6,13 @@ from collections.abc import Callable
 from typing import Literal
 
 from app.schemas import FeatureActualState, FeatureName
-from app.stt_runtime import SttRuntimeState
+from app.stt_runtime import (
+    MANAGED_STT_PROFILE,
+    SttRuntimeState,
+    managed_stt_manifest,
+    managed_stt_profiles,
+    managed_stt_relative_paths,
+)
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -198,13 +204,22 @@ class SettingsDialog(QDialog):
         self.vts_plugin_name = self._line_edit("VTS 插件名称")
         self.vts_plugin_developer = self._line_edit("VTS 开发者名称")
         self.stt_enabled = QCheckBox("启用本地语音输入配置（W18 后生效）", page)
+        self.stt_profile = QComboBox(page)
+        self.stt_profile.setAccessibleName("受管 Whisper 模型配置档")
+        self._sync_stt_profiles(MANAGED_STT_PROFILE)
+        self.stt_profile.currentIndexChanged.connect(self._select_stt_profile)
+        self.stt_profile_hint = QLabel(
+            "选择已登记配置档会填入匹配的受管路径；手动修改路径仍可用，但会显示为非受管。",
+            page,
+        )
+        self.stt_profile_hint.setWordWrap(True)
         self.stt_executable = self._line_edit("Whisper 可执行文件")
         self.stt_model_path = self._line_edit("Whisper 模型")
         self.stt_device = self._line_edit("音频设备")
         self.stt_runtime_status = QLabel("中文离线 STT：正在检查", page)
         self.stt_runtime_status.setWordWrap(True)
         self.stt_runtime_status.setAccessibleName("内置中文离线 STT 运行时状态")
-        self.install_stt_runtime = QPushButton("安装/修复内置中文离线 STT（约 68 MB）", page)
+        self.install_stt_runtime = QPushButton("安装/修复受管中文 Whisper STT", page)
         self.install_stt_runtime.setAccessibleName("安装或修复内置中文离线 STT")
         self.install_stt_runtime.clicked.connect(self._install_chinese_stt)
         self.output_device = QComboBox(page)
@@ -234,6 +249,8 @@ class SettingsDialog(QDialog):
         form.addRow("VTS 插件名称", self.vts_plugin_name)
         form.addRow("VTS 开发者名称", self.vts_plugin_developer)
         form.addRow("本地 STT", self.stt_enabled)
+        form.addRow("受管 Whisper 模型", self.stt_profile)
+        form.addRow("配置档说明", self.stt_profile_hint)
         form.addRow("STT 可执行文件", self.stt_executable)
         form.addRow("STT 模型", self.stt_model_path)
         form.addRow("STT 设备（编号或名称）", self.stt_device)
@@ -462,17 +479,54 @@ class SettingsDialog(QDialog):
     def _refresh_audio_devices(self) -> None:
         self._submit(AudioOutputDevicesCommand())
 
+    def _selected_stt_profile(self) -> str:
+        value = self.stt_profile.currentData()
+        return value if isinstance(value, str) else MANAGED_STT_PROFILE
+
+    def _sync_stt_profiles(self, selected_profile: str) -> None:
+        self.stt_profile.blockSignals(True)
+        self.stt_profile.clear()
+        for manifest in managed_stt_profiles():
+            self.stt_profile.addItem(manifest.display_name, manifest.profile)
+        selected_index = self.stt_profile.findData(selected_profile)
+        self.stt_profile.setCurrentIndex(max(0, selected_index))
+        self.stt_profile.blockSignals(False)
+
+    def _select_stt_profile(self, index: int) -> None:
+        if self._populating_form or index < 0:
+            return
+        try:
+            executable, model_path = managed_stt_relative_paths(self._selected_stt_profile())
+        except ValueError:
+            self.status_label.setText("受管 Whisper 配置档无效。")
+            return
+        self.stt_executable.setText(executable.as_posix())
+        self.stt_model_path.setText(model_path.as_posix())
+        self._mark_form_dirty_index(index)
+
     def _install_chinese_stt(self) -> None:
+        form = self._model.settings.form if self._model.settings is not None else None
+        if form is None:
+            self.status_label.setText("设置尚未加载。")
+            return
+        if self._form_dirty:
+            self.status_label.setText("请先保存设置，再安装或修复所选 Whisper 配置档。")
+            return
+        try:
+            profile_name = managed_stt_manifest(form.stt_profile).display_name
+        except ValueError:
+            self.status_label.setText("受管 Whisper 配置档无效。")
+            return
         if not self._confirm(
             "安装中文离线 STT",
-            "将从公开的 GitHub 与 Hugging Face 来源下载约 68 MB 的 whisper.cpp 运行时和模型。"
+            f"将从受管清单指定的公开来源下载「{profile_name}」所需的 whisper.cpp 运行时和模型。"
             "下载内容会校验完整性并只保存到当前 Windows 用户的本地目录；不会访问麦克风，"
             "也不会自动启用语音输入。是否继续？",
         ):
             return
         if self._submit(SttInstallCommand()):
             self.install_stt_runtime.setEnabled(False)
-            self.stt_runtime_status.setText("中文离线 STT：安装中…")
+            self.stt_runtime_status.setText(f"中文离线 STT（{profile_name}）：安装中…")
 
     def _selected_output_device_id(self) -> str:
         value = self.output_device.currentData()
@@ -497,6 +551,7 @@ class SettingsDialog(QDialog):
                         vts_plugin_name=self.vts_plugin_name.text(),
                         vts_plugin_developer=self.vts_plugin_developer.text(),
                         stt_enabled=self.stt_enabled.isChecked(),
+                        stt_profile=self._selected_stt_profile(),
                         stt_executable=self.stt_executable.text(),
                         stt_model_path=self.stt_model_path.text(),
                         stt_device=self.stt_device.text(),
@@ -654,6 +709,7 @@ class SettingsDialog(QDialog):
         if not self._form_dirty:
             self._populating_form = True
             form = snapshot.form
+            self._sync_stt_profiles(form.stt_profile)
             for widget, value in (
                 (self.llm_provider, form.llm_provider),
                 (self.llm_base_url, form.llm_base_url),
@@ -692,7 +748,11 @@ class SettingsDialog(QDialog):
             SttRuntimeState.unmanaged: "使用手动配置的非受管运行时",
             SttRuntimeState.unsupported: "当前平台不受支持",
         }[runtime_state]
-        self.stt_runtime_status.setText(f"中文离线 STT：{runtime_text}")
+        try:
+            profile_name = managed_stt_manifest(snapshot.stt_runtime.profile).display_name
+        except ValueError:
+            profile_name = snapshot.stt_runtime.profile
+        self.stt_runtime_status.setText(f"中文离线 STT（{profile_name}）：{runtime_text}")
         self.install_stt_runtime.setEnabled(runtime_state is not SttRuntimeState.installing)
 
     def _sync_audio_output_devices(self, selected_device_id: str) -> None:

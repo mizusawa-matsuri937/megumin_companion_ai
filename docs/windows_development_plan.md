@@ -719,10 +719,11 @@ flowchart LR
   [PR workflow](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29942329034) 和
   [push workflow](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29942326396)。按钮优先路径已实现；
   系统级 global hotkey 与 W20 的真实 lock/session adapter 尚未启用，不能把其真实行为写作已通过；后续新 head 必须重新核验。
-- **本轮受管 runtime 补充（`224e06f` code head 已核验）：** 固定 CPU 离线 `whisper.cpp` v1.9.1 +
-  `ggml-base-q5_1.bin`，仅支持 `--language zh`。用户确认的 UI/CLI 安装才从固定 HTTPS URL 下载，使用 archive/CLI/model
-  SHA-256、大小/timeout、ZIP/reparse 预检、staging 原子切换和 worker 首次使用前完整性复验；默认关闭且绝不后台下载、
-  不自动启用麦克风。手工路径保留但标为非受管。来源、MIT 许可与未关闭上游风险见
+- **本轮受管 runtime 补充（`224e06f` code head 已核验）：** 内置受管 Whisper 配置档目录当前只登记 CPU 离线
+  `whisper.cpp` v1.9.1 + `ggml-base-q5_1.bin`，仅支持 `--language zh`。后续更大 Whisper 模型只能新增同样受审的静态
+  profile（独立目录、来源、版本、archive/CLI/model SHA-256、大小与真实峰值验证），不能变为任意模型路径/URL/hash 入口。
+  用户确认的 UI/CLI 安装才从所选已登记 HTTPS 清单下载，使用大小/timeout、ZIP/reparse 预检、staging 原子切换和 worker
+  首次使用前完整性复验；默认关闭且绝不后台下载、不自动启用麦克风。手工路径保留但标为非受管。来源、MIT 许可与未关闭上游风险见
   [W18 runtime 决策](decisions/w18_managed_chinese_stt_runtime.md)。该 code head 的新 exact-head CI 已记录在 W18 实现
   记录；后续 head 仍不能把旧 green run 当作自身的验收证据。
 - callback 写预分配有界 buffer，不对每 frame 向 asyncio loop 排队；overflow/设备断开成为显式事件。

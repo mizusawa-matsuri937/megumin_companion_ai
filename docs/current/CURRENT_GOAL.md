@@ -59,17 +59,19 @@
 ## 本轮已确认的实现范围
 
 - 沿用已存在的 `MediaWorker` / Job Object / `WhisperCppRunner` 调用链，而不是另建 STT 架构。
-- 固定 CPU 本地离线 profile：[`whisper.cpp` v1.9.1](https://github.com/ggml-org/whisper.cpp/releases/tag/v1.9.1)
-  的 `whisper-bin-x64.zip` 与
+- 内置受管 Whisper 配置档目录当前只含 CPU 本地离线的
+  [`whisper.cpp` v1.9.1](https://github.com/ggml-org/whisper.cpp/releases/tag/v1.9.1) `whisper-bin-x64.zip` 与
   [`ggml-base-q5_1.bin` 的不可变 revision](https://huggingface.co/ggerganov/whisper.cpp/blob/87cd18b47b941d2f65d09981dad23bb7d0481c77/ggml-base-q5_1.bin)。
-  清单锁定 URL、版本、archive/CLI/model SHA-256、下载上限与受管目录；详情见
+  新增 `stt.managed_profile` 只允许已登记配置档；每一项锁定 URL、版本、archive/CLI/model SHA-256、下载上限、模型文件名
+  与受管目录。以后更大 Whisper 模型必须新增独立 profile 并重做真实性能核验，不能以任意路径、URL 或 hash 替代。详情见
   [W18 runtime 决策](../decisions/w18_managed_chinese_stt_runtime.md)。
 - 产品层只支持中文：默认与旧 `auto` 配置均归一为 `zh`；显式其他语言由配置或 worker 返回稳定失败，实际 CLI 固定
   `--language zh`。`threads=null` 时解析为 `min(max(os.cpu_count(), 1), 4)`。
 - 默认仍为 `stt.enabled=false`，无启动下载、无云端 STT、无模型常驻。仅确认后的设置操作或
   `--install-chinese-stt` 下载；安装也不启用麦克风、设备或线程设置。
-- 受管资产安装到 `%LOCALAPPDATA%\MeguminCompanion\models\stt\whispercpp\v1.9.1\`：HTTPS、有限重定向、
-  超时/大小上限、SHA-256、ZIP Slip/link/reparse 拒绝、私有 staging 与原子切换。手工路径保持兼容并显示为非受管。
+- 当前 base 受管资产安装到 `%LOCALAPPDATA%\MeguminCompanion\models\stt\whispercpp\v1.9.1\`；未来 profile 使用独立
+  `profiles\<profile>\v<version>` 目录：HTTPS、有限重定向、超时/大小上限、SHA-256、ZIP Slip/link/reparse 拒绝、私有
+  staging 与原子切换。手工路径保持兼容并显示为非受管。
 - 每个 MediaWorker 首次使用 canonical 受管路径时完整校验 CLI 与模型 SHA-256；不匹配在启动 CLI 前返回
   `stt_runtime_integrity_failed`。UI/CLI 只输出有限状态或 reason code，且不输出音频、转写、下载令牌或完整本地路径。
 - `tools/stt_smoke.py --mode microphone --measure-working-set` 是显式设备诊断：只输出状态、语言、段数和 Windows
@@ -96,6 +98,11 @@
   **46 passed in 2.26s**；原有 orderly-shutdown 测试与新增受控 race 测试连续运行 20 次均通过；随后
   `uv run pytest` → **1224 passed, 3 skipped in 182.81s**，coverage **90.03%**。这些测试仍只使用 fake worker/CLI，
   不下载模型、不录音也不访问麦克风。
+- 本次受管 Whisper 配置档接口的提交前本地树：定向 profile/config/UI 回归为 **117 passed**；完整
+  `uv run pytest` → **1241 passed, 3 skipped in 175.67s**，coverage **90.09%**。`uv run ruff check .`、
+  `uv run ruff format --check .`（242 files）、`uv run mypy`（235 source）、`uv lock --check`、`git diff --check`、
+  docs 相对链接检查，以及临时 wheel 的隔离安装 smoke 均通过；wheel/evidence 已删除，且未加入或下载任何更大模型。
+  这是尚未提交 head 的本地证据，不能由历史 CI 替代，后续提交仍须单独核验。
 
 ## 已知安全与隐私状态
 
@@ -104,7 +111,9 @@
 - [CVE-2026-10298](https://nvd.nist.gov/vuln/detail/CVE-2026-10298) 的 NVD 描述列出范围至 1.8.2，未把 v1.9.1
   列为受影响版本；但 [上游 issue #3807](https://github.com/ggml-org/whisper.cpp/issues/3807) 本次复核仍为 open。不能据此
   声称 v1.9.1 已修复。受管模型的不可变 hash 是输入完整性缓解，而不是上游漏洞修复或对非受管模型的保证。
-- 模型页面标示约 57 MiB（59.7 MB）文件；这不是峰值内存。Windows 实际峰值工作集尚未测量。
+- 模型页面标示约 57 MiB（59.7 MB）文件；这不是峰值内存。当前 base 的一次真实 PTT 已记录
+  `PeakWorkingSetSize=236,609,536` bytes（约 225.7 MiB），但该测量不能外推给任何未来更大 profile；每个新增模型仍须
+  单独通过真实设备峰值验证。
 
 ## 未完成 Gate、范围外与下一步
 

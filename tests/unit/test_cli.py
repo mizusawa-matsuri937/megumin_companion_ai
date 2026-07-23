@@ -105,7 +105,11 @@ def test_explicit_chinese_stt_install_uses_shared_installer_without_enabling_voi
             )
 
     monkeypatch.setattr(cli, "_load_production_settings_for_secret_action", lambda: settings)
-    monkeypatch.setattr(cli, "ManagedChineseSttRuntime", lambda _paths: _Installer())
+    monkeypatch.setattr(
+        cli,
+        "ManagedChineseSttRuntime",
+        lambda _paths, *, profile: _Installer(),
+    )
     monkeypatch.setattr(
         cli,
         "patch_user_settings",
@@ -119,6 +123,7 @@ def test_explicit_chinese_stt_install_uses_shared_installer_without_enabling_voi
     assert patches == [
         {
             "stt": {
+                "managed_profile": "whispercpp_base_q5_1",
                 "provider": "whisper_cpp",
                 "executable": "stt/whispercpp/v1.9.1/bin/whisper-cli.exe",
                 "model_path": "stt/whispercpp/v1.9.1/model/ggml-base-q5_1.bin",
@@ -153,7 +158,11 @@ def test_chinese_stt_install_failure_output_contains_only_status_and_reason_code
             raise SttRuntimeError("stt_runtime_integrity_failed")
 
     monkeypatch.setattr(cli, "_load_production_settings_for_secret_action", lambda: settings)
-    monkeypatch.setattr(cli, "ManagedChineseSttRuntime", lambda _paths: _Installer())
+    monkeypatch.setattr(
+        cli,
+        "ManagedChineseSttRuntime",
+        lambda _paths, *, profile: _Installer(),
+    )
 
     assert cli.main(["--install-chinese-stt"]) == 2
     assert json.loads(capsys.readouterr().out) == {
@@ -175,7 +184,11 @@ def test_chinese_stt_install_unexpected_failure_does_not_expose_local_detail(
             raise RuntimeError(r"C:\\private-user\\stt-install-failure")
 
     monkeypatch.setattr(cli, "_load_production_settings_for_secret_action", lambda: settings)
-    monkeypatch.setattr(cli, "ManagedChineseSttRuntime", lambda _paths: _Installer())
+    monkeypatch.setattr(
+        cli,
+        "ManagedChineseSttRuntime",
+        lambda _paths, *, profile: _Installer(),
+    )
 
     assert cli.main(["--install-chinese-stt"]) == 2
     output = capsys.readouterr().out

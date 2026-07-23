@@ -79,6 +79,7 @@ def test_factory_maps_invalid_stt_paths_to_a_body_free_capability_error() -> Non
 
 def test_stt_configuration_normalizes_legacy_auto_to_chinese_only() -> None:
     assert STTConfig().language == "zh"
+    assert STTConfig().managed_profile == "whispercpp_base_q5_1"
     assert STTConfig(language="auto").language == "zh"
     assert STTConfig(language="zh-CN").language == "zh"
     with pytest.raises(ValueError, match="仅支持中文"):
@@ -90,6 +91,7 @@ def test_stt_configuration_normalizes_legacy_auto_to_chinese_only() -> None:
     [
         {"provider": " "},
         {"provider": "\x00"},
+        {"managed_profile": "whispercpp_unreviewed_large"},
         {"language": " "},
         {"language": "\x00"},
         {"language": "x" * 65},

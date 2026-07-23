@@ -130,11 +130,13 @@ def test_w17_audio_device_selector_renders_snapshot_and_submits_id(qapp: QApplic
 
     assert dialog.output_device.currentData() == _DEVICE_ID
     assert "Synthetic USB audio" in dialog.output_device.currentText()
+    assert dialog.stt_profile.currentData() == "whispercpp_base_q5_1"
     dialog._refresh_audio_devices()
     assert isinstance(submitted.pop(), AudioOutputDevicesCommand)
     dialog._save_settings()
     save = submitted.pop()
     assert isinstance(save, SettingsSaveCommand)
+    assert save.payload.stt_profile == "whispercpp_base_q5_1"
     assert save.payload.output_device_id == _DEVICE_ID
     assert save.payload.system_playback_enabled
     dialog.clear_sensitive()

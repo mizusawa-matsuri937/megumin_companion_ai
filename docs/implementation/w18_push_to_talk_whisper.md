@@ -47,14 +47,21 @@ global hotkey 或 W20 的 Windows lock/session adapter。
 
 ## 受管中文 STT runtime（`224e06f` exact head 已核验）
 
-受管 profile 固定采用 CPU 离线的 [`whisper.cpp` v1.9.1](https://github.com/ggml-org/whisper.cpp/releases/tag/v1.9.1)
-`whisper-bin-x64.zip` 和 [immutable `ggml-base-q5_1.bin`](https://huggingface.co/ggerganov/whisper.cpp/blob/87cd18b47b941d2f65d09981dad23bb7d0481c77/ggml-base-q5_1.bin)。
-安装位置是 `%LOCALAPPDATA%\MeguminCompanion\models\stt\whispercpp\v1.9.1\`，而不是仓库、wheel 或安装包。
+受管 Whisper 配置档目录当前只含 CPU 离线的
+[`whisper.cpp` v1.9.1](https://github.com/ggml-org/whisper.cpp/releases/tag/v1.9.1) `whisper-bin-x64.zip` 和
+[immutable `ggml-base-q5_1.bin`](https://huggingface.co/ggerganov/whisper.cpp/blob/87cd18b47b941d2f65d09981dad23bb7d0481c77/ggml-base-q5_1.bin)。
+当前 base profile 安装位置仍是 `%LOCALAPPDATA%\MeguminCompanion\models\stt\whispercpp\v1.9.1\`，而不是仓库、wheel
+或安装包；本轮没有加入或下载更大模型。
 
-- 设置默认路径指向该 profile，`language` 统一为 `zh`；旧 `auto` 在显式设置升级时迁移为 `zh`，其他语言以稳定失败拒绝。
-  `threads=null` 时 worker 使用 `min(max(os.cpu_count(), 1), 4)`。
-- `SttInstallCommand`、确认文案和 `--install-chinese-stt` 共用同一服务。安装成功只持久化 provider/path/language，绝不修改
-  `stt.enabled`、设备或线程；UI 继续允许手工路径，但明确显示 `unmanaged`。
+- 设置新增 `stt.managed_profile`，只能引用内置受管目录；默认仍指向当前 base profile，`language` 统一为 `zh`；旧 `auto`
+  在显式设置升级时迁移为 `zh`，其他语言以稳定失败拒绝。`threads=null` 时 worker 使用
+  `min(max(os.cpu_count(), 1), 4)`。
+- `SttInstallCommand`、确认文案和 `--install-chinese-stt` 共用同一服务。安装成功只持久化 profile/provider/path/language，
+  绝不修改 `stt.enabled`、设备或线程；UI 的受管 Whisper 选择框仅列已登记项，并会同步对应路径。UI 继续允许手工路径，但明确显示
+  `unmanaged`。
+- 未来更大的 Whisper 模型必须作为新的静态 profile 登记，带自己的 runtime/model 来源、版本、文件名、大小上限和 SHA-256；
+  profile 会安装到独立 `profiles\<profile>\v<version>` 目录，不能覆盖现有 base runtime。该目录不是任意本地模型、URL 或
+  hash 输入接口。
 - 下载只在用户确认后发起，使用固定 URL、HTTPS、10 分钟总 timeout、大小上限、archive/model 全量 SHA-256；archive 内仅
   提取 CLI 所在目录的平级 runtime 文件，拒绝 traversal、link、encrypted ZIP 和 reparse path。验证和 `--version` 成功后
   才原子切换，取消/失败只删除 staging。
@@ -74,7 +81,7 @@ global hotkey 或 W20 的 Windows lock/session adapter。
 | whisper runtime 安全预检与受控终止 | `test_whisper_cpp.py` 覆盖路径、架构、hash/fingerprint、version、中文空格路径、malformed/oversize JSON、timeout、cancel、terminate→kill | fake CLI 不能证明真实模型准确率 |
 | helper 子进程树 | Windows-only `test_media_worker_job_closure_reaps_whisper_version_probe_child_tree` 启动 synthetic child，关闭 `WorkerSupervisor` 后检查 child PID 已消失 | Job Object 证明可控 synthetic tree；真实 driver/native 行为仍需设备 Gate |
 | 配置与入口安全 | STT provider/language/device 边界、entrypoint 三参数原子性和 parent 无 raw-audio import 均由 unit test 覆盖 | 用户提供的真实模型/可执行文件尚未配置或验收 |
-| 受管 runtime 供应与修复 | `test_stt_runtime.py` 使用 fake HTTP/ZIP/CLI 覆盖无启动下载、HTTPS→HTTP 降级拒绝、hash/timeout、Zip Slip/既有 reparse tree 拒绝、取消、同 service 并发、原子修复、手工路径和安装不访问麦克风 binding；`test_whisper_cpp.py` 验证 hash 不匹配不会启动 CLI，并以 synthetic child 读取 Windows `PeakWorkingSetSize`；UI/CLI bridge 使用 fake installer | CI 不下载真实 runtime/model、录音或转写，不测真实 Windows DACL、网络 CDN、模型准确率或真实 PTT 峰值工作集 |
+| 受管 runtime 供应与修复 | `test_stt_runtime.py` 使用 fake HTTP/ZIP/CLI 覆盖无启动下载、HTTPS→HTTP 降级拒绝、hash/timeout、Zip Slip/既有 reparse tree 拒绝、取消、同 service 并发、原子修复、手工路径和安装不访问麦克风 binding；新增配置档回归验证更大 Whisper profile 的独立路径、hash 与安装，UI 选择器仅填入已登记路径；`test_whisper_cpp.py` 验证 hash 不匹配不会启动 CLI，并以 synthetic child 读取 Windows `PeakWorkingSetSize`；UI/CLI bridge 使用 fake installer | CI 不下载真实 runtime/model、录音或转写，不测真实 Windows DACL、网络 CDN、模型准确率或真实 PTT 峰值工作集；fake larger profile 不能证明真实更大模型的兼容性或内存 |
 
 历史 exact head 的最终本地命令（不替代本轮新 head 验证）：
 
@@ -106,6 +113,17 @@ hard-termination 判定之间，watcher 可能已经完成但其结果尚未被�
 
 这些仅证明提交前本地树；`224e06f` 随后的 Draft PR exact-head macOS/Windows `quality`/`installed-wheel` 已通过，
 但它们仍不替代真实设备 Gate 或任何后续 head 的独立核验。
+
+### 受管 Whisper 配置档接口的提交前本地核验（2026-07-23）
+
+- 新接口当前仍只登记 `whispercpp_base_q5_1`，没有下载、加入或自动切换更大模型。synthetic larger profile 的 installer/hash/path
+  回归、配置校验与桌面选择器保护合计 **117 passed**；它只证明受控接口行为，不能证明任何真实更大模型的准确率、内存或兼容性。
+- `uv run pytest` → **1241 passed, 3 skipped in 175.67s**，coverage **90.09%**；skip 仍仅为 optional RapidOCR、optional
+  Pillow 与当前账户的 directory-symlink 权限限制。`uv run ruff check .`、`uv run ruff format --check .`（242 files）、
+  `uv run mypy`（235 source）、`uv lock --check`、`git diff --check` 和 docs 相对 Markdown 链接检查均通过。
+- `uv build --wheel --out-dir dist/w18-profile-interface-check` 与 `tools/w05_ci_smoke.py` 的隔离安装 smoke 通过：导入来自
+  wheel 而非 source tree，STT model/native binary/audio/archive denylist 继续生效。临时 wheel 与 provenance evidence 已删除。
+  这些是**尚未提交 head** 的本地结果，不能把历史 exact-head CI 当作本接口的 CI 证据。
 
 ### `224e06f` exact-head CI（2026-07-23）
 

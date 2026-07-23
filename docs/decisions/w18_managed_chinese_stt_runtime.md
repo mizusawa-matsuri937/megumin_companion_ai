@@ -7,8 +7,9 @@
 
 ## 已确认的选择
 
-W18 沿用既有 `MediaWorker` / Job Object / `WhisperCppRunner` 调用链，不另起 STT 架构。受管配置固定为
-CPU 离线 profile `whispercpp_base_q5_1`，只允许传入 `--language zh`。
+W18 沿用既有 `MediaWorker` / Job Object / `WhisperCppRunner` 调用链，不另起 STT 架构。受管 Whisper
+配置档目录当前只登记 CPU 离线的 `whispercpp_base_q5_1`，只允许传入 `--language zh`；本次没有加入、下载或
+自动切换更大的模型。
 
 | 项目 | 固定值与来源 | 完整性约束 |
 | --- | --- | --- |
@@ -20,13 +21,43 @@ CPU 离线 profile `whispercpp_base_q5_1`，只允许传入 `--language zh`。
 模型页标示的远端文件为 59.7 MB（约 57 MiB），这是文件体积而不是 Windows 峰值工作集。实际 30 秒中文 PTT 的
 `whisper-cli` `PeakWorkingSetSize` 仍须真实设备 Gate 测量；通过上限是 **≤512 MiB**，超限必须阻止交付并重新选型。
 
+## 受管 Whisper 配置档接口
+
+为支持之后**仅更换更大 Whisper 模型**，运行时现在通过内置、只读的配置档目录解析 `stt.managed_profile`。每个目录项同时
+固定 `whisper.cpp` 版本与 archive、CLI SHA-256、模型不可变来源、模型 SHA-256、下载上限、模型文件名和中文语言边界；
+它不是用户可编辑的 URL、路径、模型名或 hash 输入。
+
+- 当前目录仍只有 `whispercpp_base_q5_1`。桌面设置显示其选择框，CLI/UI 安装器与 worker hash 预检都从同一目录解析；
+  未登记名称在设置校验阶段拒绝。当前用户配置默认值与既有 base 路径保持不变。
+- 将来增加配置档时，新的 profile 使用独立目录
+  `%LOCALAPPDATA%\MeguminCompanion\models\stt\whispercpp\profiles\<profile>\v<version>\`；现有 base
+  安装位置不迁移、不覆盖。这样安装、修复或损坏的更大模型不会替换当前可用模型。
+- 选择已登记配置档会同步其受管 CLI/model 路径；用户仍可保留手工 Whisper 路径，但它始终显示为 `unmanaged`，不会获得
+  受管 hash 或安装器信任。
+- 每个新 profile 必须仍使用本项目已验证的 `whisper-cli --model` 合约，并在合入前逐项记录来源、许可、维护/安全状态、
+  Windows x64 兼容性、下载和峰值内存预算；添加 fake installer/hash/path/UI 回归后，还要在真实 Windows PTT 上重新测量
+  `PeakWorkingSetSize`。模型文件体积、旧 profile 的测试或旧设备测量都不能代替该验证。
+
+这只扩展了同一 `whisper.cpp` 供应配置的选择，不改变 `MediaWorker`、Job Object、语音数据流、默认关闭状态或云端/任意
+本地文件禁令；因此 ADR-W07/W08、威胁模型和数据流边界不变。
+
+### 开源调研依据（2026-07-23）
+
+本轮在实现前复核了 [whisper.cpp 的模型说明](https://github.com/ggml-org/whisper.cpp/blob/master/models/README.md)：它说明
+预转换的 `ggml` 模型通过 `whisper-cli -m <model>` 加载，并列出多语种的 `small`、`medium`、`large` 等模型尺寸；
+[CLI 说明](https://github.com/ggml-org/whisper.cpp/blob/master/examples/cli/README.md) 也记录了 `--model`、`--file`、
+`--language` 与 JSON 输出契约。因此本接口复用既有 CLI 调用，而不引入新的推理框架、Python 模型依赖或音频数据外发。
+
+这是对**接口可行性**的已确认依据，不是对任何未来模型的兼容性、准确率、许可证、安全状态、下载来源或 Windows 内存的预先
+批准。本轮没有新增第三方依赖、模型或许可；以后每个 profile 仍须按本决策单独审查。
+
 ## 运行与隐私边界
 
 - 默认 `stt.enabled=false`；启动、设置刷新和 worker preflight 不下载模型，也不访问麦克风。
-- 只有用户确认 UI 操作或 `--install-chinese-stt` 才会调用固定清单。服务不接受 URL、模型名或 hash 输入。
+- 只有用户确认 UI 操作或 `--install-chinese-stt` 才会调用所选已登记清单。服务不接受 URL、模型名或 hash 输入。
 - 下载仅接受 HTTPS 链、有限重定向、限时和限大小；先校验 archive/model，再在受 current-user DACL 保护的 staging
   目录中验证 ZIP 路径、链接与重解析点，最后原子切换。取消或失败只清理 staging，不删除已验证资产或手工路径。
-- 安装完成只写受管 `executable`、`model_path`、`provider` 与 `language=zh`；不会开启 STT、改变设备或线程数。
+- 安装完成只写受管 `managed_profile`、`executable`、`model_path`、`provider` 与 `language=zh`；不会开启 STT、改变设备或线程数。
 - 手工路径仍兼容，但状态明确为 `unmanaged`，且不会附加受管 hash。受管路径由每个 MediaWorker 首次使用时再完整
   SHA-256 校验，按文件状态缓存；不匹配时在启动 `whisper-cli` 前返回 `stt_runtime_integrity_failed`。
 - 模型只由一次 PTT 的 `whisper-cli` 子进程加载，结束即退出；不加入 PyTorch、ONNX Runtime 或 GPU 依赖。
@@ -36,7 +67,8 @@ CPU 离线 profile `whispercpp_base_q5_1`，只允许传入 `--language zh`。
 - 没有采用 cloud STT：它增加了语音外发、凭据和网络可用性边界，且与离线/默认不联网目标冲突。
 - 已调研 sherpa-onnx 等本地项目，但没有采用：它会替换当前已经隔离并测试的 `whisper.cpp` worker 路径，带来新的
   runtime/model格式和依赖面，而不是完成 W18 已缺失的受管供应。
-- 没有采用更大的 Whisper 模型或 GPU 推理：本任务优先限制下载、常驻依赖和内存风险；准确率与实际内存仍以真实 Gate 为准。
+- 当前没有采用更大的 Whisper 模型或 GPU 推理：本任务优先限制下载、常驻依赖和内存风险；以后的受管 Whisper
+  profile 必须独立接受上述性能与完整性验证，不能因为接口已存在而默认兼容或可交付。
 
 ## 已知安全状态与残余风险
 
