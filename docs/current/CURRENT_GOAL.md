@@ -16,8 +16,11 @@
 > 这与后续仅文档 head [`28df5fd`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/28df5fde0fc726d65ffb4e1527a9795dd9efdf66)
 > 的 [PR Windows quality failure](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29978065326)
 > 不同：该日志明确记录 `test_successful_handshake_job_and_orderly_shutdown` 的 `ShutdownReport.exit_code=None`。
-> 当前已在 `WorkerSupervisor` 关闭报告前补读完成的 watcher 结果，并用受控回归测试覆盖该顺序；前序绿测不能替代这一新 head 的
-> 独立 CI。Draft PR #31 未合并；真实设备 Gate 与每个新 head 的独立核验仍不可省略。
+> 当前已在 `WorkerSupervisor` 关闭报告前补读完成的 watcher 结果，并用受控回归测试覆盖该顺序。修复代码 head
+> [`30f265b`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/30f265b8820104b01f0cef5079a31d7f15157436)
+> 的 [PR workflow](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29979630456) 与
+> [push workflow](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29979628710) 均通过双 OS 的
+> `quality` / `installed-wheel`。Draft PR #31 未合并；真实设备 Gate 与每个后续 head 的独立核验仍不可省略。
 
 ## 本轮已确认的实现范围
 
@@ -71,8 +74,8 @@
 
 ## 未完成 Gate、范围外与下一步
 
-1. CI 证据只能用于其 exact head；`224e06f` 的历史绿测不能证明后续 `WorkerSupervisor` 修复。任何后续 head 都须独立完成
-   相同核验；未获授权不合并。
+1. `30f265b` 已完成修复代码的双 workflow exact-head 核验；CI 证据仍只能用于其对应 head，任何后续 head（包括本条状态
+   记录）都须独立完成相同核验。未获授权不合并。
 2. 唯一保留的真实设备 Gate：一次约 30 秒中文 PTT，确认离线转写、真实麦克风/系统提示和
    `PeakWorkingSetSize ≤512 MiB`。任何超限阻止交付并重新选型；不得保存真实录音或转写正文。
 

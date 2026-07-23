@@ -16,7 +16,8 @@
 > 与之独立，随后仅文档 head [`28df5fd`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/28df5fde0fc726d65ffb4e1527a9795dd9efdf66)
 > 的 [PR Windows quality](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29978065326) 明确失败于
 > `test_successful_handshake_job_and_orderly_shutdown`：`ShutdownReport` 已确认进程关闭和零 active process，却遗漏了
-> `exit_code`。本轮已补上 watcher 结果 harvest 和受控回归测试；前序 head 的绿测不能替代这一修复的 exact-head CI。
+> `exit_code`。本轮已补上 watcher 结果 harvest 和受控回归测试；修复代码的 exact-head CI 已通过，详见下方记录；任何后续
+> head 仍须独立核验。
 > Draft PR [#31](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/31) 未合并，后续新 head 仍须独立核验。
 > 基线为 W17 merge commit [`351da92`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/351da92bfd0232ce03a90a97b75c13ba8ee6a51b)。
 > 本文不把本地绿测、headless Qt 或 fake PortAudio/whisper 结果表述成真实麦克风、锁屏、IME 或全局热键体验。
@@ -121,8 +122,12 @@ hard-termination 判定之间，watcher 可能已经完成但其结果尚未被�
 - 代码路径分析表明，soft-grace 到期后 watcher 可在 hard-termination 判定附近完成，导致终止被跳过但其已完成的结果没有被读取。
   `WorkerSupervisor._stop_impl` 现在在生成报告前再次读取已完成 watcher 的 `result()`；新增的
   `test_shutdown_harvests_wait_result_settling_between_stop_probes` 用固定 event-loop clock 和双态 fake task 约束该顺序。
-- 这是一项 W12 lifecycle 依赖修复，不改变 W18 的 STT 供应、模型、隐私边界或设备 Gate。它必须由包含该修复的 exact PR/push
-  head 核验；不得将 `224e06f` 的历史绿测当作替代证据。
+- 修复代码 commit [`30f265b`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/30f265b8820104b01f0cef5079a31d7f15157436)
+  的 [PR workflow 29979630456](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29979630456) 与
+  [push workflow 29979628710](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29979628710) 均成功；
+  各自的 macOS/Windows `quality` 和 `installed-wheel` 全部通过。
+- 这是一项 W12 lifecycle 依赖修复，不改变 W18 的 STT 供应、模型、隐私边界或设备 Gate。上述证据不能替代任一后续 head，
+  也不得将 `224e06f` 的历史绿测当作替代证据。
 
 ## 唯一真实设备 Gate、未验证项与范围外
 
