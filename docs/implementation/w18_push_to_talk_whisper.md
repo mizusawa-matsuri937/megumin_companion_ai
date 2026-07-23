@@ -129,6 +129,17 @@ hard-termination 判定之间，watcher 可能已经完成但其结果尚未被�
 - 这是一项 W12 lifecycle 依赖修复，不改变 W18 的 STT 供应、模型、隐私边界或设备 Gate。上述证据不能替代任一后续 head，
   也不得将 `224e06f` 的历史绿测当作替代证据。
 
+### `b150110` status-record CI 的无关 Windows 失败
+
+- [PR workflow 29979958354](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29979958354) 首次 Windows
+  `quality` 的唯一失败是 `tests/unit/test_gpt_sovits.py::test_synthesize_maps_expected_failures_and_leaves_no_files`
+  的 `response7-tts_invalid_audio` 参数：实际 `tts_first_byte_timeout`，预期 `tts_invalid_audio`。这项失败已保留为客观证据。
+- 同一 commit 的 [push workflow 29979956583](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29979956583)
+  成功，PR 的失败 job 重跑成功；本机同一参数化测试连续 20 次均通过。该 fixture 使用 80 ms first-byte deadline 和
+  `httpx.MockTransport`，故 Windows 满载调度造成 deadline 抢先的解释是合理推测；它不证明该测试或 TTS 产品路径永久稳定。
+- 此问题不在 W18 diff，未通过放宽 TTS product deadline 或改变断言来掩盖。后续 exact head 仍须独立 CI；真实中文 PTT
+  Gate 也仍未执行。
+
 ## 唯一真实设备 Gate、未验证项与范围外
 
 AI 已覆盖可合成的 ring、worker lifecycle、进程树、路径、取消、超时、清理和 Qt command/event 断言。本轮受管 runtime

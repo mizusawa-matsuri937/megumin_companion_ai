@@ -21,6 +21,12 @@
 > 的 [PR workflow](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29979630456) 与
 > [push workflow](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29979628710) 均通过双 OS 的
 > `quality` / `installed-wheel`。Draft PR #31 未合并；真实设备 Gate 与每个后续 head 的独立核验仍不可省略。
+>
+> 后续 status-record head [`b150110`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/b15011019c167062f1f6b3e887a7c9513fab78e6)
+> 的 [PR workflow](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29979958354) 首次 Windows
+> quality 在无关的 GPT-SoVITS fake-response 测试将预期 `tts_invalid_audio` 误报为 `tts_first_byte_timeout`；同一 head 的
+> [push workflow](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29979956583) 成功，失败 job 重跑也成功。
+> 本机该参数化测试连续 20 次通过；80 ms MockTransport first-byte fixture 在 Windows 满载时调度敏感是**合理推测**，不是已证明永久稳定。
 
 ## 本轮已确认的实现范围
 
