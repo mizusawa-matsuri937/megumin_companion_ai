@@ -33,7 +33,15 @@ def _arguments() -> argparse.Namespace:
     return parser.parse_args()
 
 
-async def _run() -> None:
+async def _wait_for_enter(prompt: str) -> None:
+    await asyncio.to_thread(input, prompt)
+
+
+def _print_error(code: str) -> None:
+    print(json.dumps({"status": "error", "reason_code": code}, ensure_ascii=False, sort_keys=True))
+
+
+async def _run() -> int:
     args = _arguments()
     if args.measure_working_set and args.mode != "microphone":
         raise SystemExit("--measure-working-set 仅支持 --mode microphone。")
@@ -48,13 +56,22 @@ async def _run() -> None:
             try:
                 await recorder.preflight()
             except VoiceCaptureError as exc:
-                raise SystemExit(f"本地 STT 预检失败：{exc.code}") from exc
+                _print_error(exc.code)
+                return 2
             print("本地 STT 预检通过；未访问麦克风，未执行转写。")
-            return
-        await asyncio.to_thread(input, "按回车开始录音（可能触发系统麦克风权限提示）...")
-        await recorder.start()
-        await asyncio.to_thread(input, "正在录音；按回车停止并进行本地转写...")
-        transcript = await recorder.stop()
+            return 0
+        try:
+            await _wait_for_enter("按回车开始录音（可能触发系统麦克风权限提示）...")
+            await recorder.start()
+            print("录音已开始：请说中文约 30 秒；完成后按一次回车停止并进行本地转写。", flush=True)
+            await _wait_for_enter("正在录音；按回车停止并进行本地转写...")
+            transcript = await recorder.stop()
+        except VoiceCaptureError as exc:
+            _print_error(exc.code)
+            return 2
+        except EOFError:
+            _print_error("stt_input_unavailable")
+            return 2
         summary: dict[str, object] = {
             "status": "transcribed",
             "language": transcript.language,
@@ -63,9 +80,10 @@ async def _run() -> None:
         if args.measure_working_set:
             summary["peak_working_set_bytes"] = transcript.peak_working_set_bytes
         print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
+        return 0
     finally:
         await recorder.close()
 
 
 if __name__ == "__main__":
-    asyncio.run(_run())
+    raise SystemExit(asyncio.run(_run()))

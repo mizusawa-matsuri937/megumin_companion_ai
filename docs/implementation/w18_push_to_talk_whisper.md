@@ -148,7 +148,7 @@ AI 已覆盖可合成的 ring、worker lifecycle、进程树、路径、取消�
 `whisper-cli` 的 Windows `PeakWorkingSetSize`。验收上限为 **≤512 MiB**；未测量或超限均阻止交付并重新选型，且不得把
 录音或转写正文写入仓库，也不能用模型约 57 MiB 文件体积代替。
 
-### 已授权实际尝试（2026-07-23；未通过）
+### 已授权在线安装尝试（2026-07-23；历史下载失败）
 
 - 所有者明确授权下载、受管安装与短时麦克风 Gate。第一次 `--install-chinese-stt` 尝试的外层终端在 64 秒超时，安装子进程
   随后退出且没有激活资产；由于该输出管道已关闭，不能可靠恢复其 reason code。
@@ -158,6 +158,25 @@ AI 已覆盖可合成的 ring、worker lifecycle、进程树、路径、取消�
   更改设备或线程设置；被取消副本遗留的一个 staging 目录已按受管树安全检查后移除。
 - 因安装前置条件失败，未运行 `tools/stt_smoke.py --mode microphone --measure-working-set`，未访问麦克风或系统权限提示，
   未录音、未转写、未输出 `PeakWorkingSetSize`。所以真实 Gate 仍是**未通过/被下载阻塞**，不能报告为完成。
+
+### 已授权离线种子与真实 PTT（2026-07-23；部分 Gate 已验证）
+
+- 所有者随后提供并明确授权使用项目根目录的固定 `whisper-bin-x64.zip` 与 `ggml-base-q5_1.bin`。复制前后均将 archive/model
+  SHA-256 与硬编码 manifest 比对，且两者分别匹配
+  `7d8be46ecd31828e1eb7a2ecdd0d6b314feafd82163038ab6092594b0a063539` 与
+  `422f1ae452ade6f30a004d7e5c6a43195e4433bc370bf23fac9cc591f01a8898`。
+- 这不是新产品入口：一次性操作复用现有私有 staging、ZIP Slip/link/reparse 拒绝、`whisper-cli --version` 探测、原子 activation
+  与最终 hash 验证，然后只应用既有受管 path/language patch。验后 `runtime_state=verified`、`language=zh`、`stt.enabled=false`；
+  根目录的两份重复源文件已删除，未进入 Git、wheel 或安装包。
+- 真实 `tools/stt_smoke.py --mode check` 通过且不访问麦克风。第一次真实 microphone 尝试返回 `stt_empty_recording`：这是
+  stream 已启动但 ring 未收到 PCM callback 的稳定码；开始后立即停止是合理推测，不能当作已经证明的设备根因。此前 smoke tool
+  未捕获该 `VoiceCaptureError` 而输出 traceback；现已改为只输出有限 JSON `status` / `reason_code`，并新增回归测试。
+- 第二次由所有者操作的 microphone 诊断在工具明确提示“请说中文约 30 秒”后返回
+  `{"status":"transcribed","language":"zh","segment_count":22,"peak_working_set_bytes":236609536}`。这证明实时采集、
+  本地离线转写与 Windows `PeakWorkingSetSize` 测量成功；236,609,536 bytes 约 225.7 MiB，低于 **≤512 MiB** 验收上限。
+  工具未输出转写正文；录音和临时诊断状态日志已清理。摘要不记录实际录音时长，因此不能仅以提示文字证明实际已录制约 30 秒。
+- 仍不能将整个 Gate 写为通过：当前记录没有所有者关于实际录音时长、Windows 麦克风权限提示或录音指示器的目视确认。这些事项
+  只能由真实桌面使用者反馈，不能由 shell、fake device 或本次 JSON 摘要代替。
 
 真实 IME/高 DPI、锁屏与系统级 hotkey 当前都没有通过结论：前两项不由 fake/headless 条件冒充，后两项尚未在本阶段
 启用/实现。这些是后续桌面体验或 W20 工作，不是本轮受管 runtime 的额外发布 Gate。

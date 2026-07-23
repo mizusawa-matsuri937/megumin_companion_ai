@@ -35,6 +35,16 @@
 > 退出而未激活资产，因输出管道已关闭不能取得原因码；第二次受控单实例重试返回稳定
 > `stt_download_failed`。随后状态为 `missing`、`stt.enabled=false`、零 staging 目录；没有访问麦克风、录音、转写或测量
 > `PeakWorkingSetSize`。这不是设备 Gate 通过，而是固定来源下载失败的已记录阻塞；CLI 有意不公开更细的网络原因，不能臆测其根因。
+>
+> 随后所有者提供并明确授权使用与固定清单完全匹配的两个离线资产。一次性操作复用已有受管 staging、安全 ZIP 提取、CLI
+> version probe、原子切换与最终 SHA-256 校验（不是产品新增的任意本地文件入口）；运行时状态变为 `verified`，语言为 `zh`，
+> `stt.enabled` 仍为 `false`，项目根目录的重复源文件在验证后删除。真实 MediaWorker preflight 通过且未访问麦克风。
+> 第一次 PTT 返回 `stt_empty_recording`（stream 已启动但 ring 未收到 PCM callback；开始后立即停止只是合理推测），诊断工具已改为只输出有限错误 JSON、且在 stream 启动后明确提示说话；
+> 回归测试覆盖该路径。第二次由所有者操作的 microphone 诊断在工具明确提示“请说中文约 30 秒”后返回
+> `{"status":"transcribed","language":"zh","segment_count":22,"peak_working_set_bytes":236609536}`，即约 225.7 MiB，
+> 低于 512 MiB 上限。没有保存录音、转写正文或临时状态日志。该输出证明确实完成离线转写并获得了真实采集数据；Windows
+> 麦克风权限提示/录音指示器的目视确认仍须由所有者明确反馈，不能由本记录臆测为已通过。终端摘要也不含实际录音时长，
+> 因而不能独立证实录制已满约 30 秒。
 
 ## 本轮已确认的实现范围
 
@@ -90,8 +100,9 @@
 
 1. `2b0b858` 已完成最终状态记录的双 workflow exact-head 核验；CI 证据仍只能用于其对应 head，任何后续 head 都须独立完成
    相同核验。未获授权不合并。
-2. 唯一真实设备 Gate 仍未通过：先恢复对固定 GitHub/Hugging Face 资产的受管下载，随后一次约 30 秒中文 PTT 确认离线转写、
-   真实麦克风/系统提示和 `PeakWorkingSetSize ≤512 MiB`。任何超限阻止交付并重新选型；不得保存真实录音或转写正文。
+2. 真实 PTT 的可自动验证部分已通过：离线转写成功、`zh`、22 segments、`236,609,536` bytes（约 225.7 MiB，≤512 MiB）。
+   仍待所有者反馈的是实际录音是否达到约 30 秒，以及 Windows 麦克风权限提示或录音指示器的目视确认；终端摘要不能替代
+   这两项真实桌面/设备事实，未获反馈不得把完整 Gate 写成通过。任何超限仍阻止交付并重新选型；不得保存真实录音或转写正文。
 
 真实 IME/高 DPI、锁屏和系统级 hotkey 没有通过结论，且不被 fake/headless 条件冒充；它们是后续桌面体验工作，不是本轮
 受管 runtime 的额外发布 Gate。RDP、快速切换用户、跨 session 和跨用户访问属于单机单用户私人范围外，不能写作通过或
