@@ -5,8 +5,13 @@
 > 状态：先前 W18 worker 实现与 CI 修复提交 [`439fa88`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/439fa88)、
 > [`69b46dd`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/69b46dd) 和
 > [`6c66dc0`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/6c66dc0) 的 CI 均为已确认**历史证据**。
-> 2026-07-23 本轮新增受管中文 runtime，已经超过当时的 exact head；完整 exact-head 核验与 CI 仍待完成。
-> Draft PR [#31](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/31) 未合并，不能把旧绿灯用于本轮改动。
+> 2026-07-23 本轮新增受管中文 runtime 的聚焦提交
+> [`224e06f`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/224e06f9cbb1d2ab0cc2260fb244b1f74cd7dfbc)
+> 已在 exact head 完成 [PR workflow](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29977299022)
+> 和 [push workflow](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29977296872) 的双 OS
+> `quality` / `installed-wheel`。push workflow 首次 Windows quality 在未修改的 `test_chat_runtime` 用例失败且无断言栈，
+> 本机定向复现、PR workflow 和同 SHA 第 2 次重跑都通过；根因未验证，不能称已修复。
+> Draft PR [#31](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/31) 未合并，后续新 head 仍须独立核验。
 > 基线为 W17 merge commit [`351da92`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/351da92bfd0232ce03a90a97b75c13ba8ee6a51b)。
 > 本文不把本地绿测、headless Qt 或 fake PortAudio/whisper 结果表述成真实麦克风、锁屏、IME 或全局热键体验。
 
@@ -31,7 +36,7 @@ global hotkey 或 W20 的 Windows lock/session adapter。
 `desktop_client/inputs/whisper_cpp.py` 的旧父进程实现已移除。`tools/stt_smoke.py` 也只提供 worker preflight 或显式
 麦克风 PTT 路径，不提供任意本地文件转写入口。
 
-## 受管中文 STT runtime（待新 head 核验）
+## 受管中文 STT runtime（`224e06f` exact head 已核验）
 
 受管 profile 固定采用 CPU 离线的 [`whisper.cpp` v1.9.1](https://github.com/ggml-org/whisper.cpp/releases/tag/v1.9.1)
 `whisper-bin-x64.zip` 和 [immutable `ggml-base-q5_1.bin`](https://huggingface.co/ggerganov/whisper.cpp/blob/87cd18b47b941d2f65d09981dad23bb7d0481c77/ggml-base-q5_1.bin)。
@@ -86,8 +91,17 @@ global hotkey 或 W20 的 Windows lock/session adapter。
 - `uv build --wheel --out-dir dist/w18-wheel-check` 后的 `tools/w05_ci_smoke.py` 隔离安装 smoke 通过；wheel 由隔离环境
   导入，且 STT model/binary/archive denylist 生效。验证产物和为选择 archive hash 下载的临时 ZIP 已在检查后删除。
 
-这些仅证明提交前本地树；它们不替代 Draft PR exact-head 的 macOS/Windows `quality`/`installed-wheel`，
-因此不构成最终交付或发布证据。
+这些仅证明提交前本地树；`224e06f` 随后的 Draft PR exact-head macOS/Windows `quality`/`installed-wheel` 已通过，
+但它们仍不替代真实设备 Gate 或任何后续 head 的独立核验。
+
+### `224e06f` exact-head CI（2026-07-23）
+
+- [PR workflow 29977299022](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29977299022) 与
+  [push workflow 29977296872](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29977296872) 的
+  macOS/Windows `quality` 和 `installed-wheel` 均在该 SHA 通过。
+- push workflow 首次 Windows `quality` 在 `tests/unit/ui/test_chat_runtime.py` 报一个失败标记但未输出断言栈；该文件不在
+  `224e06f` 的变更中，且本机定向测试、PR workflow 与 push workflow 的第 2 次尝试均通过。故这是已记录的客观 CI 瞬态，
+  **根因未验证**，不被写作修复。
 
 ## 唯一真实设备 Gate、未验证项与范围外
 
@@ -123,6 +137,8 @@ AI 已覆盖可合成的 ring、worker lifecycle、进程树、路径、取消�
   [`a577031`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/a577031) 的
   [PR run 29942329034](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29942329034) 与
   [push run 29942326396](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29942326396) 再次通过。
+  本轮受管 runtime 提交 [`224e06f`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/224e06f9cbb1d2ab0cc2260fb244b1f74cd7dfbc)
+  的精确 CI 证据见上文；这不替代后续文档 head 的 CI 或真实设备 Gate。
   Draft PR 未获合并授权，真实设备 Gate 未完成；任何后续新 head 都须重新核验，因此不能报告为发布完成。
 
 ## 关联资料

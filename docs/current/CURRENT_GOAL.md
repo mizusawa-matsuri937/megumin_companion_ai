@@ -5,8 +5,14 @@
 > merge commit [`351da92`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/351da92bfd0232ce03a90a97b75c13ba8ee6a51b)。
 > Draft PR [#31](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/31) 仍未合并。
 >
-> **本轮受管 runtime 变更已超过先前已验证的 `d059eb5` head。** 先前 CI 只证明旧 head，不能证明本轮改动；在新的
-> exact-head CI 完成前，不得称 W18 已交付、已发布或已通过最终验证。
+> 本轮受管 runtime 聚焦提交
+> [`224e06f`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/224e06f9cbb1d2ab0cc2260fb244b1f74cd7dfbc)
+> 已推送。其 exact head 的 [PR workflow](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29977299022)
+> 与 [push workflow](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29977296872) 均通过 macOS/Windows
+> `quality` 与 `installed-wheel`。push workflow 的第一次 Windows `quality` 尝试在未被本轮修改的
+> `test_presenter_discards_gap_text_and_accepts_only_authoritative_snapshot` 处失败，但没有保留断言栈；同一 exact head 的 PR
+> workflow、本机定向复现及 push workflow 第 2 次尝试均通过，故根因仍**未验证**，记录为 CI 瞬态风险而不是已修复的代码问题。
+> Draft PR #31 未合并；真实设备 Gate 与任何后续 head 的独立 CI 核验仍不可省略。
 
 ## 本轮已确认的实现范围
 
@@ -41,7 +47,9 @@
   optional RapidOCR、optional Pillow 和当前账户没有 directory-symlink 权限；均不是 W18 断言失败。
 - 提交前本地树的 `uv run ruff check .`、`uv run ruff format --check .`（241 files）、`uv run mypy`（234 source）、
   `uv lock --check`、`git diff --check` 与 docs 相对链接检查均通过。临时构建 wheel 的隔离 smoke 也通过，确认 source tree
-  没有被导入且 runtime/model/binary/archive 没有进入 wheel。新提交后的 CI 仍不可省略。
+  没有被导入且 runtime/model/binary/archive 没有进入 wheel。
+- `224e06f` 的 PR/push workflows 均通过 macOS/Windows `quality` 与 `installed-wheel`。push 首次 Windows quality 的失败与
+  重跑通过均绑定同一 SHA，详情和未验证根因见本页开头；它不改变本地自动化结论。
 
 ## 已知安全与隐私状态
 
@@ -54,8 +62,7 @@
 
 ## 未完成 Gate、范围外与下一步
 
-1. 本轮新的 exact head 必须完成 macOS/Windows `quality` 与 `installed-wheel`，之后才可用 commit/CI 事实更新本文件和
-   W18 实现记录。未获授权不合并。
+1. `224e06f` 已完成所需跨平台 CI；任何后续 head（包括仅验证记录的文档 head）仍须独立完成相同核验。未获授权不合并。
 2. 唯一保留的真实设备 Gate：一次约 30 秒中文 PTT，确认离线转写、真实麦克风/系统提示和
    `PeakWorkingSetSize ≤512 MiB`。任何超限阻止交付并重新选型；不得保存真实录音或转写正文。
 

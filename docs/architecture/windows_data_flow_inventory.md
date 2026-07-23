@@ -2,7 +2,8 @@
 
 > 版本：2026-07-23
 > 状态：Gate W0 已批准的目标契约；W17/W18 的 MediaWorker 音频路径已在本地实现并验证。受管中文 STT
-> runtime 已加入当前工作树，新的提交/CI 与真实设备 Gate 尚未完成；其他行仍不代表代码已经实现。
+> runtime 已由 [`224e06f`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/224e06f9cbb1d2ab0cc2260fb244b1f74cd7dfbc)
+> 加入并完成该 code head 的 CI；真实设备 Gate 和后续 head 核验仍未完成；其他行仍不代表代码已经实现。
 > 关联：[`../adr/README.md`](../adr/README.md)、[`../decisions/w00_owner_decisions.md`](../decisions/w00_owner_decisions.md)、
 > [`../decisions/w18_managed_chinese_stt_runtime.md`](../decisions/w18_managed_chinese_stt_runtime.md)
 
@@ -32,7 +33,7 @@ GitHub/Hugging Face HTTPS URL，绝不发送录音、转写、设备名或用户
   录音目录。helper pipe 回传的只有有界转写元数据，backend 将成功结果转为一条 voice `UserMessage`。
 - 已确认：取消、超时、callback overflow/device status 和 helper shutdown 走 wipe/删除或 retryable temp-registry 清理；
   无法确认删除时不将转写报告为成功。
-- 已确认（当前工作树，待新 head 核验）：受管 profile 只在显式 UI/CLI 操作后下载固定的 `whisper.cpp` v1.9.1 archive 和
+- 已确认（`224e06f` code head 已核验）：受管 profile 只在显式 UI/CLI 操作后下载固定的 `whisper.cpp` v1.9.1 archive 和
   `ggml-base-q5_1.bin`；无启动下载、默认 `stt.enabled=false`。assets 在私有 staging 验证 archive/model/CLI hash 后原子
   切换到 LocalAppData，MediaWorker 首次使用时再验证 CLI/model 全量 hash。状态、稳定 reason code 和 `NOTICE.txt` 不含录音、
   转写或完整用户路径。

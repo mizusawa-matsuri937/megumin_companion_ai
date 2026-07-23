@@ -2,7 +2,8 @@
 
 > 决策日期：2026-07-23（Asia/Shanghai）
 > 范围：单机、单 Windows x64 用户、个人私用；不适用于 Windows ARM64、云端转写、多语言或自动更新。
-> 状态：已按本次用户指令实现到工作树；新的提交、CI 与真实设备 Gate 尚未完成，不能表述为已发布或已修复上游安全问题。
+> 状态：已由聚焦提交 [`224e06f`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/224e06f9cbb1d2ab0cc2260fb244b1f74cd7dfbc)
+> 实现，并完成其 exact-head PR/push 双 OS `quality` / `installed-wheel` 核验；真实设备 Gate 与后续 head 核验仍未完成，不能表述为已发布或已修复上游安全问题。
 
 ## 已确认的选择
 

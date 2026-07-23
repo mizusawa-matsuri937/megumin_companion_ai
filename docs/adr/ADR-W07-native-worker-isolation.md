@@ -43,7 +43,7 @@
   若清理无法确认，wire 返回无内容错误而非成功 transcript。Windows synthetic 子进程树、中文空格路径、timeout/cancel 和
   cleanup 分支已有自动化证据；真实麦克风/系统指示/锁屏仍不在此处宣称通过。
 
-## W18 受管中文 runtime 补充（2026-07-23，待新 head 核验）
+## W18 受管中文 runtime 补充（2026-07-23，`224e06f` code head 已核验）
 
 - 受管 profile 不改变父/worker 的音频边界：安装发生在用户确认的 UI BackendThread 或显式 CLI 中，之后仍由
   `MediaWorker` 以无 shell argv 启动 `whisper-cli`；安装流程不创建 input stream，也不接收 PCM/WAV/转写。
