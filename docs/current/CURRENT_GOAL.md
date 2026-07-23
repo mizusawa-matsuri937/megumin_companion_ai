@@ -9,10 +9,15 @@
 > [`224e06f`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/224e06f9cbb1d2ab0cc2260fb244b1f74cd7dfbc)
 > 已推送。其 exact head 的 [PR workflow](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29977299022)
 > 与 [push workflow](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29977296872) 均通过 macOS/Windows
-> `quality` 与 `installed-wheel`。push workflow 的第一次 Windows `quality` 尝试在未被本轮修改的
-> `test_presenter_discards_gap_text_and_accepts_only_authoritative_snapshot` 处失败，但没有保留断言栈；同一 exact head 的 PR
-> workflow、本机定向复现及 push workflow 第 2 次尝试均通过，故根因仍**未验证**，记录为 CI 瞬态风险而不是已修复的代码问题。
-> Draft PR #31 未合并；真实设备 Gate 与任何后续 head 的独立 CI 核验仍不可省略。
+> `quality` 与 `installed-wheel`。该 push workflow 的第一次 Windows `quality` 仅在
+> `tests/unit/ui/test_chat_runtime.py` 显示失败标记，随后 job 在输出断言栈前结束；同一 SHA 的 PR workflow 和第 2 次尝试
+> 通过，因此这一个 `test_chat_runtime` 现象的根因仍**未验证**。
+>
+> 这与后续仅文档 head [`28df5fd`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/28df5fde0fc726d65ffb4e1527a9795dd9efdf66)
+> 的 [PR Windows quality failure](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29978065326)
+> 不同：该日志明确记录 `test_successful_handshake_job_and_orderly_shutdown` 的 `ShutdownReport.exit_code=None`。
+> 当前已在 `WorkerSupervisor` 关闭报告前补读完成的 watcher 结果，并用受控回归测试覆盖该顺序；前序绿测不能替代这一新 head 的
+> 独立 CI。Draft PR #31 未合并；真实设备 Gate 与每个新 head 的独立核验仍不可省略。
 
 ## 本轮已确认的实现范围
 
@@ -50,6 +55,10 @@
   没有被导入且 runtime/model/binary/archive 没有进入 wheel。
 - `224e06f` 的 PR/push workflows 均通过 macOS/Windows `quality` 与 `installed-wheel`。push 首次 Windows quality 的失败与
   重跑通过均绑定同一 SHA，详情和未验证根因见本页开头；它不改变本地自动化结论。
+- 当前 `WorkerSupervisor` 关闭报告修复已在本地验证：`uv run pytest --no-cov tests/unit/test_worker_supervisor.py` →
+  **46 passed in 2.26s**；原有 orderly-shutdown 测试与新增受控 race 测试连续运行 20 次均通过；随后
+  `uv run pytest` → **1224 passed, 3 skipped in 182.81s**，coverage **90.03%**。这些测试仍只使用 fake worker/CLI，
+  不下载模型、不录音也不访问麦克风。
 
 ## 已知安全与隐私状态
 
@@ -62,7 +71,8 @@
 
 ## 未完成 Gate、范围外与下一步
 
-1. `224e06f` 已完成所需跨平台 CI；任何后续 head（包括仅验证记录的文档 head）仍须独立完成相同核验。未获授权不合并。
+1. CI 证据只能用于其 exact head；`224e06f` 的历史绿测不能证明后续 `WorkerSupervisor` 修复。任何后续 head 都须独立完成
+   相同核验；未获授权不合并。
 2. 唯一保留的真实设备 Gate：一次约 30 秒中文 PTT，确认离线转写、真实麦克风/系统提示和
    `PeakWorkingSetSize ≤512 MiB`。任何超限阻止交付并重新选型；不得保存真实录音或转写正文。
 

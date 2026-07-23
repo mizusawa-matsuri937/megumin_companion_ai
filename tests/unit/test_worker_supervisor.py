@@ -8,11 +8,11 @@ import math
 import struct
 import threading
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from contextlib import suppress
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import app.workers.supervisor as supervisor_module
 import pytest
@@ -50,6 +50,7 @@ class _FakeJobProcess:
         ignore_cancel: bool = False,
         blocked_writes: frozenset[str] = frozenset(),
         failed_writes: frozenset[str] = frozenset(),
+        on_shutdown_finished: Callable[[], None] | None = None,
         shutdown_return_delay: float = 0.0,
         terminate_block_seconds: float = 0.0,
         terminate_completes: bool = True,
@@ -72,6 +73,7 @@ class _FakeJobProcess:
         self._ignore_cancel = ignore_cancel
         self._blocked_writes = blocked_writes
         self._failed_writes = failed_writes
+        self._on_shutdown_finished = on_shutdown_finished
         self._shutdown_return_delay = shutdown_return_delay
         self._terminate_block_seconds = terminate_block_seconds
         self._terminate_completes = terminate_completes
@@ -139,6 +141,8 @@ class _FakeJobProcess:
                     encode_message(HelperMessage(message_type="stopped", payload={}))
                 )
                 self._finish(0)
+                if self._on_shutdown_finished is not None:
+                    self._on_shutdown_finished()
                 if self._shutdown_return_delay:
                     try:
                         await asyncio.sleep(self._shutdown_return_delay)
@@ -228,6 +232,22 @@ class _FakeJobAdapter:
         return process
 
 
+class _WaitTaskSettlingBetweenStopProbes:
+    """Deterministically model a watcher that settles between two ``done`` probes."""
+
+    def __init__(self, exit_code: int) -> None:
+        self._exit_code = exit_code
+        self.done_checks = 0
+
+    def done(self) -> bool:
+        self.done_checks += 1
+        return self.done_checks >= 2
+
+    def result(self) -> int:
+        assert self.done_checks >= 2
+        return self._exit_code
+
+
 class _BarrierJobAdapter:
     supports_job_objects = True
 
@@ -315,6 +335,46 @@ def test_shutdown_reports_already_settled_exit_after_soft_grace_expires() -> Non
 
         assert not report.hard_terminated
         assert report.active_processes == 0
+        assert report.exit_code == 0
+        assert report.deadline_met
+
+    asyncio.run(scenario())
+
+
+def test_shutdown_harvests_wait_result_settling_between_stop_probes() -> None:
+    async def scenario() -> None:
+        shutdown_sent = False
+
+        def mark_shutdown_sent() -> None:
+            nonlocal shutdown_sent
+            shutdown_sent = True
+
+        adapter = _FakeJobAdapter(({"on_shutdown_finished": mark_shutdown_sent},))
+        supervisor = WorkerSupervisor(
+            name="media-worker",
+            role="media",
+            command=("trusted-helper",),
+            adapter=adapter,
+            config=_config(soft_cancel_grace_seconds=0.001),
+        )
+        await supervisor.start()
+        raced_wait_task = _WaitTaskSettlingBetweenStopProbes(0)
+        supervisor._process_wait_task = cast(asyncio.Task[int], raced_wait_task)
+        original_loop_time = asyncio.get_running_loop().time
+        fixed_loop_time = original_loop_time()
+
+        def loop_time() -> float:
+            return fixed_loop_time + (0.002 if shutdown_sent else 0.0)
+
+        loop = asyncio.get_running_loop()
+        loop.time = loop_time  # type: ignore[method-assign]
+        try:
+            report = await supervisor.stop()
+        finally:
+            loop.time = original_loop_time  # type: ignore[method-assign]
+
+        assert raced_wait_task.done_checks >= 3
+        assert not report.hard_terminated
         assert report.exit_code == 0
         assert report.deadline_met
 

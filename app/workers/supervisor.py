@@ -842,6 +842,12 @@ class WorkerSupervisor:
                 self._state = WorkerActualState.disabled
                 self._last_error_code = None
                 self._emit("worker.disabled")
+        # The process watcher can settle after the soft-grace probe but before
+        # the hard-termination decision.  Preserve that normal exit result
+        # before reporting shutdown rather than treating it as unknown.
+        if wait_task is not None and exit_code is None and wait_task.done():
+            with suppress(OSError, ProcessAdapterError, asyncio.CancelledError):
+                exit_code = wait_task.result()
         report = ShutdownReport(
             soft_cancelled_jobs=len(jobs),
             hard_terminated=hard_terminated,

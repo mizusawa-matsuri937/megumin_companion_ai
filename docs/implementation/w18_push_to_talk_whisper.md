@@ -9,8 +9,14 @@
 > [`224e06f`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/224e06f9cbb1d2ab0cc2260fb244b1f74cd7dfbc)
 > 已在 exact head 完成 [PR workflow](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29977299022)
 > 和 [push workflow](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29977296872) 的双 OS
-> `quality` / `installed-wheel`。push workflow 首次 Windows quality 在未修改的 `test_chat_runtime` 用例失败且无断言栈，
-> 本机定向复现、PR workflow 和同 SHA 第 2 次重跑都通过；根因未验证，不能称已修复。
+> `quality` / `installed-wheel`。push workflow 首次 Windows quality 仅在未修改的
+> `tests/unit/ui/test_chat_runtime.py` 显示失败标记，随后 job 在输出断言栈前结束；本机定向复现、PR workflow 和同 SHA 第 2 次
+> 重跑都通过，故这一个现象的根因仍未验证，不能称已修复。
+>
+> 与之独立，随后仅文档 head [`28df5fd`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/28df5fde0fc726d65ffb4e1527a9795dd9efdf66)
+> 的 [PR Windows quality](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29978065326) 明确失败于
+> `test_successful_handshake_job_and_orderly_shutdown`：`ShutdownReport` 已确认进程关闭和零 active process，却遗漏了
+> `exit_code`。本轮已补上 watcher 结果 harvest 和受控回归测试；前序 head 的绿测不能替代这一修复的 exact-head CI。
 > Draft PR [#31](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/31) 未合并，后续新 head 仍须独立核验。
 > 基线为 W17 merge commit [`351da92`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/351da92bfd0232ce03a90a97b75c13ba8ee6a51b)。
 > 本文不把本地绿测、headless Qt 或 fake PortAudio/whisper 结果表述成真实麦克风、锁屏、IME 或全局热键体验。
@@ -73,11 +79,12 @@ global hotkey 或 W20 的 Windows lock/session adapter。
 - `uv run pytest --no-cov tests/unit/test_media_voice.py tests/unit/test_whisper_cpp.py` → `56 passed in 7.88s`；余下
   fixture 规范化后再次执行 `tests/unit/test_whisper_cpp.py` → `24 passed in 4.84s`。
 
-上述完整测试的 skip 是可选 RapidOCR、可选 Pillow 和当前账户的 directory-symlink 权限限制，pytest 已明确标记；没有 W18
-断言失败。提交前一次全仓运行曾单独失败既有的
-`test_successful_handshake_job_and_orderly_shutdown`：随后该单测连续 20 次、完整 WorkerSupervisor 子套件 45 项、最终全仓
-重跑和功能 head 跨 OS CI 都通过。失败根因仍**未验证**，故将其作为残余时序风险而不是报告为已修复。Ruff、格式、mypy、
-`uv lock --check` 和 `git diff --check` 已在提交前本地树通过。
+上述历史完整测试的 skip 是可选 RapidOCR、可选 Pillow 和当前账户的 directory-symlink 权限限制，pytest 已明确标记；没有
+W18 断言失败。后续 `28df5fd` 的 Windows CI 日志则客观记录了
+`test_successful_handshake_job_and_orderly_shutdown` 的 `None == 0` 断言。代码分析将其归因为：soft-grace 探测和
+hard-termination 判定之间，watcher 可能已经完成但其结果尚未被写入报告；新增受控测试固定该完成顺序，而不是以重复运行
+掩盖它。这个已确认的关闭报告问题与 `224e06f` push 首次无断言栈的 `test_chat_runtime` 标记不同。Ruff、格式、mypy、
+`uv lock --check` 和 `git diff --check` 已在受管 runtime 提交前本地树通过。
 
 ### 本轮受管 runtime 的提交前本地核验（2026-07-23）
 
@@ -90,6 +97,9 @@ global hotkey 或 W20 的 Windows lock/session adapter。
   `git diff --check` 和全部 `docs/` 相对 Markdown 链接检查通过。
 - `uv build --wheel --out-dir dist/w18-wheel-check` 后的 `tools/w05_ci_smoke.py` 隔离安装 smoke 通过；wheel 由隔离环境
   导入，且 STT model/binary/archive denylist 生效。验证产物和为选择 archive hash 下载的临时 ZIP 已在检查后删除。
+- 当前关闭报告修复：`uv run pytest --no-cov tests/unit/test_worker_supervisor.py` → **46 passed in 2.26s**；原有
+  orderly-shutdown 与新增受控 race 测试连续运行 20 次均通过；`uv run pytest` → **1224 passed, 3 skipped in 182.81s**，
+  coverage **90.03%**。这些均为 fake process/CLI 条件，不访问麦克风、真实录音或真实模型。
 
 这些仅证明提交前本地树；`224e06f` 随后的 Draft PR exact-head macOS/Windows `quality`/`installed-wheel` 已通过，
 但它们仍不替代真实设备 Gate 或任何后续 head 的独立核验。
@@ -100,8 +110,19 @@ global hotkey 或 W20 的 Windows lock/session adapter。
   [push workflow 29977296872](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29977296872) 的
   macOS/Windows `quality` 和 `installed-wheel` 均在该 SHA 通过。
 - push workflow 首次 Windows `quality` 在 `tests/unit/ui/test_chat_runtime.py` 报一个失败标记但未输出断言栈；该文件不在
-  `224e06f` 的变更中，且本机定向测试、PR workflow 与 push workflow 的第 2 次尝试均通过。故这是已记录的客观 CI 瞬态，
+  `224e06f` 的变更中，且本机定向测试、PR workflow 与 push workflow 的第 2 次尝试均通过。故这是已记录的客观 CI 现象，
   **根因未验证**，不被写作修复。
+
+### 后续 `WorkerSupervisor` 关闭报告 race
+
+- 仅文档 head `28df5fd` 的 [PR workflow 29978065326](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29978065326)
+  在 Windows `quality` 失败：`test_successful_handshake_job_and_orderly_shutdown` 收到
+  `ShutdownReport(... active_processes=0, exit_code=None, process_close_succeeded=True, ...)`。这是有断言栈的已确认事实。
+- 代码路径分析表明，soft-grace 到期后 watcher 可在 hard-termination 判定附近完成，导致终止被跳过但其已完成的结果没有被读取。
+  `WorkerSupervisor._stop_impl` 现在在生成报告前再次读取已完成 watcher 的 `result()`；新增的
+  `test_shutdown_harvests_wait_result_settling_between_stop_probes` 用固定 event-loop clock 和双态 fake task 约束该顺序。
+- 这是一项 W12 lifecycle 依赖修复，不改变 W18 的 STT 供应、模型、隐私边界或设备 Gate。它必须由包含该修复的 exact PR/push
+  head 核验；不得将 `224e06f` 的历史绿测当作替代证据。
 
 ## 唯一真实设备 Gate、未验证项与范围外
 
