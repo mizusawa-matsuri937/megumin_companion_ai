@@ -19,7 +19,10 @@
 > 分阶段 snapshot。W19 + W09 fake server + W07/W08 降级 + W16/W17 UI/音频扩展矩阵为
 > **60 passed in 9.70s**；完整 pytest 为 **1252 passed, 3 skipped**，raw branch coverage **90.13%**，
 > Ruff、格式、strict mypy、lock、diff check、相对文档链接和临时 wheel/source-quarantine smoke 均通过；
-> 临时 wheel/evidence 已删除。聚焦提交、推送、Draft PR 和 exact-head CI 尚未完成。详见
+> 临时 wheel/evidence 已删除。功能提交
+> [`d641c29`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/d641c29b744bf400d46fe4453aefec0ed69044ee)
+> 已推送，Draft PR [#32](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/32) 已创建且 base/head 已核对；
+> exact-head CI 尚未完成。详见
 > [W19 实现记录](../implementation/w19_provider_preflight.md)。
 
 > 最后核验：2026-07-23（Asia/Shanghai）。当前唯一活跃任务仍为 W18「Push-to-talk、麦克风 ring buffer 与

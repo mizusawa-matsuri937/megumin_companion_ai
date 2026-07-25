@@ -75,7 +75,7 @@
 - [W16：设置、feature 与记忆管理最小 UI（已合并）](implementation/w16_settings_feature_memory_ui.md)
 - [W17：MediaWorker 播放、输出设备与 Gate A（已合并，PR #30）](implementation/w17_media_worker_audio.md)
 - [W18：Push-to-talk、麦克风 ring buffer 与 Whisper Job（已合并）](implementation/w18_push_to_talk_whisper.md)
-- [W19：真实 VTS/GPT-SoVITS 配置向导与联动（实现中）](implementation/w19_provider_preflight.md)
+- [W19：真实 VTS/GPT-SoVITS 配置向导与联动（Draft PR #32，等待 exact-head CI）](implementation/w19_provider_preflight.md)
 
 ## 仍生效的 W18 技术决策
 
