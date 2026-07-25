@@ -39,6 +39,7 @@ MAX_MANAGEMENT_PREVIEW_CHARS = 512
 MAX_MANAGEMENT_CONTENT_CHARS = 5_000
 MAX_MANAGEMENT_PATH_CHARS = 4_096
 MAX_SECRET_CHARS = 64 * 1024
+MAX_PROVIDER_PREFLIGHT_CHECKS = 7
 
 
 def _validate_bounded_text(
@@ -159,6 +160,11 @@ class DesktopSettingsForm:
     output_device_id: str = ""
     system_playback_enabled: bool = False
     stt_profile: str = MANAGED_STT_PROFILE
+    tts_preset_name: str = "default"
+    tts_ref_audio_path: str = ""
+    tts_ref_audio_scope: Literal["service_resource", "local_file"] = "service_resource"
+    tts_prompt_text: str = ""
+    tts_prompt_lang: str = "zh"
 
     def __post_init__(self) -> None:
         for field_name, value, maximum, allow_empty in (
@@ -174,6 +180,20 @@ class DesktopSettingsForm:
             ("stt_model_path", self.stt_model_path, MAX_MANAGEMENT_PATH_CHARS, False),
             ("stt_device", self.stt_device, 256, True),
             ("output_device_id", self.output_device_id, 40, True),
+            ("tts_preset_name", self.tts_preset_name, 128, False),
+            (
+                "tts_ref_audio_path",
+                self.tts_ref_audio_path,
+                MAX_MANAGEMENT_PATH_CHARS,
+                True,
+            ),
+            (
+                "tts_prompt_text",
+                self.tts_prompt_text,
+                MAX_MANAGEMENT_CONTENT_CHARS,
+                True,
+            ),
+            ("tts_prompt_lang", self.tts_prompt_lang, 32, False),
         ):
             _validate_bounded_text(
                 value,
@@ -187,6 +207,8 @@ class DesktopSettingsForm:
             raise ValueError("output_device_id is outside the bridge bound")
         if not isinstance(self.system_playback_enabled, bool):
             raise ValueError("system_playback_enabled is outside the bridge bound")
+        if self.tts_ref_audio_scope not in {"service_resource", "local_file"}:
+            raise ValueError("tts_ref_audio_scope is outside the bridge bound")
         try:
             object.__setattr__(self, "stt_profile", managed_stt_manifest(self.stt_profile).profile)
         except ValueError as exc:
@@ -246,6 +268,18 @@ class AudioOutputDevicesCommand:
     command_id: str = field(default_factory=lambda: prefixed_id("cmd"))
     protocol_version: Literal[1] = field(default=BRIDGE_PROTOCOL_VERSION, init=False)
     type: Literal["audio.output_devices"] = field(default="audio.output_devices", init=False)
+
+    def __post_init__(self) -> None:
+        _validate_command_id(self.command_id)
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderPreflightCommand:
+    """Explicitly probe the persisted TTS/VTS configuration on BackendThread."""
+
+    command_id: str = field(default_factory=lambda: prefixed_id("cmd"))
+    protocol_version: Literal[1] = field(default=BRIDGE_PROTOCOL_VERSION, init=False)
+    type: Literal["provider.preflight"] = field(default="provider.preflight", init=False)
 
     def __post_init__(self) -> None:
         _validate_command_id(self.command_id)
@@ -408,6 +442,7 @@ ManagementCommand: TypeAlias = (
     | SettingsSaveCommand
     | SttInstallCommand
     | AudioOutputDevicesCommand
+    | ProviderPreflightCommand
     | SecretStoreCommand
     | SecretRevokeCommand
     | FeatureSetCommand
@@ -573,6 +608,63 @@ class AudioOutputDevicesEvent:
             raise ValueError("audio output device batch is outside the bridge bound")
         if self.reason_code is not None and not is_stable_reason_code(self.reason_code):
             raise ValueError("audio output device reason must be a stable code")
+        if self.command_id is not None:
+            _validate_command_id(self.command_id)
+
+
+class ProviderPreflightState(StrEnum):
+    pending = "pending"
+    running = "running"
+    ready = "ready"
+    skipped = "skipped"
+    failed = "failed"
+    action_required = "action_required"
+    reconnecting = "reconnecting"
+
+
+ProviderPreflightName: TypeAlias = Literal[
+    "tts_service",
+    "tts_preset",
+    "tts_reference",
+    "vts_service",
+    "vts_authentication",
+    "vts_model",
+    "vts_hotkeys",
+]
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderPreflightCheck:
+    """One content-free W19 capability check."""
+
+    name: ProviderPreflightName
+    state: ProviderPreflightState
+    reason_code: str | None = None
+    missing_count: int = 0
+
+    def __post_init__(self) -> None:
+        if self.reason_code is not None and not is_stable_reason_code(self.reason_code):
+            raise ValueError("provider preflight reason must be a stable code")
+        if self.missing_count < 0 or self.missing_count > 256:
+            raise ValueError("provider preflight count is outside the bridge bound")
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderPreflightEvent:
+    """A complete, bounded snapshot with no provider bodies or identifiers."""
+
+    checks: tuple[ProviderPreflightCheck, ...]
+    command_id: str | None = None
+    emitted_at: datetime = field(default_factory=utc_now)
+    protocol_version: Literal[1] = field(default=BRIDGE_PROTOCOL_VERSION, init=False)
+    type: Literal["provider.preflight"] = field(default="provider.preflight", init=False)
+
+    def __post_init__(self) -> None:
+        if not self.checks or len(self.checks) > MAX_PROVIDER_PREFLIGHT_CHECKS:
+            raise ValueError("provider preflight snapshot is outside the bridge bound")
+        names = tuple(check.name for check in self.checks)
+        if len(set(names)) != len(names):
+            raise ValueError("provider preflight names must be unique")
         if self.command_id is not None:
             _validate_command_id(self.command_id)
 
@@ -754,6 +846,7 @@ BridgeEvent: TypeAlias = (
     | BridgeOverflowEvent
     | SettingsSnapshotEvent
     | AudioOutputDevicesEvent
+    | ProviderPreflightEvent
     | FeatureStatesEvent
     | MemoryListEvent
     | MemoryDetailEvent
@@ -791,6 +884,7 @@ def is_terminal_event(event: BridgeEvent) -> bool:
         (
             SettingsSnapshotEvent,
             AudioOutputDevicesEvent,
+            ProviderPreflightEvent,
             FeatureStatesEvent,
             MemoryListEvent,
             MemoryDetailEvent,

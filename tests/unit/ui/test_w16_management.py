@@ -393,12 +393,12 @@ def test_w16_settings_secret_and_feature_disable_wait_for_barrier(
                 SettingsSaveCommand(payload=replace(form, tts_provider="gpt-sovits")),
                 capabilities=BackendCapabilities(text_chat=True, turn_cancel=True),
             )
-            missing_preset = _events(bridge)
+            missing_reference = _events(bridge)
             assert any(
                 isinstance(event, ManagementResultEvent)
                 and event.operation == "settings_save"
-                and event.reason_code == "tts_preset_required"
-                for event in missing_preset
+                and event.reason_code == "tts_reference_required"
+                for event in missing_reference
             )
 
             entered = asyncio.Event()

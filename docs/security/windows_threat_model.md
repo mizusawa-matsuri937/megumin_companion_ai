@@ -1,6 +1,6 @@
 # Windows Gate W0 威胁模型
 
-> 版本：2026-07-23
+> 版本：2026-07-25
 > 状态：项目所有者自审通过；没有独立人工安全/隐私 reviewer
 > 范围：Windows 11 x64、标准用户、单交互会话、私人使用
 
@@ -47,6 +47,7 @@
 | TM-W00-14 | 安装包夹带资产、密钥或用户数据 | artifact allowlist、manifest、SBOM、sentinel 和许可证清单 | clean build + artifact scan | 当前无独立许可证 reviewer |
 | TM-W00-15 | 未签名私人包被误作公开发布 | 文档标记私人/未签名；公开发布重新 Gate | release checklist | 用户手工转发仍可能产生信任警告 |
 | TM-W00-16 | 受管 STT 下载被篡改、ZIP 越界或恶意模型导致 CLI 崩溃 | 固定 HTTPS URL/版本/大小/hash；有限重定向、staging、拒绝 Zip Slip/link/reparse point、原子切换；MediaWorker 首次使用前全量 CLI/model SHA-256，失败不启动 CLI；Job Object 约束子树 | 合成 archive/hash/timeout/cancel/repair、受管/手工路径、worker integrity-fail-before-CLI、wheel asset denylist；真实模型/内存另列设备 Gate | 当前用户完全受控、手工非受管模型和 upstream parser 缺陷不在此控制的保证内；不得宣称上游 issue 已修复 |
+| TM-W00-17 | 恶意/脆弱 GPT-SoVITS 服务或模型处理导致远端命令执行、数据泄露或错误响应；预检被误写成安全认证 | 应用不安装/打包/启动/升级服务，不调用有副作用的 `/set_refer_audio`；只连接用户显式配置且通过 W08 endpoint/TLS policy 的服务；预检只发送固定短语和已保存 preset/reference，响应受 deadline/bytes/WAV 校验且不播放并清理 | W19 fake API v2 route/synthesis、错误 body/path sentinel、deadline/cleanup 与设置/事件边界测试；真实服务仅做人类体验 Gate | [GHSL-2025-045～048](https://securitylab.github.com/advisories/GHSL-2025-045_GHSL-2025-048_RVC-Boss_GPT-SoVITS/) 披露命令注入，[GHSL-2025-049～053](https://securitylab.github.com/advisories/GHSL-2025-049_GHSL-2025-053_RVC-Boss_GPT-SoVITS/) 披露不安全反序列化/RCE；两组测试 `20250228v3`。服务及模型资产安全不由本应用证明，用户配置的 reference/prompt 会到达该服务 |
 
 ## 反方审查清单
 
@@ -74,3 +75,6 @@
    的 NVD 记录列出范围至 1.8.2，未把受管的 v1.9.1 列为受影响版本；但
    [issue #3807](https://github.com/ggml-org/whisper.cpp/issues/3807) 在本次复核时仍为 open，不能据此声称 v1.9.1
    已修复。固定 hash 的受管模型减少意外/替换输入，不能替代上游修复、独立审计或对非受管模型的防护。
+7. **RR-W00-07 GPT-SoVITS 上游与服务边界：** 官方项目仍由用户在应用包外自行部署和管理。W19 的成功 preflight
+   只证明一次 API/preset/reference 组合返回了合规 WAV，不证明服务版本没有已知/未知漏洞、模型可信、远端不会保留输入，
+   也不提供独立许可证/安全审计。公开发布或改变服务管理边界前必须重新评估上游版本、advisory、依赖和资产许可。

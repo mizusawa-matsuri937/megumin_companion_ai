@@ -65,6 +65,10 @@ from desktop_client.ui.contracts import (
     MemoryListEvent,
     MemorySummary,
     MemoryUpdateCommand,
+    ProviderPreflightCheck,
+    ProviderPreflightCommand,
+    ProviderPreflightEvent,
+    ProviderPreflightName,
     SecretRevokeCommand,
     SecretStoreCommand,
     SettingsSaveCommand,
@@ -72,6 +76,7 @@ from desktop_client.ui.contracts import (
     SettingsSnapshotEvent,
     SttInstallCommand,
 )
+from desktop_client.ui.provider_preflight import ProviderPreflightRunner
 
 LOCAL_DESKTOP_USER_ID = "local_user"
 _OFFLINE_LLM_PROVIDERS = frozenset({"", "none", "mock"})
@@ -133,6 +138,7 @@ class DesktopManagementRuntime:
         secrets: DesktopSecretStore | None = None,
         audio_device_lister: Callable[[Settings], Awaitable[OutputDeviceList]] | None = None,
         stt_runtime: ManagedChineseSttRuntime | None = None,
+        provider_preflight: ProviderPreflightRunner | None = None,
     ) -> None:
         self._settings = settings
         self._memory_runtime = memory_runtime
@@ -143,6 +149,7 @@ class DesktopManagementRuntime:
             settings.paths,
             profile=settings.stt.managed_profile,
         )
+        self._provider_preflight = provider_preflight or ProviderPreflightRunner()
 
     @staticmethod
     def handles(command: object) -> TypeGuard[ManagementCommand]:
@@ -153,6 +160,7 @@ class DesktopManagementRuntime:
                 SettingsSaveCommand,
                 SttInstallCommand,
                 AudioOutputDevicesCommand,
+                ProviderPreflightCommand,
                 SecretStoreCommand,
                 SecretRevokeCommand,
                 FeatureSetCommand,
@@ -206,6 +214,9 @@ class DesktopManagementRuntime:
                 return
             if isinstance(command, AudioOutputDevicesCommand):
                 await self._publish_audio_output_devices(bridge, command_id=command.command_id)
+                return
+            if isinstance(command, ProviderPreflightCommand):
+                await self._run_provider_preflight(bridge, command)
                 return
             if isinstance(command, SecretStoreCommand):
                 await self._store_secret(bridge, command)
@@ -299,18 +310,12 @@ class DesktopManagementRuntime:
                 reason_code="tts_provider_unsupported",
             )
             return
-        if (
-            tts_provider != "mock"
-            and self._settings.tts.default_preset not in self._settings.tts.presets
-        ):
-            # W19 owns the real-provider preflight and preset wizard.  W16 may
-            # retain an already valid preset configuration, but must not persist
-            # a provider choice that makes the next desktop start fail outright.
+        if tts_provider != "mock" and not form.tts_ref_audio_path.strip():
             self._result(
                 bridge,
                 operation="settings_save",
                 command_id=command.command_id,
-                reason_code="tts_preset_required",
+                reason_code="tts_reference_required",
             )
             return
         try:
@@ -383,6 +388,37 @@ class DesktopManagementRuntime:
             operation="stt_runtime_installed",
             command_id=command.command_id,
             restart_required=True,
+        )
+
+    async def _run_provider_preflight(
+        self,
+        bridge: ApplicationBridge,
+        command: ProviderPreflightCommand,
+    ) -> None:
+        """Probe persisted provider settings without exposing response bodies."""
+
+        def publish(checks: tuple[ProviderPreflightCheck, ...]) -> None:
+            bridge.publish_event(
+                ProviderPreflightEvent(
+                    checks=checks,
+                    command_id=command.command_id,
+                )
+            )
+
+        try:
+            await self._provider_preflight.run(self._settings, publish=publish)
+        except Exception as exc:
+            self._result(
+                bridge,
+                operation="provider_preflight",
+                command_id=command.command_id,
+                reason_code=_management_error_code(exc),
+            )
+            return
+        self._result(
+            bridge,
+            operation="provider_preflight_completed",
+            command_id=command.command_id,
         )
 
     async def _store_secret(
@@ -915,6 +951,7 @@ async def _list_audio_output_devices(settings: Settings) -> OutputDeviceList:
 
 
 def _settings_form(settings: Settings) -> DesktopSettingsForm:
+    preset = settings.tts.presets.get(settings.tts.default_preset)
     return DesktopSettingsForm(
         llm_provider=settings.llm.provider,
         llm_base_url=settings.llm.base_url,
@@ -933,6 +970,11 @@ def _settings_form(settings: Settings) -> DesktopSettingsForm:
         startup_enabled=settings.desktop.startup_enabled,
         output_device_id=settings.pipeline.output_device_id or "",
         system_playback_enabled=settings.pipeline.playback_mode == "system",
+        tts_preset_name=settings.tts.default_preset,
+        tts_ref_audio_path="" if preset is None else preset.ref_audio_path,
+        tts_ref_audio_scope=("service_resource" if preset is None else preset.ref_audio_scope),
+        tts_prompt_text="" if preset is None else preset.prompt_text,
+        tts_prompt_lang="zh" if preset is None else preset.prompt_lang,
     )
 
 
@@ -955,6 +997,20 @@ def _settings_patch(form: DesktopSettingsForm) -> dict[str, object]:
         "tts": {
             "provider": form.tts_provider.strip(),
             "base_url": form.tts_base_url.strip(),
+            "default_preset": form.tts_preset_name.strip(),
+            "presets": (
+                {
+                    form.tts_preset_name.strip(): {
+                        "ref_audio_path": form.tts_ref_audio_path.strip(),
+                        "ref_audio_scope": form.tts_ref_audio_scope,
+                        "prompt_text": form.tts_prompt_text,
+                        "prompt_lang": form.tts_prompt_lang.strip(),
+                        "text_lang": "zh",
+                    }
+                }
+                if form.tts_ref_audio_path.strip()
+                else {}
+            ),
         },
         "vts": {
             "enabled": form.vts_enabled,
@@ -1066,6 +1122,7 @@ class ManagementViewModel:
         self.audio_output_devices: tuple[AudioOutputDevice, ...] = ()
         self.audio_output_devices_truncated = False
         self.audio_output_devices_reason: str | None = None
+        self.provider_preflight_checks: dict[ProviderPreflightName, ProviderPreflightCheck] = {}
         self.feature_states: dict[FeatureName, FeatureState] = {}
         self.memory_items: tuple[MemorySummary, ...] = ()
         self.memory_query = ""
@@ -1084,6 +1141,9 @@ class ManagementViewModel:
             self.audio_output_devices = event.devices
             self.audio_output_devices_truncated = event.truncated
             self.audio_output_devices_reason = event.reason_code
+            return True
+        if isinstance(event, ProviderPreflightEvent):
+            self.provider_preflight_checks = {check.name: check for check in event.checks}
             return True
         if isinstance(event, FeatureStatesEvent):
             self.feature_states = {state.name: state for state in event.states}
@@ -1115,6 +1175,7 @@ class ManagementViewModel:
         self.audio_output_devices = ()
         self.audio_output_devices_truncated = False
         self.audio_output_devices_reason = None
+        self.provider_preflight_checks.clear()
         self.feature_states.clear()
         self.memory_items = ()
         self.memory_query = ""

@@ -1,5 +1,27 @@
 # 当前产品目标
 
+> **状态更新（2026-07-25，Asia/Shanghai）：** 当前唯一活跃任务已切换为 W19「真实
+> VTS/GPT-SoVITS 配置向导与联动」，工作分支为 `codex/w19-provider-preflight`，基线为已合并 W18 的
+> [`90e758d`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/90e758d55a87e330a45260aaccd8c794069e3f7a)。
+> 下方 W18 状态保留为历史交付证据，不再代表当前活跃任务。
+>
+> W19 将复用既有 W09 VTube Studio API 1.0 client/bridge、W08 GPT-SoVITS API v2 provider 和 W16
+> BackendThread 管理面，新增可保存的默认 TTS preset/reference、显式联合 preflight 页面以及无内容的分阶段结果。
+> VTS 首次授权仍必须由用户在 VTube Studio 内 Allow；GPT-SoVITS reference 端到端检查只在用户明确触发后发送固定
+> 测试短语，生成的测试 WAV 不播放并立即登记清理。默认 mock、silent playback、VTS disabled 和文字可用性不改变。
+>
+> 已确认的调研边界：VTube Studio 官方 API 仓库为 MIT 且文档仍维护；GPT-SoVITS 官方仓库为 MIT 且主分支在
+> 2026 年仍有维护记录，但 2025 年公开过多项命令注入和不安全反序列化/RCE。W19 不安装、打包、启动或管理 GPT-SoVITS，不调用会改变服务状态的
+> `/set_refer_audio`，也不把服务自身安全写作本应用已证明。真实 VTS Allow、声音/延迟、表情和服务重启仍属于人工
+> 体验 Gate；fake server、headless Qt 和不播放的测试 WAV 不能冒充这些事实。
+>
+> 当前工作树已实现七项 typed preflight、默认 preset/reference 设置、固定短语且不播放的 TTS 检查和 VTS
+> 分阶段 snapshot。W19 + W09 fake server + W07/W08 降级 + W16/W17 UI/音频扩展矩阵为
+> **60 passed in 9.70s**；完整 pytest 为 **1252 passed, 3 skipped**，raw branch coverage **90.13%**，
+> Ruff、格式、strict mypy、lock、diff check、相对文档链接和临时 wheel/source-quarantine smoke 均通过；
+> 临时 wheel/evidence 已删除。聚焦提交、推送、Draft PR 和 exact-head CI 尚未完成。详见
+> [W19 实现记录](../implementation/w19_provider_preflight.md)。
+
 > 最后核验：2026-07-23（Asia/Shanghai）。当前唯一活跃任务仍为 W18「Push-to-talk、麦克风 ring buffer 与
 > whisper Job」，本轮补齐真实、受管的轻量本地中文 STT runtime。分支为 `codex/w18-ptt-whisper`，基线为 W17
 > merge commit [`351da92`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/351da92bfd0232ce03a90a97b75c13ba8ee6a51b)。

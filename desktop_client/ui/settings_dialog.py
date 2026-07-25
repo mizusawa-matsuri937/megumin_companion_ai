@@ -50,6 +50,9 @@ from desktop_client.ui.contracts import (
     MemoryExportCommand,
     MemoryListCommand,
     MemoryUpdateCommand,
+    ProviderPreflightCommand,
+    ProviderPreflightName,
+    ProviderPreflightState,
     SecretRevokeCommand,
     SecretStoreCommand,
     SettingsSaveCommand,
@@ -99,6 +102,24 @@ _MANAGEMENT_REASON_TEXT = {
     "llm_model_required": "真实 LLM 需要填写模型名。",
     "tts_provider_unsupported": "当前仅支持 mock 或已配置的 GPT-SoVITS。",
     "tts_preset_required": "GPT-SoVITS 需要先配置默认 preset；请在 W19 配置向导完成预检。",
+    "tts_reference_required": "GPT-SoVITS 需要填写 reference 资源。",
+    "tts_reference_unavailable": "GPT-SoVITS 无法使用当前 reference 资源。",
+    "tts_preset_unavailable": "GPT-SoVITS 默认 preset 端到端测试失败。",
+    "tts_mock_active": "当前使用离线 Mock TTS，无需外部服务预检。",
+    "tts_timeout": "GPT-SoVITS 预检超时。",
+    "tts_unavailable": "GPT-SoVITS 服务不可用。",
+    "tts_protocol_error": "目标地址不是受支持的 GPT-SoVITS API v2 服务。",
+    "tts_closed": "GPT-SoVITS 预检连接已关闭。",
+    "vts_disabled": "VTube Studio 当前未启用。",
+    "vts_allow_or_auth_required": "请在 VTube Studio 内完成 Allow 或认证确认。",
+    "vts_api_unavailable": "VTube Studio Plugin API 未启用或不可用。",
+    "vts_auth_failed": "VTube Studio 授权未完成或已拒绝。",
+    "vts_auth_revoked": "VTube Studio 授权已撤销，请重新 Allow。",
+    "vts_model_missing": "VTube Studio 当前没有加载模型。",
+    "vts_hotkey_missing": "当前模型缺少必需的 hotkey。",
+    "vts_disconnected": "VTube Studio 连接中断。",
+    "vts_timeout": "VTube Studio 预检超时。",
+    "vts_unavailable": "VTube Studio 服务不可用。",
     "settings_invalid": "设置未通过本地 schema 校验。",
     "stt_platform_unsupported": "受管中文 STT 仅支持 Windows x64。",
     "stt_install_busy": "中文 STT 安装已在进行中。",
@@ -139,6 +160,25 @@ _MANAGEMENT_OPERATION_TEXT = {
     "memory_confirmed": "记忆建议已处理",
     "memory_exported": "长期记忆已导出",
     "stt_runtime_installed": "中文离线 STT 已安装",
+    "provider_preflight_completed": "TTS/VTS 联合预检已完成",
+}
+_PREFLIGHT_NAMES: dict[ProviderPreflightName, str] = {
+    "tts_service": "GPT-SoVITS 服务",
+    "tts_preset": "GPT-SoVITS 默认 preset",
+    "tts_reference": "GPT-SoVITS reference",
+    "vts_service": "VTube Studio API",
+    "vts_authentication": "VTube Studio 授权",
+    "vts_model": "VTube Studio 模型",
+    "vts_hotkeys": "VTube Studio hotkey",
+}
+_PREFLIGHT_STATES = {
+    ProviderPreflightState.pending: "待检查",
+    ProviderPreflightState.running: "检查中",
+    ProviderPreflightState.ready: "通过",
+    ProviderPreflightState.skipped: "已跳过",
+    ProviderPreflightState.failed: "失败",
+    ProviderPreflightState.action_required: "等待用户操作",
+    ProviderPreflightState.reconnecting: "连接中断/准备重连",
 }
 
 
@@ -166,6 +206,7 @@ class SettingsDialog(QDialog):
         self.tabs = QTabWidget(self)
         self.tabs.setAccessibleName("设置页面")
         self.tabs.addTab(self._build_connection_tab(), "连接与设备")
+        self.tabs.addTab(self._build_preflight_tab(), "服务预检")
         self.tabs.addTab(self._build_features_tab(), "功能与隐私")
         self.tabs.addTab(self._build_memory_tab(), "历史与记忆")
         self.tabs.addTab(self._build_debug_tab(), "调试状态")
@@ -199,6 +240,15 @@ class SettingsDialog(QDialog):
         self.llm_model = self._line_edit("LLM 模型")
         self.tts_provider = self._line_edit("TTS 提供方")
         self.tts_base_url = self._line_edit("TTS 地址")
+        self.tts_preset_name = self._line_edit("TTS 默认 preset 名称")
+        self.tts_ref_audio_path = self._line_edit("TTS reference 资源")
+        self.tts_ref_audio_scope = QComboBox(page)
+        self.tts_ref_audio_scope.setAccessibleName("TTS reference 资源范围")
+        self.tts_ref_audio_scope.addItem("由 GPT-SoVITS 服务解释", "service_resource")
+        self.tts_ref_audio_scope.addItem("本机 loopback 普通文件", "local_file")
+        self.tts_ref_audio_scope.currentIndexChanged.connect(self._mark_form_dirty_index)
+        self.tts_prompt_text = self._line_edit("TTS reference 提示文本")
+        self.tts_prompt_lang = self._line_edit("TTS reference 提示语言")
         self.vts_enabled = QCheckBox("启用 VTube Studio（重启后生效）", page)
         self.vts_uri = self._line_edit("VTS 地址")
         self.vts_plugin_name = self._line_edit("VTS 插件名称")
@@ -244,6 +294,11 @@ class SettingsDialog(QDialog):
         form.addRow("LLM 模型", self.llm_model)
         form.addRow("TTS 提供方", self.tts_provider)
         form.addRow("TTS 基础地址", self.tts_base_url)
+        form.addRow("TTS 默认 preset", self.tts_preset_name)
+        form.addRow("TTS reference", self.tts_ref_audio_path)
+        form.addRow("TTS reference 范围", self.tts_ref_audio_scope)
+        form.addRow("TTS reference 文本", self.tts_prompt_text)
+        form.addRow("TTS reference 语言", self.tts_prompt_lang)
         form.addRow("VTS", self.vts_enabled)
         form.addRow("VTS URI", self.vts_uri)
         form.addRow("VTS 插件名称", self.vts_plugin_name)
@@ -295,6 +350,36 @@ class SettingsDialog(QDialog):
         secrets_layout.addWidget(revoke_vts, 3, 2)
         secrets_layout.addWidget(self.vts_secret_state, 4, 0, 1, 3)
         layout.addWidget(secrets)
+        layout.addStretch(1)
+        return page
+
+    def _build_preflight_tab(self) -> QWidget:
+        page = QWidget(self)
+        layout = QVBoxLayout(page)
+        guidance = QLabel(
+            "联合预检只读取已保存设置。GPT-SoVITS 会收到固定短语“连接测试”，"
+            "生成的 WAV 不播放并立即清理；VTube Studio 首次授权或授权失效时，"
+            "必须在 VTube Studio 内完成 Allow。结果不显示 token、模型/hotkey ID、"
+            "reference 路径、prompt 或 provider 响应正文。",
+            page,
+        )
+        guidance.setWordWrap(True)
+        layout.addWidget(guidance)
+        group = QGroupBox("分阶段状态", page)
+        grid = QGridLayout(group)
+        self.preflight_labels: dict[ProviderPreflightName, QLabel] = {}
+        for row, (name, title) in enumerate(_PREFLIGHT_NAMES.items()):
+            grid.addWidget(QLabel(title, group), row, 0)
+            value = QLabel("待运行", group)
+            value.setAccessibleName(f"{title}预检状态")
+            value.setWordWrap(True)
+            grid.addWidget(value, row, 1)
+            self.preflight_labels[name] = value
+        layout.addWidget(group)
+        self.run_provider_preflight = QPushButton("运行 TTS/VTS 联合预检", page)
+        self.run_provider_preflight.setAccessibleName("运行 TTS 和 VTube Studio 联合预检")
+        self.run_provider_preflight.clicked.connect(self._run_provider_preflight)
+        layout.addWidget(self.run_provider_preflight)
         layout.addStretch(1)
         return page
 
@@ -479,6 +564,24 @@ class SettingsDialog(QDialog):
     def _refresh_audio_devices(self) -> None:
         self._submit(AudioOutputDevicesCommand())
 
+    def _run_provider_preflight(self) -> None:
+        if self._model.settings is None:
+            self.status_label.setText("设置尚未加载。")
+            return
+        if self._form_dirty:
+            self.status_label.setText("请先保存设置，再运行 TTS/VTS 联合预检。")
+            return
+        if not self._confirm(
+            "运行服务预检",
+            "将使用已保存设置连接 GPT-SoVITS 与 VTube Studio。GPT-SoVITS 会合成固定短语"
+            "“连接测试”，测试 WAV 不播放并立即清理；VTube Studio 可能要求你在其窗口中"
+            "点击 Allow。是否继续？",
+        ):
+            return
+        if self._submit(ProviderPreflightCommand()):
+            self.run_provider_preflight.setEnabled(False)
+            self.status_label.setText("正在运行 TTS/VTS 联合预检…")
+
     def _selected_stt_profile(self) -> str:
         value = self.stt_profile.currentData()
         return value if isinstance(value, str) else MANAGED_STT_PROFILE
@@ -546,6 +649,11 @@ class SettingsDialog(QDialog):
                         llm_model=self.llm_model.text(),
                         tts_provider=self.tts_provider.text(),
                         tts_base_url=self.tts_base_url.text(),
+                        tts_preset_name=self.tts_preset_name.text(),
+                        tts_ref_audio_path=self.tts_ref_audio_path.text(),
+                        tts_ref_audio_scope=self._selected_tts_ref_audio_scope(),
+                        tts_prompt_text=self.tts_prompt_text.text(),
+                        tts_prompt_lang=self.tts_prompt_lang.text(),
                         vts_enabled=self.vts_enabled.isChecked(),
                         vts_uri=self.vts_uri.text(),
                         vts_plugin_name=self.vts_plugin_name.text(),
@@ -697,6 +805,7 @@ class SettingsDialog(QDialog):
 
     def sync_from_model(self) -> None:
         self._sync_settings()
+        self._sync_provider_preflight()
         self._sync_features()
         self._sync_memory()
         self._sync_debug()
@@ -706,9 +815,9 @@ class SettingsDialog(QDialog):
         snapshot = self._model.settings
         if snapshot is None:
             return
+        form = snapshot.form
         if not self._form_dirty:
             self._populating_form = True
-            form = snapshot.form
             self._sync_stt_profiles(form.stt_profile)
             for widget, value in (
                 (self.llm_provider, form.llm_provider),
@@ -716,6 +825,10 @@ class SettingsDialog(QDialog):
                 (self.llm_model, form.llm_model),
                 (self.tts_provider, form.tts_provider),
                 (self.tts_base_url, form.tts_base_url),
+                (self.tts_preset_name, form.tts_preset_name),
+                (self.tts_ref_audio_path, form.tts_ref_audio_path),
+                (self.tts_prompt_text, form.tts_prompt_text),
+                (self.tts_prompt_lang, form.tts_prompt_lang),
                 (self.vts_uri, form.vts_uri),
                 (self.vts_plugin_name, form.vts_plugin_name),
                 (self.vts_plugin_developer, form.vts_plugin_developer),
@@ -728,6 +841,8 @@ class SettingsDialog(QDialog):
             self.stt_enabled.setChecked(form.stt_enabled)
             self.startup_enabled.setChecked(form.startup_enabled)
             self.system_playback_enabled.setChecked(form.system_playback_enabled)
+            scope_index = self.tts_ref_audio_scope.findData(form.tts_ref_audio_scope)
+            self.tts_ref_audio_scope.setCurrentIndex(max(0, scope_index))
             self._populating_form = False
         selected_device_id = (
             self._selected_output_device_id() if self._form_dirty else form.output_device_id
@@ -754,6 +869,30 @@ class SettingsDialog(QDialog):
             profile_name = snapshot.stt_runtime.profile
         self.stt_runtime_status.setText(f"中文离线 STT（{profile_name}）：{runtime_text}")
         self.install_stt_runtime.setEnabled(runtime_state is not SttRuntimeState.installing)
+
+    def _selected_tts_ref_audio_scope(
+        self,
+    ) -> Literal["service_resource", "local_file"]:
+        value = self.tts_ref_audio_scope.currentData()
+        return "local_file" if value == "local_file" else "service_resource"
+
+    def _sync_provider_preflight(self) -> None:
+        checks = self._model.provider_preflight_checks
+        for name, label in self.preflight_labels.items():
+            check = checks.get(name)
+            if check is None:
+                label.setText("待运行")
+                continue
+            text = _PREFLIGHT_STATES[check.state]
+            if check.missing_count:
+                text += f"（缺少 {check.missing_count} 项）"
+            if check.reason_code is not None:
+                reason = _MANAGEMENT_REASON_TEXT.get(
+                    check.reason_code,
+                    check.reason_code,
+                )
+                text += f"：{reason}"
+            label.setText(text)
 
     def _sync_audio_output_devices(self, selected_device_id: str) -> None:
         self.output_device.blockSignals(True)
@@ -895,6 +1034,8 @@ class SettingsDialog(QDialog):
         if result.reason_code is not None:
             if result.operation == "stt_runtime_install":
                 self.install_stt_runtime.setEnabled(True)
+            if result.operation == "provider_preflight":
+                self.run_provider_preflight.setEnabled(True)
             reason = _MANAGEMENT_REASON_TEXT.get(
                 result.reason_code,
                 f"操作未完成（{result.reason_code}）。",
@@ -908,6 +1049,8 @@ class SettingsDialog(QDialog):
         self.status_label.setText(f"操作完成：{operation}{suffix}")
         if result.operation == "settings_saved":
             self._form_dirty = False
+        if result.operation == "provider_preflight_completed":
+            self.run_provider_preflight.setEnabled(True)
 
     def clear_sensitive(self) -> None:
         """Erase dialog-held credentials, paths and memory bodies before final exit."""
@@ -919,6 +1062,10 @@ class SettingsDialog(QDialog):
             self.llm_model,
             self.tts_provider,
             self.tts_base_url,
+            self.tts_preset_name,
+            self.tts_ref_audio_path,
+            self.tts_prompt_text,
+            self.tts_prompt_lang,
             self.vts_uri,
             self.vts_plugin_name,
             self.vts_plugin_developer,
@@ -930,6 +1077,9 @@ class SettingsDialog(QDialog):
         ):
             edit.clear()
         self.output_device.clear()
+        self.tts_ref_audio_scope.clear()
+        for label in self.preflight_labels.values():
+            label.setText("")
         self.audio_device_hint.setText("")
         self.memory_search.clear()
         self.memory_detail.clear()

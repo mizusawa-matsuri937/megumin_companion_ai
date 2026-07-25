@@ -1,7 +1,8 @@
 # Windows 数据流与保留清单
 
-> 版本：2026-07-23
-> 状态：Gate W0 已批准的目标契约；W17/W18 的 MediaWorker 音频路径已在本地实现并验证。受管中文 STT
+> 版本：2026-07-25
+> 状态：Gate W0 已批准的目标契约；W17/W18 的 MediaWorker 音频路径已实现并验证，W19 的 provider
+> 配置与显式联合 preflight 已在本地工作树实现并完成聚焦 fake/headless 验证。受管中文 STT
 > runtime 已由 [`224e06f`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/224e06f9cbb1d2ab0cc2260fb244b1f74cd7dfbc)
 > 加入并完成该 code head 的 CI；真实设备 Gate 和后续 head 核验仍未完成；其他行仍不代表代码已经实现。
 > 关联：[`../adr/README.md`](../adr/README.md)、[`../decisions/w00_owner_decisions.md`](../decisions/w00_owner_decisions.md)、
@@ -26,6 +27,42 @@ flowchart LR
 用户输入、dev API、helper protocol、外部 provider 和屏幕内容都属于不可信边界。截图/PCM 原始数据留在 worker；云视觉
 是独立网络出口，不因 vision 本地启用而自动启用。STT runtime 下载也是单独网络边界：仅用户确认安装/修复时访问固定
 GitHub/Hugging Face HTTPS URL，绝不发送录音、转写、设备名或用户路径。
+
+## W19 provider preflight 数据流（2026-07-25）
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant Q as Qt
+    participant B as BackendThread
+    participant T as GPT-SoVITS
+    participant V as VTube Studio
+
+    U->>Q: 保存 provider/preset/reference 设置
+    Q->>B: bounded SettingsSaveCommand
+    B->>B: schema validate + atomic user-layer write
+    U->>Q: 确认运行联合预检
+    par TTS
+        B->>T: route probe
+        B->>T: /tts 固定文本“连接测试” + 已保存 preset/reference
+        T-->>B: bounded WAV 或失败
+        B->>B: 不播放；立即 discard/cleanup
+    and VTS
+        B->>V: API 1.0 connect/auth/preflight
+        V-->>U: 首次/失效授权仅在 VTS 内 Allow
+        V-->>B: API/auth/model/hotkey capability
+    end
+    B-->>Q: enum + reason code + missing count
+```
+
+确认边界：
+
+- Qt↔BackendThread preflight event 不含固定测试正文、token、模型/hotkey ID、reference 路径、prompt、provider body
+  或 WAV 路径。
+- reference 路径与 prompt 作为用户配置保存在 current-user YAML；显式预检和正常 TTS 会把它们发给用户指定的
+  GPT-SoVITS endpoint。`service_resource` 的可见性只能由该服务本次 `/tts` 结果证明。
+- 预检 WAV 使用既有 TTS temp owner，cache 关闭，不进入 MediaWorker/playback；成功、失败和 close 都走既有清理。
+- VTS token 仍只在 current-user DPAPI store 与 VTS 官方认证请求之间流动；设置页和 preflight snapshot 不回显。
 
 ## W18 实现状态（2026-07-23）
 
@@ -57,11 +94,11 @@ GitHub/Hugging Face HTTPS URL，绝不发送录音、转写、设备名或用户
 | 近期历史 | MemoryRuntime/SQLite | backend 内部 | `state/companion.sqlite3` + WAL | 用户显式 export；作为 LLM 上下文 | 默认 7 天、clear/retention/checkpoint | 不记录记录内容 |
 | 长期记忆 | MemoryService/SQLite | backend 内部 | 同一 DB，显式 opt-in | 用户显式 export；作为 LLM 上下文 | confirm/update/delete/clear；凭据永不成为候选 | 只记记录 id/操作/状态 |
 | API key/VTS token | Secret store | provider adapter 只在使用时读取 | DPAPI current-user 密文文件 | 仅发给对应 endpoint/协议 | replace/revoke/reset；普通卸载默认删除 | 不记录值、密文、header 或路径 |
-| 用户设置 | Config owner | UI command → config service | `config/settings.yaml`，带 schema version | 无，除非对应 provider 请求需要最小配置 | 升级迁移/卸载选择 | 只记 schema/version/字段类别 |
+| 用户设置 | Config owner | UI command → config service | `config/settings.yaml`，带 schema version；W19 preset/reference/prompt 属于用户私密配置但不是 secret | 无，除非对应 provider 请求需要最小配置 | 升级迁移/卸载选择 | 只记 schema/version/字段类别；不记 reference/prompt/完整路径 |
 | 日志/健康/诊断 | 单 writer/exporter | allowlist event | `logs`，10 MiB × 5 且最多 14 天 | 用户显式导出脱敏诊断包 | rotation + retention | 禁止正文、截图、OCR、音频、secret、完整路径 |
-| TTS 临时 WAV | TTS owner；播放期间由 MediaWorker 独占消费 | 父侧只提交批准根下的 `ResourceReference`；helper 打开/复核 descriptor，wire 不含绝对路径、PCM、WAV body 或 native device index | `temp/audio`；可选 `cache/audio` 默认关闭 | 本地 MediaWorker playback | 取消/消费后 release；W12 terminal cleanup 与 scavenger；受 W07 在途音频预算约束 | 只记 job id、bytes、duration、稳定 error/notice code |
+| TTS 临时 WAV | TTS owner；正常播放期间由 MediaWorker 独占消费；W19 preflight WAV 不播放 | 正常播放只提交批准根下的 `ResourceReference`；preflight WAV 不跨入 helper；wire 不含绝对路径、PCM、WAV body 或 native device index | `temp/audio`；可选 `cache/audio` 默认关闭，preflight 强制关闭 cache | 正常路径仅到本地 MediaWorker playback；preflight 无播放出口 | 取消/消费后 release；preflight 成功立即 discard；W12 terminal cleanup 与 scavenger；受 W07 在途音频预算约束 | 只记 job id、bytes、duration、稳定 error/notice code |
 | 受管中文 STT runtime/model | 显式安装服务 | BackendThread/CLI 只下载固定公开 URL；worker 只读本地已验证文件 | `%LOCALAPPDATA%\MeguminCompanion\models\stt\whispercpp\v1.9.1\`，安装包/wheel/CI artifact 外 | 仅用户确认时从 GitHub/Hugging Face 下载 asset bytes；**不发送音频或转写** | staging 失败/取消清理；已验证资产保留到用户修复/删除；不后台更新 | 不记完整本地路径、下载 token、音频或转写；本地 NOTICE 仅含公开来源/许可证/hash |
-| 模型/角色/参考音频 | 用户/外部路径 | worker/provider 读取批准路径 | 安装包外；只记录路径和 fingerprint | 只发给用户明确配置的本地/远端服务 | 用户管理；卸载不复制或删除原资产 | 不记录完整路径或内容 |
+| 模型/角色/参考音频 | 用户/外部路径 | worker/provider 读取批准路径；W19 只将 reference 配置交给用户指定的 GPT-SoVITS | 安装包外；用户 YAML 可记录 reference 字符串，不复制资产 | 只发给用户明确配置的本地/远端服务 | 用户管理；卸载不复制或删除原资产 | 不记录完整路径、prompt 或内容 |
 
 ## 云视觉序列
 

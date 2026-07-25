@@ -58,6 +58,9 @@ class VTSBridgeSnapshot:
     stale_actions: int = 0
     neutral_resets: int = 0
     preflight_ready: bool = False
+    api_available: bool = False
+    authenticated: bool = False
+    model_loaded: bool = False
     configured_hotkey_count: int = 0
     missing_hotkey_count: int = 0
 
@@ -141,6 +144,9 @@ class VTSBridge:
         self._current_turn_id: str | None = None
         self._neutral_pending = True
         self._preflight = VTSPreflight(False, False, False, 0, 0)
+        self._api_available = False
+        self._authenticated = False
+        self._model_loaded = False
         self._stop = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
         self._active_client: BridgeClient | None = None
@@ -212,6 +218,9 @@ class VTSBridge:
             stale_actions=self._stale_actions,
             neutral_resets=self._neutral_resets,
             preflight_ready=self._preflight.ready,
+            api_available=self._api_available,
+            authenticated=self._authenticated,
+            model_loaded=self._model_loaded,
             configured_hotkey_count=self._preflight.configured_hotkey_count,
             missing_hotkey_count=self._preflight.missing_hotkey_count,
         )
@@ -230,7 +239,10 @@ class VTSBridge:
                     api_state = await client.api_state()
                     if api_state.get("active") is not True:
                         raise VTSConfigurationError("vts_api_unavailable")
+                    self._api_available = True
+                    self._notify()
                     await self._authorize(client)
+                    self._authenticated = True
                     self._set_state(VTSBridgeState.preflighting)
                     await self._perform_preflight(client)
                     self._set_state(VTSBridgeState.ready)
@@ -255,6 +267,9 @@ class VTSBridge:
                         break
                     self._reconnect_count += 1
                     self._preflight = VTSPreflight(False, False, False, 0, 0)
+                    self._api_available = False
+                    self._authenticated = False
+                    self._model_loaded = False
                     self._advance_generation(None)
                     error_code = exc.code if isinstance(exc, VTSError) else "vts_unavailable"
                     self._set_state(VTSBridgeState.backoff, error_code)
@@ -324,6 +339,9 @@ class VTSBridge:
         except VTSAPIError as exc:
             raise VTSProtocolError from exc
         self._preflight = result
+        self._api_available = result.available
+        self._authenticated = result.authenticated
+        self._model_loaded = result.model_loaded
         if not result.ready:
             assert result.error_code is not None
             raise VTSConfigurationError(result.error_code)
@@ -414,6 +432,8 @@ class VTSBridge:
         else:
             error_code = "vts_config"
         if error_code == "vts_auth_revoked":
+            self._authenticated = False
+            self._model_loaded = False
             with suppress(Exception):
                 await self._token_store.delete()
         if self._preflight.error_code != error_code:

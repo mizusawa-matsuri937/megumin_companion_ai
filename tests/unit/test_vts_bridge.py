@@ -384,7 +384,11 @@ def test_model_and_hotkey_preflight_failures_disable_without_retry(
         )
         bridge.start()
         await _wait_until(lambda: bridge.snapshot().state is VTSBridgeState.disabled)
-        assert bridge.snapshot().error_code == expected
+        snapshot = bridge.snapshot()
+        assert snapshot.error_code == expected
+        assert snapshot.api_available
+        assert snapshot.authenticated
+        assert snapshot.model_loaded is (expected == "vts_hotkey_missing")
         assert calls == 1
         assert clock.delays == []
         await bridge.close()
@@ -420,7 +424,11 @@ def test_auth_denial_and_revocation_do_not_enter_hot_retry() -> None:
         )
         bridge.start()
         await _wait_until(lambda: bridge.snapshot().state is VTSBridgeState.disabled)
-        assert bridge.snapshot().error_code == "vts_auth_failed"
+        snapshot = bridge.snapshot()
+        assert snapshot.error_code == "vts_auth_failed"
+        assert snapshot.api_available
+        assert not snapshot.authenticated
+        assert not snapshot.model_loaded
         assert denied.token_request_count == 1
         assert clock.delays == []
         await bridge.close()

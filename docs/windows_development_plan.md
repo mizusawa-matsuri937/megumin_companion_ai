@@ -741,6 +741,11 @@ flowchart LR
 
 #### PR W19：真实 VTS/GPT-SoVITS 配置向导与联动
 
+> **当前状态（2026-07-25）：** W19 已在 `codex/w19-provider-preflight` 工作树实现 typed 联合 preflight、
+> 默认 preset/reference 保存、固定文本且不播放的 GPT-SoVITS 端到端检查，以及 VTS API/auth/model/hotkey
+> 分阶段状态。fake HTTP/WebSocket、冷启动、撤销、断线、错误 preset、远端路径不回显和旧 generation 不重放的
+> 扩展聚焦矩阵为 60 passed；完整质量门、提交、Draft PR、exact-head CI 与下列真实体验 Gate 尚未完成。
+
 - **责任：AI-R；真实体验/资产 H。依赖：W09、W16～W18。**
 - preflight 页面展示服务连通、认证、模型、hotkey、preset、reference 资源可见性，不显示 secret。
 - 首次 VTS Allow 必须用户在 VTS 内操作；撤销/重连状态清楚。
