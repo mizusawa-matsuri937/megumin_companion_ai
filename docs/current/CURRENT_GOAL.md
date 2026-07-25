@@ -22,7 +22,10 @@
 > 临时 wheel/evidence 已删除。功能提交
 > [`d641c29`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/d641c29b744bf400d46fe4453aefec0ed69044ee)
 > 已推送，Draft PR [#32](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/32) 已创建且 base/head 已核对；
-> exact-head CI 尚未完成。详见
+> 交付 head `fc9222f17a80e046badb77c8e1ab4270da81aaef` 的
+> [PR workflow](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/30157041353) 与
+> [push workflow](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/30157040265) 均通过 macOS/Windows
+> `quality` 与 `installed-wheel`。本 CI 关闭记录提交后的新纯文档 head 仍须独立复核，不能借用前一 head 的绿灯。详见
 > [W19 实现记录](../implementation/w19_provider_preflight.md)。
 
 > 最后核验：2026-07-23（Asia/Shanghai）。当前唯一活跃任务仍为 W18「Push-to-talk、麦克风 ring buffer 与

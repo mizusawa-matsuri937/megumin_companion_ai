@@ -746,8 +746,10 @@ flowchart LR
 > 分阶段状态。fake HTTP/WebSocket、冷启动、撤销、断线、错误 preset、远端路径不回显和旧 generation 不重放的
 > 扩展聚焦矩阵为 60 passed；完整本地质量门已通过，功能提交
 > [`d641c29`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/d641c29b744bf400d46fe4453aefec0ed69044ee)
-> 已推送并创建 Draft PR [#32](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/32)；exact-head CI
-> 与下列真实体验 Gate 尚未完成。
+> 已推送并创建 Draft PR [#32](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/32)；交付 head
+> `fc9222f` 的 [PR](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/30157041353) /
+> [push](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/30157040265) 双 OS 自动门已通过；
+> CI 关闭记录的新纯文档 head 仍须独立复核，下列真实体验 Gate 尚未完成。
 
 - **责任：AI-R；真实体验/资产 H。依赖：W09、W16～W18。**
 - preflight 页面展示服务连通、认证、模型、hotkey、preset、reference 资源可见性，不显示 secret。
