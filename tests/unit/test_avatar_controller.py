@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import math
 import random
+from typing import cast
 
+import pytest
 from app.avatar import (
-    AvatarParameterFrame,
     AvatarParameterController,
+    AvatarParameterFrame,
     RedEyeCommand,
     RedEyeOwner,
     RedEyeOwnership,
@@ -189,3 +191,113 @@ def test_red_eye_system_manual_retrigger_and_stale_deadline() -> None:
 
     assert ownership.reset() is RedEyeCommand.deactivate
     assert _red_eye_owner(ownership) is RedEyeOwner.off
+
+
+def test_controller_rejects_malformed_state_and_degrades_by_capability() -> None:
+    controller = AvatarParameterController(
+        AvatarConfig(),
+        _capabilities(),
+        rng=random.Random(1),
+    )
+    assert controller.lip_sync_available
+
+    invalid_emotions_and_times = (
+        (cast(EmotionLabel, "happy"), 0.0),
+        (EmotionLabel.happy, cast(float, True)),
+        (EmotionLabel.happy, float("nan")),
+        (EmotionLabel.happy, cast(float, "now")),
+    )
+    for emotion, now in invalid_emotions_and_times:
+        with pytest.raises(ValueError, match="transition"):
+            controller.set_emotion(emotion, now=now)
+
+    with pytest.raises(ValueError, match="speaking"):
+        controller.set_speaking(cast(bool, 1))
+    for value in (cast(float, True), float("inf"), cast(float, "open")):
+        with pytest.raises(ValueError, match="mouth"):
+            controller.set_mouth(value)
+
+    invalid_frames = (
+        (cast(float, True), 1, 1),
+        (float("nan"), 1, 1),
+        (0.0, cast(int, True), 1),
+        (0.0, 0, 1),
+        (0.0, 1, cast(int, True)),
+        (0.0, 1, 0),
+    )
+    for now, vts_generation, model_generation in invalid_frames:
+        assert (
+            controller.compose(
+                now=now,
+                vts_generation=vts_generation,
+                model_generation=model_generation,
+            )
+            is None
+        )
+
+    disabled = AvatarParameterController(
+        AvatarConfig(parameter_control_enabled=False),
+        _capabilities(),
+    )
+    assert disabled.compose(now=0.0, vts_generation=1, model_generation=1) is None
+
+    lip_only = AvatarParameterController(
+        AvatarConfig(micro_motion_enabled=False),
+        {"MouthOpen": VTSParameterCapability(0.0, 1.0, 0.0)},
+    )
+    lip_only.set_mouth(2.0)
+    assert lip_only.compose(
+        now=0.0,
+        vts_generation=1,
+        model_generation=1,
+    ) == AvatarParameterFrame(
+        vts_generation=1,
+        model_generation=1,
+        sequence=1,
+        parameters=(("MouthOpen", 1.0),),
+    )
+
+    no_layers = AvatarParameterController(
+        AvatarConfig(micro_motion_enabled=False, lip_sync_enabled=False),
+        {},
+    )
+    assert not no_layers.lip_sync_available
+    assert no_layers.zero_mouth_parameters() == {}
+    assert no_layers.compose(now=0.0, vts_generation=1, model_generation=1) is None
+
+
+def test_red_eye_rejects_malformed_duration_state_and_generations() -> None:
+    invalid_durations = (
+        0.0,
+        -1.0,
+        cast(float, True),
+        float("nan"),
+        cast(float, "two"),
+    )
+    for duration in invalid_durations:
+        with pytest.raises(ValueError, match="duration"):
+            RedEyeOwnership(duration_seconds=duration)
+
+    ownership = RedEyeOwnership(duration_seconds=2.0)
+    with pytest.raises(ValueError, match="state"):
+        ownership.reconcile_manual(active=cast(bool, 1))
+    assert ownership.due(now=0.0, vts_generation=1, model_generation=1) is None
+
+    invalid_generations = (
+        (cast(float, True), 1, 1),
+        (float("inf"), 1, 1),
+        (cast(float, "now"), 1, 1),
+        (0.0, cast(int, True), 1),
+        (0.0, cast(int, "one"), 1),
+        (0.0, 0, 1),
+        (0.0, 1, cast(int, True)),
+        (0.0, 1, cast(int, "one")),
+        (0.0, 1, 0),
+    )
+    for now, vts_generation, model_generation in invalid_generations:
+        with pytest.raises(ValueError, match="generation"):
+            ownership.trigger_system(
+                now=now,
+                vts_generation=vts_generation,
+                model_generation=model_generation,
+            )

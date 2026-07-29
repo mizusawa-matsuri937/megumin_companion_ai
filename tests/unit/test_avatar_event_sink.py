@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
 from app.avatar import (
     AvatarHealthSnapshot,
     AvatarRuntimeState,
-    AvatarTurnPlan,
     AvatarTurnEventSink,
+    AvatarTurnPlan,
 )
 from app.schemas import PipelineEvent
 
@@ -25,17 +26,24 @@ class _FakeRuntime:
         self.completed: list[tuple[str, int]] = []
         self.cancelled: list[tuple[str, int]] = []
         self.red_eye_trigger_count = 0
+        self.allow_begin = True
+        self.allow_plan = True
+        self.allow_fallback = True
+        self.allow_complete = True
+        self.allow_cancel = True
 
     def start(self) -> None:
         self.started = True
 
     def begin_turn(self, turn_id: str) -> int | None:
+        if not self.allow_begin:
+            return None
         self.generation += 1
         self.turn_id = turn_id
         return self.generation
 
     def set_turn_plan(self, plan: AvatarTurnPlan, *, generation: int) -> bool:
-        if generation != self.generation:
+        if generation != self.generation or not self.allow_plan:
             return False
         self.plans.append(plan)
         return True
@@ -46,15 +54,15 @@ class _FakeRuntime:
 
     def visual_fallback(self, turn_id: str, *, generation: int) -> bool:
         self.fallbacks.append((turn_id, generation))
-        return generation == self.generation
+        return generation == self.generation and self.allow_fallback
 
     def complete_turn(self, turn_id: str, *, generation: int) -> bool:
         self.completed.append((turn_id, generation))
-        return generation == self.generation
+        return generation == self.generation and self.allow_complete
 
     def cancel_turn(self, turn_id: str, *, generation: int) -> bool:
         self.cancelled.append((turn_id, generation))
-        return generation == self.generation
+        return generation == self.generation and self.allow_cancel
 
     def trigger_red_eye(self) -> bool:
         self.red_eye_trigger_count += 1
@@ -81,7 +89,7 @@ def _event(
     event_type: str,
     payload: dict[str, object] | None = None,
     *,
-    turn_id: str = "turn_test",
+    turn_id: str | None = "turn_test",
 ) -> PipelineEvent:
     return PipelineEvent(
         seq=1,
@@ -129,5 +137,83 @@ def test_sink_freezes_first_segment_and_uses_actual_or_fallback_playback_once() 
         await sink.close()
         assert runtime.closed
         assert not sink.publish(_event("turn.accepted", turn_id="late"))
+
+    asyncio.run(scenario())
+
+
+def test_sink_fails_closed_on_malformed_stale_and_rejected_runtime_events() -> None:
+    async def scenario() -> None:
+        runtime = _FakeRuntime()
+        sink = AvatarTurnEventSink(runtime)
+
+        assert not sink.publish(_event("turn.accepted", turn_id=None))
+        runtime.allow_begin = False
+        assert not sink.publish(_event("turn.accepted", turn_id="turn_rejected"))
+
+        runtime.allow_begin = True
+        assert sink.publish(_event("turn.accepted", turn_id="turn_current"))
+        assert not sink.publish(
+            _event(
+                "assistant.segment",
+                {"emotion": 1},
+                turn_id="turn_current",
+            )
+        )
+        runtime.allow_plan = False
+        assert not sink.publish(
+            _event(
+                "assistant.segment",
+                {"emotion": "happy"},
+                turn_id="turn_current",
+            )
+        )
+        runtime.allow_plan = True
+        assert sink.publish(
+            _event(
+                "assistant.segment",
+                {"emotion": "happy"},
+                turn_id="turn_current",
+            )
+        )
+
+        assert not sink.publish(
+            _event(
+                "avatar.red_eye",
+                {"effect": "other"},
+                turn_id="turn_current",
+            )
+        )
+        assert sink.publish(
+            _event(
+                "avatar.red_eye",
+                {"effect": "red_eye"},
+                turn_id="turn_current",
+            )
+        )
+        assert runtime.red_eye_trigger_count == 1
+        assert sink.publish(_event("synthetic.unrelated", turn_id="turn_current"))
+        assert not sink.publish(_event("playback.started", turn_id="turn_stale"))
+        assert sink.publish(_event("turn.cancelled", turn_id="turn_stale"))
+
+        runtime.allow_fallback = False
+        assert not sink.publish(_event("playback.finished", turn_id="turn_current"))
+        assert not sink.publish(_event("assistant.completed", turn_id="turn_current"))
+
+        runtime.allow_fallback = True
+        runtime.allow_complete = False
+        assert not sink.publish(_event("assistant.completed", turn_id="turn_current"))
+        runtime.allow_complete = True
+        assert sink.publish(_event("assistant.completed", turn_id="turn_current"))
+
+        assert sink.publish(_event("turn.accepted", turn_id="turn_cancel"))
+        runtime.allow_cancel = False
+        assert not sink.publish(_event("turn.failed", turn_id="turn_cancel"))
+        runtime.allow_cancel = True
+        assert sink.publish(_event("turn.failed", turn_id="turn_cancel"))
+
+        assert sink.snapshot().state is AvatarRuntimeState.ready
+        await sink.close()
+        with pytest.raises(RuntimeError, match="closed"):
+            sink.start()
 
     asyncio.run(scenario())

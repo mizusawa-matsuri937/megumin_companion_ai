@@ -18,6 +18,7 @@ from app.clients.vts.client import (
     VTSHotkeyTriggeredEvent,
     VTSModelLoadedEvent,
     VTSProtocolError,
+    VTSRequestTimeout,
 )
 from websockets.asyncio.server import Server, ServerConnection, serve
 
@@ -1158,5 +1159,174 @@ def test_event_mailbox_is_bounded_and_latest_wins() -> None:
         observed = [await client.next_event() for _ in range(client_module._EVENT_QUEUE_CAPACITY)]
         assert observed[0] == VTSModelLoadedEvent(model_loaded=True)
         assert observed[-1] == VTSModelLoadedEvent(model_loaded=False)
+
+    asyncio.run(scenario())
+
+
+def test_content_free_response_and_terminal_boundaries_fail_closed() -> None:
+    with pytest.raises(ValueError, match="unsupported"):
+        VTSConfigurationError("unsupported")
+
+    # A valid explicit proxy exercises constructor validation without opening a socket.
+    VTSClient(proxy_url="https://proxy.example:443")
+
+    async def scenario() -> None:
+        client = _StaticResponseClient()
+
+        client.response = {"authenticationToken": ""}
+        with pytest.raises(VTSProtocolError):
+            await client.request_token("Companion", "Local User")
+
+        client.response = {"authenticated": 1}
+        with pytest.raises(VTSProtocolError):
+            await client.authenticate("Companion", "Local User", "synthetic-token")
+
+        client.response = {"modelLoaded": "yes", "modelName": "synthetic"}
+        with pytest.raises(VTSProtocolError):
+            await client.current_model_name()
+        client.response = {"modelLoaded": False}
+        with pytest.raises(VTSConfigurationError) as missing_model:
+            await client.current_model_name()
+        assert missing_model.value.code == "vts_model_missing"
+
+        for response in (
+            {"availableHotkeys": None},
+            {"availableHotkeys": [None]},
+        ):
+            client.response = response
+            with pytest.raises(VTSProtocolError):
+                await client.available_hotkey_ids()
+        client.response = {"availableHotkeys": []}
+        with pytest.raises(VTSConfigurationError) as missing_hotkey:
+            await client.resolve_hotkey_name("synthetic_release")
+        assert missing_hotkey.value.code == "vts_hotkey_missing"
+
+        client.response = {"active": 1, "currentSessionAuthenticated": True}
+        with pytest.raises(VTSProtocolError):
+            await client.preflight(frozenset())
+
+        class _MalformedModelPreflightClient(_StaticResponseClient):
+            async def api_state(self) -> dict[str, Any]:
+                return {"active": True, "currentSessionAuthenticated": True}
+
+            async def current_model(self) -> dict[str, Any]:
+                return {"modelLoaded": "yes"}
+
+        with pytest.raises(VTSProtocolError):
+            await _MalformedModelPreflightClient().preflight(frozenset())
+
+        await client.close()
+        for _ in range(2):
+            with pytest.raises(VTSConnectionError):
+                await client.next_event()
+
+    asyncio.run(scenario())
+
+
+def test_dispatch_and_request_timeout_boundaries_fail_closed() -> None:
+    async def scenario() -> None:
+        client = VTSClient()
+        client._dispatch(
+            json.dumps(
+                {
+                    "apiName": "VTubeStudioPublicAPI",
+                    "apiVersion": "1.0",
+                    "messageType": "UnknownEvent",
+                    "data": {},
+                }
+            )
+        )
+        with pytest.raises(VTSProtocolError):
+            client._dispatch(
+                json.dumps(
+                    {
+                        "requestID": 1,
+                        "messageType": "APIStateResponse",
+                        "data": {},
+                    }
+                )
+            )
+
+        done_future: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
+        done_future.set_result({})
+        client._pending["done"] = ("APIStateResponse", done_future)
+        client._dispatch(
+            json.dumps(
+                {
+                    "requestID": "done",
+                    "messageType": "APIStateResponse",
+                    "data": {},
+                }
+            )
+        )
+
+        malformed_future: asyncio.Future[dict[str, Any]] = (
+            asyncio.get_running_loop().create_future()
+        )
+        client._pending["malformed"] = ("APIStateResponse", malformed_future)
+        client._dispatch(
+            json.dumps(
+                {
+                    "requestID": "malformed",
+                    "messageType": "APIStateResponse",
+                    "data": [],
+                }
+            )
+        )
+        assert isinstance(malformed_future.exception(), VTSProtocolError)
+
+        malformed_events = (
+            {
+                "apiName": "wrong",
+                "apiVersion": "1.0",
+                "requestID": "event",
+                "messageType": "ModelLoadedEvent",
+                "data": {"modelLoaded": True},
+            },
+            {
+                "apiName": "VTubeStudioPublicAPI",
+                "apiVersion": "1.0",
+                "requestID": "event",
+                "messageType": "ModelLoadedEvent",
+                "data": [],
+            },
+            {
+                "apiName": "VTubeStudioPublicAPI",
+                "apiVersion": "1.0",
+                "requestID": "event",
+                "messageType": "HotkeyTriggeredEvent",
+                "data": {
+                    "hotkeyName": "synthetic_red_eye",
+                    "hotkeyTriggeredByAPI": 1,
+                },
+            },
+            {
+                "apiName": "VTubeStudioPublicAPI",
+                "apiVersion": "1.0",
+                "requestID": "event",
+                "messageType": "ModelLoadedEvent",
+                "data": {"modelLoaded": 1},
+            },
+        )
+        for event in malformed_events:
+            with pytest.raises(VTSProtocolError):
+                client._dispatch(json.dumps(event))
+
+        await client.close()
+
+        async def handler(connection: ServerConnection) -> None:
+            await connection.recv()
+            await asyncio.sleep(1)
+
+        server = await serve(handler, "127.0.0.1", 0)
+        timeout_client = VTSClient(_uri(server), request_timeout_seconds=0.01)
+        try:
+            await timeout_client.connect()
+            with pytest.raises(VTSRequestTimeout):
+                await timeout_client.api_state()
+        finally:
+            await timeout_client.close()
+            server.close()
+            await server.wait_closed()
 
     asyncio.run(scenario())

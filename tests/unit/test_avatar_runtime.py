@@ -9,12 +9,14 @@ from typing import Any, cast
 
 import pytest
 from app.avatar import (
+    AvatarParameterFrame,
     AvatarRuntime,
     AvatarRuntimeState,
     AvatarTurnPlan,
     RedEyeOwner,
     map_avatar_turn_plan,
 )
+from app.avatar import runtime as runtime_module
 from app.clients.vts import (
     VTSAPIError,
     VTSAuthenticationError,
@@ -1325,5 +1327,109 @@ def test_runtime_write_failures_degrade_only_the_affected_layer() -> None:
         assert reconcile_runtime.snapshot().red_eye_error_code == "avatar_red_eye_state_failed"
         assert reconcile_runtime.red_eye_owner is RedEyeOwner.manual
         await reconcile_runtime.close()
+
+    asyncio.run(scenario())
+
+
+def test_runtime_internal_safety_gates_drop_stale_or_lower_priority_work() -> None:
+    class _CodedError(RuntimeError):
+        code = "synthetic_stable_code"
+
+    assert runtime_module._error_code(_CodedError()) == "synthetic_stable_code"
+    assert runtime_module._error_code(ValueError("synthetic")) == "avatar_config_invalid"
+    assert runtime_module._error_code(RuntimeError("synthetic")) == "vts_unavailable"
+
+    async def scenario() -> None:
+        client = _FakeClient()
+        runtime = AvatarRuntime(
+            lambda: client,
+            _TokenStore(),
+            plugin_name="Companion",
+            plugin_developer="Local User",
+            config=_config(
+                urgent_queue_capacity=4,
+                red_eye_hotkey_name="",
+                red_eye_expression_file="",
+            ),
+            clock=lambda: cast(float, True),
+        )
+
+        with pytest.raises(ValueError, match="clock"):
+            runtime._now()
+        runtime._schedule_or_defer_visual()
+        runtime._schedule_body_plan(map_avatar_turn_plan("turn_safety", EmotionLabel.happy))
+
+        stale_action = runtime_module._Action(
+            kind=runtime_module._ActionKind.mouth_zero,
+            priority=runtime_module._Priority.safety,
+            sequence=1,
+            lifecycle_generation=runtime._lifecycle_generation + 1,
+            vts_generation=runtime._vts_generation,
+            model_generation=runtime._model_generation,
+        )
+        await runtime._process_action(client, stale_action)
+        await runtime._send_frame(
+            client,
+            AvatarParameterFrame(
+                vts_generation=1,
+                model_generation=1,
+                sequence=1,
+                parameters=(("MouthOpen", 0.0),),
+            ),
+        )
+        await runtime._send_mouth_zero(client)
+        assert not await runtime._send_release(client)
+        await runtime._send_body_transition(
+            client,
+            runtime_module._BodyTransition(
+                emotion=EmotionLabel.happy,
+                motion_hotkey_id="synthetic-motion",
+                release_first=False,
+            ),
+        )
+        runtime._body_motion_available = True
+        await runtime._send_body_transition(
+            client,
+            runtime_module._BodyTransition(
+                emotion=EmotionLabel.happy,
+                motion_hotkey_id=None,
+                release_first=False,
+            ),
+        )
+        await runtime._set_red_eye(client, active=True)
+        await runtime._reconcile_red_eye(client)
+        assert client.calls == []
+
+        for _ in range(4):
+            assert runtime._queue_action(
+                runtime_module._ActionKind.body_transition,
+                runtime_module._Priority.body,
+            )
+        assert runtime._queue_action(
+            runtime_module._ActionKind.release,
+            runtime_module._Priority.safety,
+        )
+        for _ in range(3):
+            assert runtime._queue_action(
+                runtime_module._ActionKind.mouth_zero,
+                runtime_module._Priority.safety,
+            )
+        assert not runtime._queue_action(
+            runtime_module._ActionKind.body_transition,
+            runtime_module._Priority.body,
+        )
+        assert runtime.snapshot().dropped_actions == 5
+        assert [action.kind for action in runtime._actions] == [
+            runtime_module._ActionKind.release,
+            runtime_module._ActionKind.mouth_zero,
+            runtime_module._ActionKind.mouth_zero,
+            runtime_module._ActionKind.mouth_zero,
+        ]
+
+        await runtime.close()
+        assert not runtime._queue_action(
+            runtime_module._ActionKind.release,
+            runtime_module._Priority.safety,
+        )
 
     asyncio.run(scenario())
