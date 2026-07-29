@@ -3,8 +3,8 @@
 > 原始版本：2026-07-17 Gate W0 决策落版
 >
 > 最新修订：2026-07-30 W29 五情绪 TTS/VTS 联动已完成本地实现、私有安装、真实中文链路、完整质量门、
-> 功能提交和 stacked Draft PR #34；本状态同步后的 exact-head CI 待完成，主观试听 Gate 保留；
-> W20～W27 的既有编号和范围不变
+> 功能提交、stacked Draft PR #34 和状态 head `4404460` 的双 workflow 8/8 CI；主观试听 Gate 保留，
+> 本 CI 关闭记录仍须独立检查；W20～W27 的既有编号和范围不变
 >
 > 代码基线：`agent/windows-development-baseline` / `d56cfbd`
 >
@@ -816,7 +816,11 @@ flowchart LR
 > [`3de8bc5`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/3de8bc599b2dde2db42460f39dd231739c9422ec)
 > 已推送，以 `codex/w28-avatar-runtime` 为 base 的 stacked Draft PR
 > [#34](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/34) 已创建并核对 base/head；
-> 本状态同步后的 PR 最新 exact-head CI 尚未完成，不能写成发布通过。证据见
+> 状态 head [`4404460`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/4404460c6b9fb4cd6140c070ab3831c491d0ca1b)
+> 的 [push workflow](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/30491796135)
+> 与 [PR workflow](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/30491797289)
+> 均 completed/success，macOS/Windows `quality` 与 `installed-wheel` 共 8 项通过。本 CI 关闭记录仍须
+> 独立检查，最终报告以 PR live latest head/checks 为准。证据见
 > [`plans/w29_five_emotion_tts_vts_execution_plan.md`](./plans/w29_five_emotion_tts_vts_execution_plan.md)、
 > [`implementation/w29_five_emotion_tts_vts.md`](./implementation/w29_five_emotion_tts_vts.md) 和
 > [`adr/ADR-W29-private-tts-gateway-and-structured-turns.md`](./adr/ADR-W29-private-tts-gateway-and-structured-turns.md)。
@@ -1144,8 +1148,8 @@ flowchart LR
    Gate。发布前重新查询两项 Draft PR、远端 base/head 和 CI。
 3. W29 公共实现、私有安装、五槽校准、真实链路、正式文档、wheel/source quarantine、staged 私有
    denylist、最终私有 runtime smoke、功能提交、push 和 stacked Draft PR #34 已完成。
-4. 提交本次正式状态同步，并等待 PR 最新 exact head 的 push/PR 两次 macOS/Windows `quality` 与
-   `installed-wheel`；随后终审 base/head/diff/review/conversation/mergeability/隐私。
+4. 状态 head `4404460` 的 push/PR 两次 macOS/Windows `quality` 与 `installed-wheel` 已 8/8 通过；
+   提交本 CI 关闭记录，等待其自身检查后终审 base/head/diff/review/conversation/mergeability/隐私。
 5. 不合并。所有者试听五种音色、情绪差异、中文自然度和整体动作观感前，不把主观 Gate 写成通过。
 6. W20～W27 的编号、范围和依赖保持；W24 在当前顺序中依赖 W29。
 

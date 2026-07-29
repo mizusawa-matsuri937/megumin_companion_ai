@@ -6,7 +6,11 @@
 > [`3de8bc5`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/3de8bc599b2dde2db42460f39dd231739c9422ec)
 > 已推送，stacked Draft PR [#34](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/34)
 > 已创建。PR base/head 已核对为 `codex/w28-avatar-runtime@b09841c...` →
-> `codex/w29-five-emotion-tts@3de8bc5...`；本状态同步后的新 exact head 仍须独立通过双 OS CI。
+> `codex/w29-five-emotion-tts@3de8bc5...`。随后状态提交
+> [`4404460`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/4404460c6b9fb4cd6140c070ab3831c491d0ca1b)
+> 的 [push workflow](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/30491796135)
+> 与 [PR workflow](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/30491797289)
+> 均 completed/success；各自 macOS/Windows `quality` 与 `installed-wheel` 共 8 项全部通过。
 >
 > 当前工作树已实现严格流式结构化主情绪/focused 变体/分段红眼协议、本地 EmotionEngine 最终裁决、
 > 五声音槽和速率映射（`excited → excited_explosion@1.00`）、确定性重切、有序播放红眼、TTS 失败视觉
@@ -31,7 +35,8 @@
 >
 > 正式文档终审、wheel/source-quarantine、installed-artifact、候选与 staged 私有 denylist、最终私有
 > runtime wheel 刷新/网关 smoke、聚焦提交、push 和 stacked Draft PR 均已完成。当前只剩本状态提交、
-> PR 最新 exact-head 的 push/PR 双 OS `quality`/`installed-wheel` 和最终 PR 审计。不得合并。
+> 最终 PR 审计与所有者主观 Gate；本 CI 关闭记录本身不预写检查结果，最终报告仍须重新绑定 PR 当时的
+> live latest head 和 checks。不得合并。
 > 唯一保留的人工 Gate 是所有者试听五种音色、情绪差异、中文自然度与整体动作观感。详情见
 > [W29 实现记录](../implementation/w29_five_emotion_tts_vts.md)、
 > [ADR-W29](../adr/ADR-W29-private-tts-gateway-and-structured-turns.md) 和
