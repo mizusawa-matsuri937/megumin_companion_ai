@@ -12,6 +12,7 @@ class LLMErrorCode(StrEnum):
     connection = "llm_connection_error"
     unavailable = "llm_unavailable"
     protocol = "llm_protocol_error"
+    structured = "llm_structured_output_invalid"
     truncated = "llm_truncated"
     rejected = "llm_request_rejected"
 

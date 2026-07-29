@@ -1,5 +1,39 @@
 # 当前产品目标
 
+> **最新状态更新（2026-07-30，Asia/Shanghai）：** 当前唯一活跃任务为 W29「五情绪 GPT-SoVITS 与
+> VTS 动作联动」。工作分支 `codex/w29-five-emotion-tts` 基于未合并的 W28 exact head
+> `b09841c13f1a733ec267027df62da6da7fc31fb6`；W29 将以 `codex/w28-avatar-runtime` 为 base 创建
+> stacked Draft PR，当前尚未提交、推送或创建 PR，不能把本地证据写成发布完成。
+>
+> 当前工作树已实现严格流式结构化主情绪/focused 变体/分段红眼协议、本地 EmotionEngine 最终裁决、
+> 五声音槽和速率映射（`excited → excited_explosion@1.00`）、确定性重切、有序播放红眼、TTS 失败视觉
+> fallback、focused 变体切换和 generation-scoped 取消。LLM 不拥有模型路径、声音槽、VTS 入口或动作名；
+> 控制字段、无效 JSON 和半成品结构不会显示或朗读。
+>
+> 新的私有 TTS 网关只暴露受 CurrentUser DPAPI Bearer 保护的 loopback health/TTS 端点；请求 path-free，
+> 固定五槽 manifest、文件/树 SHA-256、Windows ACL、官方源码提交、单 owner 事务切模、pair 指针核对、
+> 回滚/quarantine、一个活动推理和两个等待请求。WebUI、原始 API、上传、任意路径和运行时切模入口均不暴露；
+> 主程序不自动启动网关，桌面启动器使用 kill-on-close Windows Job Object。
+>
+> 仓库外真实安装已完成五包安全导入、Python 3.11.15、Torch/Torchaudio 2.5.1+cu124、CUDA 12.4、
+> 公共模型与日语前端离线运行；日语参考提示固定 `prompt_lang=ja`，中文正文固定 `text_lang=zh`。
+> 五槽 batch 20 均稳定，固定中文样本有效且非静音，20 次交替切模没有 OOM、混合 pair、quarantine 或
+> 持续显存增长。
+>
+> 当前 14 个 VTS 外观均能唯一解析 release、红眼和必需候选；一个外观的第二兴奋候选仅在仓库外配置。
+> production gateway provider、MediaWorkerAudioPlayer、真实输出和 VTS 已验证中文播放、非零口型、动作、
+> 有序红眼、取消、迟到事件拒绝和 launcher/子进程/WAV 清理。完整 pytest 收集 1,470 项，
+> `1467 passed, 3 skipped`，aggregate branch coverage `90.55%`；Ruff、279 文件格式、strict mypy
+> 272 source 与根/网关两个 lock check 均通过。
+>
+> 正式文档终审、wheel/source-quarantine、installed-artifact、未暂存候选私有 denylist 和最终私有
+> runtime wheel 刷新/网关 smoke 已通过。当前下一步只剩精确 staged denylist、聚焦提交、push、stacked
+> Draft PR 和最新 exact-head 双 OS CI。不得合并。
+> 唯一保留的人工 Gate 是所有者试听五种音色、情绪差异、中文自然度与整体动作观感。详情见
+> [W29 实现记录](../implementation/w29_five_emotion_tts_vts.md)、
+> [ADR-W29](../adr/ADR-W29-private-tts-gateway-and-structured-turns.md) 和
+> [W29 执行计划](../plans/w29_five_emotion_tts_vts_execution_plan.md)。
+
 > **最新状态更新（2026-07-29，Asia/Shanghai）：** 当前唯一活跃任务为 W28「Avatar Runtime、程序微动作与
 > 音量口型」。工作分支 `codex/w28-avatar-runtime` 从未合并的 W19 exact head
 > `a64f5ac12a4b14175ecbfd2ac0d76168ac01f589` 建立；W19 Draft PR #32 仍 open/draft/mergeable，

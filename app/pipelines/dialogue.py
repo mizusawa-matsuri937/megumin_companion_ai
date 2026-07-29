@@ -10,17 +10,28 @@ from pathlib import Path
 from typing import Any, Generic, TypeVar, cast
 
 from app.clients.llm import LLMProvider
+from app.clients.llm.errors import LLMErrorCode, LLMProviderError
 from app.clients.tts import TTSProvider
-from app.core.cancellation import CancellationToken
+from app.core.cancellation import CancellationToken, TurnCancelledError
 from app.core.context import (
     ContextBuilder,
     DirectContextBuilder,
     DirectProactiveContextBuilder,
     ProactiveContextBuilder,
 )
+from app.emotion import EmotionLabel, FocusedVariant, map_presentation
 from app.limits import LimitsConfig
 from app.pipelines.audio_player import AudioPlaybackResult, AudioPlayer
 from app.pipelines.segmenter import DialogueSegmenter
+from app.pipelines.structured_turn import (
+    IncrementalTurnJSONParser,
+    StructuredTurnPlan,
+    StructuredTurnSegment,
+    TurnPlanResolver,
+    TurnStreamFormat,
+    prepare_structured_turn_request,
+    provider_turn_stream_format,
+)
 from app.schemas import (
     AudioResult,
     ChatRequest,
@@ -37,6 +48,17 @@ EventEmitter = Callable[[str, dict[str, Any]], Awaitable[None]]
 SegmentDecorator = Callable[[DialogueSegment], DialogueSegment]
 _ItemT = TypeVar("_ItemT")
 _QUEUE_END = object()
+
+
+class _TurnCancellationSignal(Exception):
+    """Make cooperative cancellation fail a TaskGroup instead of being ignored."""
+
+
+async def _run_pipeline_stage(awaitable: Awaitable[None]) -> None:
+    try:
+        await awaitable
+    except TurnCancelledError as exc:
+        raise _TurnCancellationSignal from exc
 
 
 @dataclass(frozen=True, slots=True)
@@ -158,6 +180,7 @@ class _AudioByteBudget:
 class _IndexedJob:
     index: int
     job: TTSJob
+    segment: DialogueSegment
 
 
 @dataclass(slots=True)
@@ -165,6 +188,7 @@ class _IndexedAudio:
     index: int
     result: AudioResult
     ready_at: float
+    segment: DialogueSegment
     leased_bytes: int = 0
     slot_owned: bool = True
 
@@ -181,6 +205,7 @@ class DialoguePipeline:
         context_builder: ContextBuilder | None = None,
         proactive_context_builder: ProactiveContextBuilder | None = None,
         segment_decorator: SegmentDecorator | None = None,
+        turn_plan_resolver: TurnPlanResolver | None = None,
         tts_worker_count: int = 2,
         segment_min_chars: int = 6,
         segment_max_chars: int = 42,
@@ -213,6 +238,7 @@ class DialoguePipeline:
             proactive_context_builder or DirectProactiveContextBuilder()
         )
         self._segment_decorator = segment_decorator
+        self._turn_plan_resolver = turn_plan_resolver
         self._tts_worker_count = tts_worker_count
         self._segment_min_chars = segment_min_chars
         self._segment_max_chars = segment_max_chars
@@ -276,6 +302,9 @@ class DialoguePipeline:
         started: float,
         audio_enabled: bool,
     ) -> TurnOutcome:
+        structured_output = provider_turn_stream_format(self._llm) is TurnStreamFormat.avatar_json
+        if structured_output:
+            request = prepare_structured_turn_request(request)
         metrics = TurnMetrics()
         full_text_parts: list[str] = []
         completed_segments: list[DialogueSegment] = []
@@ -297,84 +326,231 @@ class DialoguePipeline:
         workers_clean = True
         worker_group_lock = asyncio.Lock()
         playback_started = False
+        resolved_plan: StructuredTurnPlan | None = None
+        emitted_red_eye_segments = 0
+
+        async def emit_visible_segment(segment: DialogueSegment) -> None:
+            full_text_parts.append(segment.text)
+            completed_segments.append(segment)
+            await emit("assistant.delta", {"delta": segment.text})
+            payload = segment.model_dump(
+                mode="json",
+                exclude={"focused_variant", "red_eye"},
+            )
+            await emit("assistant.segment", {**payload, "is_final": True})
+
+        async def resolve_structured_plan(
+            suggestion: StructuredTurnPlan,
+        ) -> StructuredTurnPlan:
+            nonlocal resolved_plan
+            if resolved_plan is not None:
+                return resolved_plan
+            resolved = (
+                self._turn_plan_resolver(suggestion)
+                if self._turn_plan_resolver is not None
+                else suggestion
+            )
+            if not isinstance(resolved, StructuredTurnPlan):
+                raise LLMProviderError(LLMErrorCode.structured, retryable=False)
+            resolved_plan = resolved
+            await emit(
+                "avatar.plan",
+                {
+                    "emotion": resolved.emotion.value,
+                    "focused_variant": resolved.focused_variant.value,
+                },
+            )
+            return resolved
+
+        async def queue_structured_item(
+            item: StructuredTurnSegment,
+            segmenter: DialogueSegmenter,
+            *,
+            source_index: int,
+        ) -> bool:
+            nonlocal terminal, terminal_reason, total_output_bytes
+            nonlocal emitted_red_eye_segments
+            plan = resolved_plan
+            if plan is None:
+                raise LLMProviderError(LLMErrorCode.structured, retryable=False)
+            encoded_size = len(item.text.encode("utf-8"))
+            if total_output_bytes + encoded_size > self._limits.llm_output_bytes:
+                terminal = "truncated"
+                terminal_reason = "output_bytes"
+                return False
+            total_output_bytes += encoded_size
+            forced_red_eye = source_index == 0 and (
+                plan.emotion is EmotionLabel.explosion_mode
+                or (
+                    plan.emotion is EmotionLabel.focused
+                    and plan.focused_variant is FocusedVariant.chuunibyou
+                )
+            )
+            red_eye = item.red_eye or forced_red_eye
+            pieces = [*segmenter.feed(item.text), *segmenter.flush()]
+            for piece_index, piece in enumerate(pieces):
+                if metrics.segment_count >= self._limits.llm_output_segments:
+                    terminal = "truncated"
+                    terminal_reason = "output_segments"
+                    return False
+                piece_red_eye = red_eye and piece_index == 0
+                if piece_red_eye and emitted_red_eye_segments >= 8:
+                    piece_red_eye = False
+                if piece_red_eye:
+                    emitted_red_eye_segments += 1
+                presentation = map_presentation(plan.emotion)
+                segment = piece.model_copy(
+                    update={
+                        "emotion": plan.emotion.value,
+                        "tts_style": presentation.tts_style,
+                        "tts_speed_factor": presentation.speed_factor,
+                        "live2d_expression": presentation.vts_expression,
+                        "expression_update": False,
+                        "focused_variant": plan.focused_variant.value,
+                        "red_eye": piece_red_eye,
+                    }
+                )
+                segment = await self._queue_segment(
+                    segment,
+                    token,
+                    metrics,
+                    completed_segments,
+                    started,
+                    emit,
+                    tts_queue if audio_enabled else None,
+                    emit_immediately=False,
+                )
+                if not audio_enabled:
+                    await emit_visible_segment(segment)
+                    await emit("avatar.visual_fallback", {"index": segment.index})
+                    if piece_red_eye:
+                        await emit("avatar.red_eye", {"effect": "red_eye"})
+            return True
 
         async def stream_to_tts() -> None:
             nonlocal terminal, terminal_reason, total_output_bytes
-            segmenter = DialogueSegmenter(
-                state.turn_id,
-                min_chars=self._segment_min_chars,
-                max_chars=self._segment_max_chars,
-                max_words=self._segment_max_words,
-            )
             stream = self._llm.stream(request, token)
             clean_exit = False
             try:
-                async for delta in stream:
+                if structured_output:
+                    parser = IncrementalTurnJSONParser(
+                        max_bytes=min(
+                            128 * 1024,
+                            self._limits.llm_output_bytes + 16 * 1024,
+                        ),
+                        max_segments=self._limits.llm_output_segments,
+                    )
+                    segmenter = DialogueSegmenter(
+                        state.turn_id,
+                        min_chars=self._segment_min_chars,
+                        max_chars=self._segment_max_chars,
+                        max_words=self._segment_max_words,
+                    )
+                    source_index = 0
+                    async for delta in stream:
+                        token.raise_if_cancelled()
+                        if metrics.llm_first_token_ms is None and delta:
+                            metrics.llm_first_token_ms = _elapsed_ms(started)
+                        items = parser.feed(delta)
+                        if parser.plan is not None:
+                            await resolve_structured_plan(parser.plan)
+                        for item in items:
+                            if not await queue_structured_item(
+                                item,
+                                segmenter,
+                                source_index=source_index,
+                            ):
+                                break
+                            source_index += 1
+                        if terminal_reason is not None:
+                            break
+                    if terminal_reason is None:
+                        items = parser.finish()
+                        if parser.plan is not None:
+                            await resolve_structured_plan(parser.plan)
+                        for item in items:
+                            if not await queue_structured_item(
+                                item,
+                                segmenter,
+                                source_index=source_index,
+                            ):
+                                break
+                            source_index += 1
+                else:
+                    segmenter = DialogueSegmenter(
+                        state.turn_id,
+                        min_chars=self._segment_min_chars,
+                        max_chars=self._segment_max_chars,
+                        max_words=self._segment_max_words,
+                    )
+                    async for delta in stream:
+                        token.raise_if_cancelled()
+                        remaining = self._limits.llm_output_bytes - total_output_bytes
+                        accepted, cut = _utf8_prefix(delta, remaining)
+                        if accepted:
+                            full_text_parts.append(accepted)
+                            total_output_bytes += len(accepted.encode("utf-8"))
+                        if not accepted and delta:
+                            cut = True
+                        if metrics.llm_first_token_ms is None:
+                            metrics.llm_first_token_ms = _elapsed_ms(started)
+                        if accepted:
+                            await emit("assistant.delta", {"delta": accepted})
+                        for segment in segmenter.feed(accepted):
+                            if metrics.segment_count >= self._limits.llm_output_segments:
+                                terminal = "truncated"
+                                terminal_reason = "output_segments"
+                                break
+                            await self._queue_segment(
+                                segment,
+                                token,
+                                metrics,
+                                completed_segments,
+                                started,
+                                emit,
+                                tts_queue if audio_enabled else None,
+                            )
+                            if metrics.segment_count >= self._limits.llm_output_segments:
+                                terminal = "truncated"
+                                terminal_reason = "output_segments"
+                                break
+                        if terminal_reason == "output_segments":
+                            break
+                        if cut or total_output_bytes >= self._limits.llm_output_bytes:
+                            terminal = "truncated"
+                            terminal_reason = "output_bytes"
+                            break
                     token.raise_if_cancelled()
-                    remaining = self._limits.llm_output_bytes - total_output_bytes
-                    accepted, cut = _utf8_prefix(delta, remaining)
-                    if accepted:
-                        full_text_parts.append(accepted)
-                        total_output_bytes += len(accepted.encode("utf-8"))
-                    if not accepted and delta:
-                        cut = True
-                    if metrics.llm_first_token_ms is None:
-                        metrics.llm_first_token_ms = _elapsed_ms(started)
-                    if accepted:
-                        await emit("assistant.delta", {"delta": accepted})
-                    for segment in segmenter.feed(accepted):
-                        if metrics.segment_count >= self._limits.llm_output_segments:
-                            terminal = "truncated"
-                            terminal_reason = "output_segments"
-                            break
-                        await self._queue_segment(
-                            segment,
-                            token,
-                            metrics,
-                            completed_segments,
-                            started,
-                            emit,
-                            tts_queue if audio_enabled else None,
-                        )
-                        if metrics.segment_count >= self._limits.llm_output_segments:
-                            terminal = "truncated"
-                            terminal_reason = "output_segments"
-                            break
-                    if terminal_reason == "output_segments":
-                        break
-                    if cut or total_output_bytes >= self._limits.llm_output_bytes:
-                        terminal = "truncated"
-                        terminal_reason = "output_bytes"
-                        break
-                token.raise_if_cancelled()
-                if terminal_reason != "output_segments":
-                    for segment in segmenter.flush():
-                        if metrics.segment_count >= self._limits.llm_output_segments:
-                            terminal = "truncated"
-                            terminal_reason = terminal_reason or "output_segments"
-                            break
-                        await self._queue_segment(
-                            segment,
-                            token,
-                            metrics,
-                            completed_segments,
-                            started,
-                            emit,
-                            tts_queue if audio_enabled else None,
-                        )
-                        if metrics.segment_count >= self._limits.llm_output_segments:
-                            terminal = "truncated"
-                            terminal_reason = terminal_reason or "output_segments"
-                            break
+                    if terminal_reason != "output_segments":
+                        for segment in segmenter.flush():
+                            if metrics.segment_count >= self._limits.llm_output_segments:
+                                terminal = "truncated"
+                                terminal_reason = terminal_reason or "output_segments"
+                                break
+                            await self._queue_segment(
+                                segment,
+                                token,
+                                metrics,
+                                completed_segments,
+                                started,
+                                emit,
+                                tts_queue if audio_enabled else None,
+                            )
+                            if metrics.segment_count >= self._limits.llm_output_segments:
+                                terminal = "truncated"
+                                terminal_reason = terminal_reason or "output_segments"
+                                break
                 if terminal == "truncated":
                     await emit("assistant.truncated", {"reason": terminal_reason})
                 clean_exit = True
             finally:
-                closer = getattr(stream, "aclose", None)
-                if closer is not None:
-                    await closer()
-                if clean_exit and audio_enabled:
-                    await tts_queue.close(self._tts_worker_count)
+                try:
+                    closer = getattr(stream, "aclose", None)
+                    if closer is not None:
+                        await closer()
+                finally:
+                    if clean_exit and audio_enabled:
+                        await tts_queue.close(self._tts_worker_count)
 
         async def tts_worker() -> None:
             nonlocal workers_remaining, workers_clean, total_audio_duration_ms
@@ -441,6 +617,7 @@ class DialoguePipeline:
                                 index=indexed_job.index,
                                 result=result,
                                 ready_at=ready_at,
+                                segment=indexed_job.segment,
                                 leased_bytes=leased_bytes,
                             )
                             outstanding_audio[indexed_job.index] = indexed_audio
@@ -500,7 +677,11 @@ class DialoguePipeline:
                         current = pending.pop(next_index)
                         result = current.result
                         try:
+                            if structured_output:
+                                await emit_visible_segment(current.segment)
                             if not result.success:
+                                if structured_output and current.segment.red_eye:
+                                    await emit("avatar.red_eye", {"effect": "red_eye"})
                                 await emit(
                                     "playback.skipped",
                                     {"index": next_index, "error_code": result.error_code},
@@ -518,6 +699,8 @@ class DialoguePipeline:
                                     "segment_id": result.segment_id,
                                 },
                             )
+                            if structured_output and current.segment.red_eye:
+                                await emit("avatar.red_eye", {"effect": "red_eye"})
                             playback = _playback_result(
                                 await self._audio_player.play(result, token)
                             )
@@ -576,14 +759,16 @@ class DialoguePipeline:
         succeeded = False
         try:
             async with asyncio.TaskGroup() as group:
-                group.create_task(stream_to_tts())
+                group.create_task(_run_pipeline_stage(stream_to_tts()))
                 if audio_enabled:
                     for _ in range(self._tts_worker_count):
-                        group.create_task(tts_worker())
-                    group.create_task(ordered_playback())
+                        group.create_task(_run_pipeline_stage(tts_worker()))
+                    group.create_task(_run_pipeline_stage(ordered_playback()))
             token.raise_if_cancelled()
             succeeded = True
         except ExceptionGroup as exc:
+            if exc.subgroup(_TurnCancellationSignal) is not None:
+                raise TurnCancelledError from None
             stable = _stable_provider_error(exc)
             if stable is None:
                 raise
@@ -671,20 +856,23 @@ class DialoguePipeline:
         started: float,
         emit: EventEmitter,
         queue: _MeasuredQueue[_IndexedJob] | None,
-    ) -> None:
+        *,
+        emit_immediately: bool = True,
+    ) -> DialogueSegment:
         token.raise_if_cancelled()
         if self._segment_decorator is not None:
             segment = self._segment_decorator(segment)
         if metrics.llm_first_segment_ms is None:
             metrics.llm_first_segment_ms = _elapsed_ms(started)
         metrics.segment_count += 1
-        completed_segments.append(segment)
-        await emit(
-            "assistant.segment",
-            {**segment.model_dump(mode="json"), "is_final": True},
-        )
+        if emit_immediately:
+            completed_segments.append(segment)
+            await emit(
+                "assistant.segment",
+                {**segment.model_dump(mode="json"), "is_final": True},
+            )
         if queue is None:
-            return
+            return segment
         job = TTSJob(
             turn_id=segment.turn_id,
             segment_id=segment.segment_id,
@@ -703,7 +891,8 @@ class DialoguePipeline:
             "tts.job",
             {"index": segment.index, "job_id": job.job_id, "segment_id": segment.segment_id},
         )
-        await queue.put(_IndexedJob(index=segment.index, job=job))
+        await queue.put(_IndexedJob(index=segment.index, job=job, segment=segment))
+        return segment
 
     async def close(self) -> None:
         async with self._close_lock:

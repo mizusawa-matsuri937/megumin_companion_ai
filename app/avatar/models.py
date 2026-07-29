@@ -7,7 +7,7 @@ import re
 from dataclasses import dataclass
 from enum import StrEnum
 
-from app.emotion import EmotionLabel
+from app.emotion import EmotionLabel, FocusedVariant
 
 _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 _SAFE_SEMANTIC = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
@@ -39,6 +39,7 @@ class AvatarTurnPlan:
     voice_slot: str
     body_motion_key: str | None
     transition: AvatarTransitionClass
+    focused_variant: FocusedVariant = FocusedVariant.default
 
     def __post_init__(self) -> None:
         if not _SAFE_ID.fullmatch(self.turn_id):
@@ -51,6 +52,11 @@ class AvatarTurnPlan:
                 and not _SAFE_SEMANTIC.fullmatch(self.body_motion_key)
             )
             or not isinstance(self.transition, AvatarTransitionClass)
+            or not isinstance(self.focused_variant, FocusedVariant)
+            or (
+                self.emotion is not EmotionLabel.focused
+                and self.focused_variant is not FocusedVariant.default
+            )
         ):
             raise ValueError("Avatar turn plan is invalid")
 

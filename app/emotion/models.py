@@ -42,6 +42,13 @@ class EmotionLabel(StrEnum):
     focused = "focused"
 
 
+class FocusedVariant(StrEnum):
+    """Bounded visual subtype for the focused emotion."""
+
+    default = "default"
+    chuunibyou = "chuunibyou"
+
+
 class StimulusKind(StrEnum):
     praise = "praise"
     user_distress = "user_distress"

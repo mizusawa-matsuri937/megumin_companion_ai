@@ -12,10 +12,12 @@ import pytest
 from app.paths import AppPaths
 from app.secret_store import (
     LLM_API_KEY_ID,
+    TTS_GATEWAY_TOKEN_ID,
     EncryptedSecretFile,
     SecretStoreError,
     SecretStoreErrorCode,
     llm_api_key_file,
+    tts_gateway_token_file,
 )
 from app.windows_security import PortableDirectorySecurity, WindowsSecurityError
 
@@ -59,6 +61,22 @@ def _secret_file(paths: AppPaths) -> EncryptedSecretFile:
         protector=_TestProtector(),
         directory_security=PortableDirectorySecurity(),
     )
+
+
+def test_tts_gateway_token_uses_distinct_dpapi_identity(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    secret_file = tts_gateway_token_file(
+        paths,
+        protector=_TestProtector(),
+        directory_security=PortableDirectorySecurity(),
+    )
+
+    metadata = secret_file.write_text("A" * 43)
+
+    assert metadata.key_id == TTS_GATEWAY_TOKEN_ID
+    assert metadata.purpose == "tts.gateway-bearer"
+    assert secret_file.read_text() == "A" * 43
+    assert (paths.secrets / "tts-gateway-token.json").is_file()
 
 
 def test_secret_round_trip_replace_revoke_and_reset(tmp_path: Path) -> None:

@@ -89,10 +89,14 @@ def test_incompatible_done_marker_fails_turn_and_never_persists_partial_assistan
 ) -> None:
     async def scenario() -> None:
         def handler(_request: httpx.Request) -> httpx.Response:
+            partial = (
+                '{"plan":{"emotion":"neutral","focused_variant":"default"},'
+                '"segments":[{"text":"partial-assistant'
+            )
             return httpx.Response(
                 200,
                 text=(
-                    'data: {"choices":[{"delta":{"content":"partial-assistant"}}]}\n\n'
+                    f"data: {json.dumps({'choices': [{'delta': {'content': partial}}]})}\n\n"
                     "data: [DONE]\n\n"
                 ),
             )

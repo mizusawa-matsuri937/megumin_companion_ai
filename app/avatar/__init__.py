@@ -12,6 +12,7 @@ from app.avatar.models import (
 )
 from app.avatar.red_eye import RedEyeCommand, RedEyeOwner, RedEyeOwnership
 from app.avatar.runtime import AvatarRuntime
+from app.emotion import FocusedVariant
 
 __all__ = [
     "AvatarHealthSnapshot",
@@ -21,6 +22,7 @@ __all__ = [
     "AvatarRuntime",
     "AvatarTransitionClass",
     "AvatarTurnPlan",
+    "FocusedVariant",
     "AvatarTurnEventSink",
     "RedEyeCommand",
     "RedEyeOwner",

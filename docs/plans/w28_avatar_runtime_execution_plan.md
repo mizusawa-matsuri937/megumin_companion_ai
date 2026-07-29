@@ -5,6 +5,10 @@
 >
 > 最后核验：2026-07-29（Asia/Shanghai）
 >
+> **后续更新（2026-07-30）：** W28 当时明确留出的结构化回合和真实中文 TTS 已由独立
+> [W29 执行计划](w29_five_emotion_tts_vts_execution_plan.md)实施；本文继续作为 W28 历史范围和
+> exact-head Gate 的权威记录，不把后续证据回填成 W28 自身完成。
+>
 > 适用范围：Windows 单机、单用户、个人私用桌面伴侣
 >
 > 上位计划：[`../windows_development_plan.md`](../windows_development_plan.md)

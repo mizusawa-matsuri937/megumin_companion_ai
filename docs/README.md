@@ -77,11 +77,14 @@
 - [W18：Push-to-talk、麦克风 ring buffer 与 Whisper Job（已合并）](implementation/w18_push_to_talk_whisper.md)
 - [W19：真实 VTS/GPT-SoVITS 配置向导与联动（Draft PR #32，自动门通过；真实体验 Gate 待完成）](implementation/w19_provider_preflight.md)
 - [W28：Avatar Runtime、程序微动作与音量口型（Draft PR #33；交付代码自动门与真实 VTS/实际输出已验证，未合并；真实中文 TTS 和自然度 Gate 待完成）](implementation/w28_avatar_runtime.md)
+- [W29：五情绪 GPT-SoVITS 与 VTS 动作联动（本地实现、私有安装、真实链路和质量门已完成；发布与主观试听待完成）](implementation/w29_five_emotion_tts_vts.md)
 
 ## 当前专项计划
 
 - [W28：Avatar Runtime、程序微动作与音量口型执行计划](plans/w28_avatar_runtime_execution_plan.md)：
   正式范围、架构、阶段、自动化、真实 VTS/音频验收和 Draft PR 定义；完成证据以实现记录和 exact head 为准。
+- [W29：五情绪 GPT-SoVITS 与 VTS 动作联动执行计划](plans/w29_five_emotion_tts_vts_execution_plan.md)：
+  冻结结构化回合、五声音槽、安全私有网关、真实安装/播放和 stacked Draft PR 交付边界。
 
 ## 仍生效的 W18 技术决策
 

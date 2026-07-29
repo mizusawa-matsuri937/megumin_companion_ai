@@ -30,6 +30,10 @@ class MockLLMProvider:
         self._first_token_delay = first_token_delay_seconds
         self._token_delay = token_delay_seconds
 
+    @property
+    def turn_stream_format(self) -> str:
+        return "text"
+
     async def stream(
         self, request: ChatRequest | UserMessage, token: CancellationToken
     ) -> AsyncIterator[str]:

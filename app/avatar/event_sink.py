@@ -6,7 +6,7 @@ from typing import Protocol
 
 from app.avatar.mapper import map_avatar_turn_plan
 from app.avatar.models import AvatarHealthSnapshot, AvatarTurnPlan
-from app.emotion import EmotionLabel
+from app.emotion import EmotionLabel, FocusedVariant
 from app.schemas import PipelineEvent
 
 
@@ -72,6 +72,8 @@ class AvatarTurnEventSink:
         if not self._is_current(event):
             return event.type not in {
                 "assistant.segment",
+                "avatar.plan",
+                "avatar.visual_fallback",
                 "playback.started",
                 "playback.finished",
                 "playback.skipped",
@@ -79,13 +81,22 @@ class AvatarTurnEventSink:
                 "avatar.red_eye",
             }
         assert self._turn_id is not None and self._generation is not None
-        if event.type == "assistant.segment":
+        if event.type in {"assistant.segment", "avatar.plan"}:
             if self._plan_frozen:
                 return True
             raw_emotion = event.payload.get("emotion", EmotionLabel.neutral.value)
+            raw_variant = event.payload.get(
+                "focused_variant",
+                FocusedVariant.default.value,
+            )
             try:
                 emotion = EmotionLabel(raw_emotion)
-                plan = map_avatar_turn_plan(self._turn_id, emotion)
+                variant = FocusedVariant(raw_variant)
+                plan = map_avatar_turn_plan(
+                    self._turn_id,
+                    emotion,
+                    focused_variant=variant,
+                )
             except (TypeError, ValueError):
                 return False
             accepted = self._runtime.set_turn_plan(plan, generation=self._generation)
@@ -97,6 +108,8 @@ class AvatarTurnEventSink:
                 generation=self._generation,
             )
         if event.type in {"playback.finished", "playback.skipped"}:
+            return self._request_visual_once()
+        if event.type == "avatar.visual_fallback":
             return self._request_visual_once()
         if event.type == "avatar.red_eye":
             return event.payload == {"effect": "red_eye"} and self._runtime.trigger_red_eye()

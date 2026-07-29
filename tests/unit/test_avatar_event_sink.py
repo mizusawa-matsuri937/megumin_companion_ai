@@ -122,6 +122,37 @@ def test_sink_freezes_first_segment_and_uses_actual_or_fallback_playback_once() 
         assert sink.publish(_event("assistant.completed"))
         assert runtime.completed == [("turn_test", 1)]
 
+        assert sink.publish(_event("turn.accepted", turn_id="turn_structured"))
+        assert sink.publish(
+            _event(
+                "avatar.plan",
+                {
+                    "emotion": "focused",
+                    "focused_variant": "chuunibyou",
+                },
+                turn_id="turn_structured",
+            )
+        )
+        assert sink.publish(
+            _event(
+                "assistant.segment",
+                {"emotion": "happy"},
+                turn_id="turn_structured",
+            )
+        )
+        assert runtime.plans[-1].emotion.value == "focused"
+        assert runtime.plans[-1].focused_variant.value == "chuunibyou"
+        assert runtime.plans[-1].body_motion_key == "focused_chuunibyou"
+        assert sink.publish(
+            _event(
+                "avatar.visual_fallback",
+                {"index": 0},
+                turn_id="turn_structured",
+            )
+        )
+        assert runtime.fallbacks[-1] == ("turn_structured", 2)
+        assert sink.publish(_event("assistant.completed", turn_id="turn_structured"))
+
         assert sink.publish(_event("turn.accepted", turn_id="turn_cancel"))
         assert sink.publish(
             _event(
@@ -131,7 +162,7 @@ def test_sink_freezes_first_segment_and_uses_actual_or_fallback_playback_once() 
             )
         )
         assert sink.publish(_event("turn.cancelled", turn_id="turn_cancel"))
-        assert runtime.cancelled == [("turn_cancel", 2)]
+        assert runtime.cancelled == [("turn_cancel", 3)]
 
         await sink.close()
         await sink.close()

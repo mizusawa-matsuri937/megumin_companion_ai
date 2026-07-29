@@ -8,17 +8,17 @@ from app.emotion.clock import Clock, SystemClock
 from app.emotion.models import EmotionLabel, EmotionPresentation
 
 _PRESENTATIONS: dict[EmotionLabel, tuple[str, float, str]] = {
-    EmotionLabel.neutral: ("default", 1.00, "neutral"),
-    EmotionLabel.happy: ("bright", 1.05, "happy"),
-    EmotionLabel.shy: ("soft_shy", 0.95, "shy"),
-    EmotionLabel.proud: ("proud", 1.03, "proud"),
+    EmotionLabel.neutral: ("neutral", 1.00, "neutral"),
+    EmotionLabel.happy: ("gentle", 1.05, "happy"),
+    EmotionLabel.shy: ("tsundere", 0.95, "shy"),
+    EmotionLabel.proud: ("focused", 1.03, "proud"),
     EmotionLabel.angry_cute: ("tsundere", 1.08, "angry_cute"),
     EmotionLabel.worried: ("gentle", 0.92, "worried"),
-    EmotionLabel.bored: ("soft", 0.93, "neutral"),
-    EmotionLabel.excited: ("bright", 1.08, "happy"),
+    EmotionLabel.bored: ("neutral", 0.93, "neutral"),
+    EmotionLabel.excited: ("excited_explosion", 1.00, "happy"),
     EmotionLabel.explosion_mode: ("excited_explosion", 1.12, "explosion_excited"),
-    EmotionLabel.sleepy: ("sleepy", 0.85, "sleepy"),
-    EmotionLabel.focused: ("calm", 0.95, "focused"),
+    EmotionLabel.sleepy: ("neutral", 0.85, "sleepy"),
+    EmotionLabel.focused: ("focused", 0.95, "focused"),
 }
 
 

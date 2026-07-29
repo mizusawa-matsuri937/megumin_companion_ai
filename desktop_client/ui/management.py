@@ -82,7 +82,17 @@ from desktop_client.ui.provider_preflight import ProviderPreflightRunner
 
 LOCAL_DESKTOP_USER_ID = "local_user"
 _OFFLINE_LLM_PROVIDERS = frozenset({"", "none", "mock"})
-_SUPPORTED_TTS_PROVIDERS = frozenset({"mock", "gpt-sovits", "gpt_sovits"})
+_SUPPORTED_TTS_PROVIDERS = frozenset(
+    {
+        "mock",
+        "gpt-sovits",
+        "gpt_sovits",
+        "gpt-sovits-gateway",
+        "gpt_sovits_gateway",
+        "gateway",
+    }
+)
+_GATEWAY_TTS_PROVIDERS = frozenset({"gpt-sovits-gateway", "gpt_sovits_gateway", "gateway"})
 _DEVICE_INDEX = re.compile(r"^[0-9]+$")
 
 
@@ -323,7 +333,10 @@ class DesktopManagementRuntime:
                 reason_code="tts_provider_unsupported",
             )
             return
-        if tts_provider != "mock" and not form.tts_ref_audio_path.strip():
+        if (
+            tts_provider not in {"mock"} | _GATEWAY_TTS_PROVIDERS
+            and not form.tts_ref_audio_path.strip()
+        ):
             self._result(
                 bridge,
                 operation="settings_save",
