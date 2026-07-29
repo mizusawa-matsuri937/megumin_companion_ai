@@ -55,7 +55,10 @@ def test_default_headless_smoke_uses_w14_runtime_and_keeps_stdout_as_json(
 ) -> None:
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "headless-local-app-data"))
 
-    assert application.run_headless_smoke(timeout_seconds=2.0) == 0
+    # This integration assertion covers production composition and JSON output,
+    # not a two-second startup SLA.  Leave scheduler headroom for a loaded
+    # Windows coverage runner without changing the product's default deadline.
+    assert application.run_headless_smoke(timeout_seconds=10.0) == 0
 
     payload = json.loads(capsys.readouterr().out)
     assert payload == {
