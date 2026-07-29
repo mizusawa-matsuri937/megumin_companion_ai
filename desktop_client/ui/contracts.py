@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -40,6 +41,19 @@ MAX_MANAGEMENT_CONTENT_CHARS = 5_000
 MAX_MANAGEMENT_PATH_CHARS = 4_096
 MAX_SECRET_CHARS = 64 * 1024
 MAX_PROVIDER_PREFLIGHT_CHECKS = 7
+
+AvatarLayerName: TypeAlias = Literal[
+    "parameter_control",
+    "lip_sync",
+    "body_motion",
+    "automatic_red_eye",
+]
+AVATAR_LAYER_NAMES: tuple[AvatarLayerName, ...] = (
+    "parameter_control",
+    "lip_sync",
+    "body_motion",
+    "automatic_red_eye",
+)
 
 
 def _validate_bounded_text(
@@ -165,6 +179,16 @@ class DesktopSettingsForm:
     tts_ref_audio_scope: Literal["service_resource", "local_file"] = "service_resource"
     tts_prompt_text: str = ""
     tts_prompt_lang: str = "zh"
+    avatar_enabled: bool = True
+    avatar_parameter_control_enabled: bool = True
+    avatar_micro_motion_enabled: bool = True
+    avatar_lip_sync_enabled: bool = True
+    avatar_body_motion_enabled: bool = True
+    avatar_auto_red_eye_enabled: bool = True
+    avatar_mouth_noise_floor: float = 0.02
+    avatar_mouth_gain: float = 4.0
+    avatar_mouth_attack_seconds: float = 0.04
+    avatar_mouth_release_seconds: float = 0.12
 
     def __post_init__(self) -> None:
         for field_name, value, maximum, allow_empty in (
@@ -207,6 +231,59 @@ class DesktopSettingsForm:
             raise ValueError("output_device_id is outside the bridge bound")
         if not isinstance(self.system_playback_enabled, bool):
             raise ValueError("system_playback_enabled is outside the bridge bound")
+        for avatar_field_name, avatar_flag in (
+            ("avatar_enabled", self.avatar_enabled),
+            ("avatar_parameter_control_enabled", self.avatar_parameter_control_enabled),
+            ("avatar_micro_motion_enabled", self.avatar_micro_motion_enabled),
+            ("avatar_lip_sync_enabled", self.avatar_lip_sync_enabled),
+            ("avatar_body_motion_enabled", self.avatar_body_motion_enabled),
+            ("avatar_auto_red_eye_enabled", self.avatar_auto_red_eye_enabled),
+        ):
+            if not isinstance(avatar_flag, bool):
+                raise ValueError(f"{avatar_field_name} is outside the bridge bound")
+        for (
+            avatar_field_name,
+            numeric_value,
+            lower_bound,
+            upper_bound,
+            lower_inclusive,
+            upper_inclusive,
+        ) in (
+            ("avatar_mouth_noise_floor", self.avatar_mouth_noise_floor, 0.0, 1.0, True, False),
+            ("avatar_mouth_gain", self.avatar_mouth_gain, 0.0, 100.0, False, True),
+            (
+                "avatar_mouth_attack_seconds",
+                self.avatar_mouth_attack_seconds,
+                0.001,
+                2.0,
+                True,
+                True,
+            ),
+            (
+                "avatar_mouth_release_seconds",
+                self.avatar_mouth_release_seconds,
+                0.001,
+                5.0,
+                True,
+                True,
+            ),
+        ):
+            if (
+                isinstance(numeric_value, bool)
+                or not isinstance(numeric_value, (int, float))
+                or not math.isfinite(float(numeric_value))
+                or (
+                    float(numeric_value) < lower_bound
+                    if lower_inclusive
+                    else float(numeric_value) <= lower_bound
+                )
+                or (
+                    float(numeric_value) > upper_bound
+                    if upper_inclusive
+                    else float(numeric_value) >= upper_bound
+                )
+            ):
+                raise ValueError(f"{avatar_field_name} is outside the bridge bound")
         if self.tts_ref_audio_scope not in {"service_resource", "local_file"}:
             raise ValueError("tts_ref_audio_scope is outside the bridge bound")
         try:
@@ -807,6 +884,32 @@ class ManagementResultEvent:
 
 
 @dataclass(frozen=True, slots=True)
+class AvatarLayerStatus:
+    """One content-free W28 layer capability shown by the desktop UI."""
+
+    name: AvatarLayerName
+    available: bool
+    reason_code: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.name not in AVATAR_LAYER_NAMES or not isinstance(self.available, bool):
+            raise ValueError("avatar layer status is invalid")
+        if self.reason_code is not None and not is_stable_reason_code(self.reason_code):
+            raise ValueError("avatar layer reason must be a stable code")
+
+
+def _default_avatar_layers() -> tuple[AvatarLayerStatus, ...]:
+    return tuple(
+        AvatarLayerStatus(
+            name=name,
+            available=False,
+            reason_code="avatar_disabled",
+        )
+        for name in AVATAR_LAYER_NAMES
+    )
+
+
+@dataclass(frozen=True, slots=True)
 class ManagementDebugEvent:
     version: str
     capabilities: BackendCapabilities
@@ -814,6 +917,7 @@ class ManagementDebugEvent:
     command_queue_capacity: int
     event_queue_count: int
     event_queue_capacity: int
+    avatar_layers: tuple[AvatarLayerStatus, ...] = field(default_factory=_default_avatar_layers)
     command_id: str | None = None
     emitted_at: datetime = field(default_factory=utc_now)
     protocol_version: Literal[1] = field(default=BRIDGE_PROTOCOL_VERSION, init=False)
@@ -831,6 +935,11 @@ class ManagementDebugEvent:
         ):
             if count < 0 or capacity < 1 or count > capacity:
                 raise ValueError("debug queue state is outside the bridge bound")
+        if (
+            len(self.avatar_layers) != len(AVATAR_LAYER_NAMES)
+            or tuple(layer.name for layer in self.avatar_layers) != AVATAR_LAYER_NAMES
+        ):
+            raise ValueError("avatar layer snapshot is outside the bridge contract")
         if self.command_id is not None:
             _validate_command_id(self.command_id)
 

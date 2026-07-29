@@ -2,6 +2,7 @@
 
 from app.config.settings import (
     CURRENT_SETTINGS_SCHEMA_VERSION,
+    AvatarConfig,
     ConfigurationError,
     DesktopConfig,
     Settings,
@@ -17,6 +18,7 @@ from app.config.user_settings import (
 from app.limits import LimitsConfig
 
 __all__ = [
+    "AvatarConfig",
     "CURRENT_SETTINGS_SCHEMA_VERSION",
     "ConfigurationError",
     "DesktopConfig",

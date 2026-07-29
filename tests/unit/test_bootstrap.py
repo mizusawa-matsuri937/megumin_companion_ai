@@ -6,13 +6,20 @@ import asyncio
 from pathlib import Path
 
 import pytest
-from app.bootstrap import build_dialogue_pipeline, build_llm_provider, build_vts_event_sink
+from app.avatar import AvatarRuntime
+from app.bootstrap import (
+    build_avatar_runtime,
+    build_dialogue_pipeline,
+    build_llm_provider,
+    build_vts_event_sink,
+)
 from app.clients.llm import MockLLMProvider, OpenAICompatibleLLMProvider
 from app.clients.tts import GPTSoVITSProvider
 from app.clients.vts import VTSBridgeSnapshot, VTSBridgeState
 from app.config import Settings
 from app.config.settings import (
     AppConfig,
+    AvatarConfig,
     EmotionConfig,
     GPTSoVITSPresetConfig,
     LLMConfig,
@@ -77,14 +84,39 @@ def test_real_provider_managed_cache_and_media_worker_player(tmp_path: Path) -> 
     settings._environment = {"TEST_KEY": "fake-test-key"}
     settings._paths = AppPaths(root=tmp_path / "AppData")
 
-    pipeline = build_dialogue_pipeline(settings)
+    def listener(_sample: object) -> None:
+        return None
+
+    pipeline = build_dialogue_pipeline(
+        settings,
+        mouth_envelope_listener=listener,
+    )
 
     assert pipeline is not None
     assert isinstance(pipeline._audio_player, MediaWorkerAudioPlayer)
+    assert pipeline._audio_player._mouth_envelope_listener is listener
     assert isinstance(pipeline._llm, OpenAICompatibleLLMProvider)
     assert pipeline._llm._default_temperature == 0.65
     assert pipeline._llm._default_max_tokens == 777
     asyncio.run(pipeline.close())
+
+
+def test_avatar_runtime_composition_requires_both_vts_and_avatar() -> None:
+    assert build_avatar_runtime(Settings()) is None
+    assert (
+        build_avatar_runtime(
+            Settings(
+                vts=VTSConfig(enabled=True),
+                avatar=AvatarConfig(enabled=False),
+            )
+        )
+        is None
+    )
+
+    runtime = build_avatar_runtime(Settings(vts=VTSConfig(enabled=True)))
+
+    assert isinstance(runtime, AvatarRuntime)
+    asyncio.run(runtime.close())
 
 
 def test_production_real_provider_ignores_environment_and_uses_encrypted_secret(

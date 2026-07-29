@@ -20,7 +20,9 @@ from app.api.security import (
     DevAPISecurity,
     apply_hard_limits,
 )
+from app.avatar import AvatarTurnEventSink
 from app.bootstrap import (
+    build_avatar_runtime,
     build_dialogue_pipeline,
     build_llm_provider,
     build_vts_event_sink,
@@ -139,6 +141,8 @@ def create_app(
         app.state.turn_service = None
         app.state.health = None
         app.state.idempotency_store = None
+        app.state.avatar_runtime = None
+        app.state.vts_event_sink = None
         app.state.temp_asset_registry = runtime_storage.temp_registry
         standalone_analyzer_provider: LLMProvider | None = None
         try:
@@ -206,7 +210,14 @@ def create_app(
             app.state.proactive_runtime = proactive_runtime
             if isinstance(memory_runtime, MemoryRuntime) and proactive_runtime is not None:
                 memory_runtime.add_feature_transition_handler(proactive_runtime.apply_feature_state)
-            app.state.vts_event_sink = build_vts_event_sink(resolved_settings)
+            avatar_runtime = build_avatar_runtime(resolved_settings)
+            app.state.avatar_runtime = avatar_runtime
+            if avatar_runtime is not None:
+                avatar_sink = AvatarTurnEventSink(avatar_runtime)
+                app.state.vts_event_sink = avatar_sink
+                avatar_sink.start()
+            else:
+                app.state.vts_event_sink = build_vts_event_sink(resolved_settings)
             event_sinks = (
                 (app.state.vts_event_sink,) if app.state.vts_event_sink is not None else ()
             )
@@ -223,6 +234,9 @@ def create_app(
                         else None
                     ),
                     temp_registry=runtime_storage.temp_registry,
+                    mouth_envelope_listener=(
+                        avatar_runtime.offer_mouth_envelope if avatar_runtime is not None else None
+                    ),
                 ),
                 observers=observers,
                 event_sinks=event_sinks,
@@ -237,6 +251,7 @@ def create_app(
                     _CoreHealthProvider(app),
                     _IdempotencyHealthProvider(app),
                     *((memory_runtime,) if memory_runtime is not None else ()),
+                    *((avatar_runtime,) if avatar_runtime is not None else ()),
                     *health_providers,
                 ),
             )
@@ -268,6 +283,7 @@ def create_app(
             proactive = getattr(app.state, "proactive_runtime", None)
             service = getattr(app.state, "turn_service", None)
             sink = getattr(app.state, "vts_event_sink", None)
+            avatar = getattr(app.state, "avatar_runtime", None)
             runtime = getattr(app.state, "memory_runtime", None)
             cancelled: asyncio.CancelledError | None = None
             resources: list[tuple[str, Callable[[], Awaitable[None]]]] = []
@@ -279,6 +295,10 @@ def create_app(
                 # TurnService normally owns the sink; the second idempotent close
                 # also covers partial startup and an unexpected service-close error.
                 resources.append(("vts_event_sink", sink.close))
+            if avatar is not None:
+                # The sink normally owns the runtime; this third idempotent close
+                # also covers failure between runtime construction and sink startup.
+                resources.append(("avatar_runtime", avatar.close))
             if isinstance(runtime, MemoryRuntime | SafeModeMemoryRuntime):
                 resources.append(("memory", runtime.close))
             elif standalone_analyzer_provider is not None:

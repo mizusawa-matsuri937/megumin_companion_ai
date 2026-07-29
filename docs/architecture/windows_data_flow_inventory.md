@@ -1,10 +1,12 @@
 # Windows 数据流与保留清单
 
-> 版本：2026-07-25
+> 版本：2026-07-29
 > 状态：Gate W0 已批准的目标契约；W17/W18 的 MediaWorker 音频路径已实现并验证，W19 的 provider
-> 配置与显式联合 preflight 已在本地工作树实现并完成聚焦 fake/headless 验证。受管中文 STT
+> 配置与显式联合 preflight 已在本地工作树实现并完成聚焦 fake/headless 验证。W28 的单写者
+> AvatarRuntime、标量 mouth progress 和真实输出 drain 已在本地工作树实现并完成对应自动/实机验证。受管中文 STT
 > runtime 已由 [`224e06f`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/224e06f9cbb1d2ab0cc2260fb244b1f74cd7dfbc)
-> 加入并完成该 code head 的 CI；真实设备 Gate 和后续 head 核验仍未完成；其他行仍不代表代码已经实现。
+> 加入并完成该 code head 的 CI；W28 完整质量门、Draft PR、真实中文 TTS 和主观自然度 Gate 仍未完成；
+> 其他行仍不代表代码已经实现。
 > 关联：[`../adr/README.md`](../adr/README.md)、[`../decisions/w00_owner_decisions.md`](../decisions/w00_owner_decisions.md)、
 > [`../decisions/w18_managed_chinese_stt_runtime.md`](../decisions/w18_managed_chinese_stt_runtime.md)
 
@@ -64,6 +66,38 @@ sequenceDiagram
 - 预检 WAV 使用既有 TTS temp owner，cache 关闭，不进入 MediaWorker/playback；成功、失败和 close 都走既有清理。
 - VTS token 仍只在 current-user DPAPI store 与 VTS 官方认证请求之间流动；设置页和 preflight snapshot 不回显。
 
+## W28 实际播放口型与 Avatar 数据流（2026-07-29）
+
+```mermaid
+sequenceDiagram
+    participant T as TurnService
+    participant A as AvatarRuntime
+    participant M as MediaWorker
+    participant D as Output device
+    participant V as VTube Studio
+
+    T->>A: bounded turn plan / lifecycle event
+    T->>M: approved WAV reference + playback job
+    loop frame-aligned output chunks
+        M->>D: PCM chunk
+        M-->>A: latest-wins mouth_envelope(job, seq, 0..1)
+        A->>V: one coalesced parameter frame
+    end
+    M->>D: graceful drain or cancel abort
+    M-->>A: terminal mouth_envelope=0
+    T->>A: completed/cancelled
+    A->>V: MouthOpen=0 + generation-scoped lifecycle cleanup
+```
+
+确认边界：
+
+- PCM/WAV body、设备名、正文和路径不随 `job.progress` 离开 MediaWorker；父进程只收严格的 job/sequence/
+  finite scalar。
+- progress latest-wins 且不能饿死 heartbeat/cancel/terminal；父侧对全部 terminal path 独立归零。
+- AvatarRuntime 是唯一参数 writer。离散动作与高频参数帧分通道，重连/切模/取消会使旧 generation 失效。
+- VTS health/管理面只显示四层 availability、稳定 reason code 和聚合计数，不显示模型、hotkey、
+  Expression 或逐帧值。
+
 ## W18 实现状态（2026-07-23）
 
 - 已确认：PTT 按钮仅在按下后让 MediaWorker 打开麦克风；原始 PCM 留在预分配 ring，WAV/JSON 留在该 worker 的私有
@@ -97,6 +131,7 @@ sequenceDiagram
 | 用户设置 | Config owner | UI command → config service | `config/settings.yaml`，带 schema version；W19 preset/reference/prompt 属于用户私密配置但不是 secret | 无，除非对应 provider 请求需要最小配置 | 升级迁移/卸载选择 | 只记 schema/version/字段类别；不记 reference/prompt/完整路径 |
 | 日志/健康/诊断 | 单 writer/exporter | allowlist event | `logs`，10 MiB × 5 且最多 14 天 | 用户显式导出脱敏诊断包 | rotation + retention | 禁止正文、截图、OCR、音频、secret、完整路径 |
 | TTS 临时 WAV | TTS owner；正常播放期间由 MediaWorker 独占消费；W19 preflight WAV 不播放 | 正常播放只提交批准根下的 `ResourceReference`；preflight WAV 不跨入 helper；wire 不含绝对路径、PCM、WAV body 或 native device index | `temp/audio`；可选 `cache/audio` 默认关闭，preflight 强制关闭 cache | 正常路径仅到本地 MediaWorker playback；preflight 无播放出口 | 取消/消费后 release；preflight 成功立即 discard；W12 terminal cleanup 与 scavenger；受 W07 在途音频预算约束 | 只记 job id、bytes、duration、稳定 error/notice code |
+| Mouth envelope / Avatar frame | MediaWorker / AvatarRuntime | helper 只返回 job、sequence、finite 0～1 scalar；AvatarRuntime 单写 VTS | 不持久化；latest sample/frame 仅在内存 | 仅到本机 VTS API | terminal/cancel/failure/crash/close 归零；generation 失效即丢弃 | 只记 sent/coalesced/dropped 和稳定 reason code；不记逐帧值 |
 | 受管中文 STT runtime/model | 显式安装服务 | BackendThread/CLI 只下载固定公开 URL；worker 只读本地已验证文件 | `%LOCALAPPDATA%\MeguminCompanion\models\stt\whispercpp\v1.9.1\`，安装包/wheel/CI artifact 外 | 仅用户确认时从 GitHub/Hugging Face 下载 asset bytes；**不发送音频或转写** | staging 失败/取消清理；已验证资产保留到用户修复/删除；不后台更新 | 不记完整本地路径、下载 token、音频或转写；本地 NOTICE 仅含公开来源/许可证/hash |
 | 模型/角色/参考音频 | 用户/外部路径 | worker/provider 读取批准路径；W19 只将 reference 配置交给用户指定的 GPT-SoVITS | 安装包外；用户 YAML 可记录 reference 字符串，不复制资产 | 只发给用户明确配置的本地/远端服务 | 用户管理；卸载不复制或删除原资产 | 不记录完整路径、prompt 或内容 |
 
@@ -134,3 +169,5 @@ sequenceDiagram
 3. 任何 Guard/删除/清理未知或失败都显示明确状态并保持 fail closed。
 4. 所有 queue、文件、缓存、日志和状态表都使用 Windows 计划第 4.8 节硬上限。
 5. best-effort wipe/secure delete 不描述为 SSD 物理擦除保证。
+6. Avatar shutdown 在断开 VTS 前拒绝新 callback、令嘴归零、release 主体动作并显式关闭程序红眼；失败只降级
+   Avatar，不能阻断文字或安全音频关闭。

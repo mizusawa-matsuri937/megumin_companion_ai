@@ -18,6 +18,7 @@ from typing import Any, Protocol, TypeGuard
 from uuid import uuid4
 
 from app import __version__
+from app.avatar import AvatarHealthSnapshot, AvatarRuntimeState
 from app.clients.vts import DPAPITokenStore, VTSToken
 from app.config import ConfigurationError, Settings, load_settings, patch_user_settings
 from app.media import MediaWorkerAudioPlayer
@@ -44,6 +45,7 @@ from desktop_client.ui.contracts import (
     MAX_MANAGEMENT_PREVIEW_CHARS,
     AudioOutputDevicesCommand,
     AudioOutputDevicesEvent,
+    AvatarLayerStatus,
     BackendCapabilities,
     DesktopSettingsForm,
     FeatureSetCommand,
@@ -82,6 +84,15 @@ LOCAL_DESKTOP_USER_ID = "local_user"
 _OFFLINE_LLM_PROVIDERS = frozenset({"", "none", "mock"})
 _SUPPORTED_TTS_PROVIDERS = frozenset({"mock", "gpt-sovits", "gpt_sovits"})
 _DEVICE_INDEX = re.compile(r"^[0-9]+$")
+
+
+def _unavailable_avatar_layers(reason_code: str) -> tuple[AvatarLayerStatus, ...]:
+    return (
+        AvatarLayerStatus("parameter_control", False, reason_code),
+        AvatarLayerStatus("lip_sync", False, reason_code),
+        AvatarLayerStatus("body_motion", False, reason_code),
+        AvatarLayerStatus("automatic_red_eye", False, reason_code),
+    )
 
 
 class DesktopSecretStore(Protocol):
@@ -139,6 +150,7 @@ class DesktopManagementRuntime:
         audio_device_lister: Callable[[Settings], Awaitable[OutputDeviceList]] | None = None,
         stt_runtime: ManagedChineseSttRuntime | None = None,
         provider_preflight: ProviderPreflightRunner | None = None,
+        avatar_snapshot: Callable[[], object] | None = None,
     ) -> None:
         self._settings = settings
         self._memory_runtime = memory_runtime
@@ -150,6 +162,7 @@ class DesktopManagementRuntime:
             profile=settings.stt.managed_profile,
         )
         self._provider_preflight = provider_preflight or ProviderPreflightRunner()
+        self._avatar_snapshot = avatar_snapshot
 
     @staticmethod
     def handles(command: object) -> TypeGuard[ManagementCommand]:
@@ -891,8 +904,52 @@ class DesktopManagementRuntime:
                 command_queue_capacity=bridge.command_capacity,
                 event_queue_count=bridge.event_count,
                 event_queue_capacity=bridge.event_capacity,
+                avatar_layers=self._avatar_layers(),
                 command_id=command_id,
             )
+        )
+
+    def _avatar_layers(self) -> tuple[AvatarLayerStatus, ...]:
+        source = self._avatar_snapshot
+        if source is None:
+            return _unavailable_avatar_layers("avatar_disabled")
+        try:
+            snapshot = source()
+        except Exception:
+            return _unavailable_avatar_layers("avatar_status_unavailable")
+        if not isinstance(snapshot, AvatarHealthSnapshot):
+            return _unavailable_avatar_layers("avatar_status_unavailable")
+
+        fallback = snapshot.error_code
+        if fallback is None and snapshot.state is not AvatarRuntimeState.ready:
+            fallback = {
+                AvatarRuntimeState.disabled: "avatar_disabled",
+                AvatarRuntimeState.stopped: "avatar_stopped",
+            }.get(snapshot.state, "avatar_not_ready")
+        return (
+            AvatarLayerStatus(
+                "parameter_control",
+                snapshot.parameter_control_available,
+                snapshot.parameter_error_code
+                or (None if snapshot.parameter_control_available else fallback),
+            ),
+            AvatarLayerStatus(
+                "lip_sync",
+                snapshot.lip_sync_available,
+                snapshot.lip_sync_error_code or (None if snapshot.lip_sync_available else fallback),
+            ),
+            AvatarLayerStatus(
+                "body_motion",
+                snapshot.body_motion_available,
+                snapshot.body_motion_error_code
+                or (None if snapshot.body_motion_available else fallback),
+            ),
+            AvatarLayerStatus(
+                "automatic_red_eye",
+                snapshot.automatic_red_eye_available,
+                snapshot.red_eye_error_code
+                or (None if snapshot.automatic_red_eye_available else fallback),
+            ),
         )
 
     @staticmethod
@@ -975,6 +1032,16 @@ def _settings_form(settings: Settings) -> DesktopSettingsForm:
         tts_ref_audio_scope=("service_resource" if preset is None else preset.ref_audio_scope),
         tts_prompt_text="" if preset is None else preset.prompt_text,
         tts_prompt_lang="zh" if preset is None else preset.prompt_lang,
+        avatar_enabled=settings.avatar.enabled,
+        avatar_parameter_control_enabled=settings.avatar.parameter_control_enabled,
+        avatar_micro_motion_enabled=settings.avatar.micro_motion_enabled,
+        avatar_lip_sync_enabled=settings.avatar.lip_sync_enabled,
+        avatar_body_motion_enabled=settings.avatar.body_motion_enabled,
+        avatar_auto_red_eye_enabled=settings.avatar.auto_red_eye_enabled,
+        avatar_mouth_noise_floor=settings.avatar.mouth_noise_floor,
+        avatar_mouth_gain=settings.avatar.mouth_gain,
+        avatar_mouth_attack_seconds=settings.avatar.mouth_attack_seconds,
+        avatar_mouth_release_seconds=settings.avatar.mouth_release_seconds,
     )
 
 
@@ -1028,6 +1095,18 @@ def _settings_patch(form: DesktopSettingsForm) -> dict[str, object]:
         "pipeline": {
             "playback_mode": "system" if form.system_playback_enabled else "silent",
             "output_device_id": form.output_device_id.strip() or None,
+        },
+        "avatar": {
+            "enabled": form.avatar_enabled,
+            "parameter_control_enabled": form.avatar_parameter_control_enabled,
+            "micro_motion_enabled": form.avatar_micro_motion_enabled,
+            "lip_sync_enabled": form.avatar_lip_sync_enabled,
+            "body_motion_enabled": form.avatar_body_motion_enabled,
+            "auto_red_eye_enabled": form.avatar_auto_red_eye_enabled,
+            "mouth_noise_floor": form.avatar_mouth_noise_floor,
+            "mouth_gain": form.avatar_mouth_gain,
+            "mouth_attack_seconds": form.avatar_mouth_attack_seconds,
+            "mouth_release_seconds": form.avatar_mouth_release_seconds,
         },
     }
 

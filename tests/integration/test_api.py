@@ -3,12 +3,16 @@
 import asyncio
 import json
 from pathlib import Path
+from types import MethodType
+from typing import Any
 
 import pytest
 from app.api.security import DevAPIConfig, DevAPIScope
+from app.avatar import AvatarTurnEventSink
 from app.config import Settings
 from app.config.settings import LLMConfig, LoggingConfig, PipelineConfig, StorageConfig
 from app.core import TurnService
+from app.health import CapabilityCheck, CapabilityState
 from app.main import _settle_resource_close, create_app
 from app.paths import AppPaths
 from app.schemas import TurnState, UserMessage
@@ -330,6 +334,114 @@ def test_partial_startup_closes_already_started_event_sink(
     ):
         pass
     assert sink.closed == 1
+
+
+def test_avatar_runtime_composition_is_single_owner_and_wires_media_and_health(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Runtime:
+        name = "avatar"
+        required_for_readiness = False
+
+        def __init__(self) -> None:
+            self.started = 0
+            self.close_calls = 0
+            self.close_effects = 0
+            self._closed = False
+            self.offer_mouth_envelope = lambda _sample: True
+
+        def start(self) -> None:
+            self.started += 1
+
+        async def check_health(self) -> CapabilityCheck:
+            return CapabilityCheck(status=CapabilityState.ready)
+
+        async def close(self) -> None:
+            self.close_calls += 1
+            if not self._closed:
+                self._closed = True
+                self.close_effects += 1
+
+    runtime = Runtime()
+    captured: dict[str, Any] = {}
+
+    def capture_pipeline(*_args: object, **kwargs: object) -> None:
+        captured.update(kwargs)
+
+    def unexpected_old_bridge(_settings: Settings) -> None:
+        raise AssertionError("legacy VTS bridge must not start beside AvatarRuntime")
+
+    monkeypatch.setattr("app.main.build_avatar_runtime", lambda _settings: runtime)
+    monkeypatch.setattr("app.main.build_vts_event_sink", unexpected_old_bridge)
+    monkeypatch.setattr("app.main.build_dialogue_pipeline", capture_pipeline)
+
+    application = secured_app(quiet_settings(root=tmp_path / "app"))
+    with secured_client(application) as client:
+        assert runtime.started == 1
+        assert isinstance(application.state.vts_event_sink, AvatarTurnEventSink)
+        assert application.state.avatar_runtime is runtime
+        assert captured["mouth_envelope_listener"] is runtime.offer_mouth_envelope
+        capabilities = client.get("/health/capabilities").json()["capabilities"]
+        assert {"name": "avatar", "status": "ready"} in capabilities
+
+    # TurnService closes the sink-owned runtime; lifespan then deliberately
+    # repeats both idempotent closers to cover partial-startup paths.
+    assert runtime.close_calls == 2
+    assert runtime.close_effects == 1
+
+
+def test_partial_avatar_startup_closes_started_sink_and_runtime_idempotently(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Runtime:
+        name = "avatar"
+        required_for_readiness = False
+
+        def __init__(self) -> None:
+            self.started = 0
+            self.close_calls = 0
+            self.close_effects = 0
+            self._closed = False
+            self.offer_mouth_envelope = MethodType(
+                lambda _self, _sample: True,
+                self,
+            )
+
+        def start(self) -> None:
+            self.started += 1
+
+        async def check_health(self) -> CapabilityCheck:
+            return CapabilityCheck(status=CapabilityState.ready)
+
+        async def close(self) -> None:
+            self.close_calls += 1
+            if not self._closed:
+                self._closed = True
+                self.close_effects += 1
+
+    runtime = Runtime()
+
+    def fail_pipeline(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("synthetic avatar startup failure")
+
+    monkeypatch.setattr("app.main.build_avatar_runtime", lambda _settings: runtime)
+    monkeypatch.setattr(
+        "app.main.build_vts_event_sink",
+        lambda _settings: (_ for _ in ()).throw(AssertionError("legacy bridge must stay disabled")),
+    )
+    monkeypatch.setattr("app.main.build_dialogue_pipeline", fail_pipeline)
+
+    with (
+        pytest.raises(RuntimeError, match="avatar startup failure"),
+        secured_client(secured_app(quiet_settings(root=tmp_path / "app"))),
+    ):
+        pass
+
+    assert runtime.started == 1
+    assert runtime.close_calls == 2
+    assert runtime.close_effects == 1
 
 
 def test_lifespan_close_drains_resource_after_repeated_outer_cancellation() -> None:

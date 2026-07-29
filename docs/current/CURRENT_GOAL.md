@@ -1,5 +1,31 @@
 # 当前产品目标
 
+> **最新状态更新（2026-07-29，Asia/Shanghai）：** 当前唯一活跃任务为 W28「Avatar Runtime、程序微动作与
+> 音量口型」。工作分支 `codex/w28-avatar-runtime` 从未合并的 W19 exact head
+> `a64f5ac12a4b14175ecbfd2ac0d76168ac01f589` 建立；W19 Draft PR #32 仍 open/draft/mergeable，
+> base/head 与远端一致，8 项 macOS/Windows CI 全部通过。W28 将以
+> `codex/w19-provider-preflight` 为 stacked base，不混入 W19，也不合并。
+>
+> 本地工作树已实现单写者 AvatarRuntime、程序微动作、VTS 参数/event/Expression API、整轮主体动作
+> release/Neutral/cancel/情绪切换、红眼 manual/system 所有权、MediaWorker 分块 RMS/有界 progress、
+> 实际输出 drain、设置/管理面和故障隔离。修改前基线为 `147 passed`，扩展 W28 矩阵为
+> `267 passed`；最终完整套件为 `1328 passed, 3 skipped`，aggregate branch coverage `90.09%`。
+> Ruff、format、strict mypy、lock、diff、正式文档、候选隐私扫描和 CI 同款
+> wheel/source-quarantine/installed-artifact smoke 均通过，临时产物已删除。
+>
+> 真实 VTS 已覆盖参数、idle、动作生命周期、人工/系统红眼和断线重连；真实 MediaWorker/声卡/VTS
+> 已覆盖 silence、固定幅度、ramp、取消、终态归零和 output drain。当前生效用户设置没有 GPT-SoVITS
+> preset，默认本机服务也未运行，所以真实中文 TTS 实际播放仍未验证，不能用合成音或 fake preflight 代替。
+> 主观嘴部/眨眼/视线/呼吸/头部与中文整体自然度仍待所有者判断。
+>
+> 当前不存在受信任 LLM 结构化 `AvatarTurnPlan`；W28 只冻结现有 EmotionEngine 的整轮结果，该能力明确留作
+> 后续。私有资产仍只在 Git 外；exact-byte 私有配置 guard 有一个等价 metadata 差异，semantic guard 证明
+> 没有新增或改写 hotkey、屏幕按钮、参数映射或位置。详见
+> [W28 实现记录](../implementation/w28_avatar_runtime.md)、[ADR-W28](../adr/ADR-W28-avatar-runtime.md) 和
+> [正式计划](../plans/w28_avatar_runtime_execution_plan.md)。完成前上游复核未发现依赖选择漂移；最终真实
+> VTS stage/semantic guard 已通过，任务开始模型、红眼关闭、窗口最小化和零探针进程状态均已恢复。下一步是
+> 聚焦提交、推送、stacked Draft PR 与 exact-head CI。
+
 > **状态更新（2026-07-25，Asia/Shanghai）：** 当前唯一活跃任务已切换为 W19「真实
 > VTS/GPT-SoVITS 配置向导与联动」，工作分支为 `codex/w19-provider-preflight`，基线为已合并 W18 的
 > [`90e758d`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/90e758d55a87e330a45260aaccd8c794069e3f7a)。

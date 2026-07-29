@@ -1,6 +1,6 @@
 # Windows Gate W0 威胁模型
 
-> 版本：2026-07-25
+> 版本：2026-07-29
 > 状态：项目所有者自审通过；没有独立人工安全/隐私 reviewer
 > 范围：Windows 11 x64、标准用户、单交互会话、私人使用
 
@@ -48,6 +48,7 @@
 | TM-W00-15 | 未签名私人包被误作公开发布 | 文档标记私人/未签名；公开发布重新 Gate | release checklist | 用户手工转发仍可能产生信任警告 |
 | TM-W00-16 | 受管 STT 下载被篡改、ZIP 越界或恶意模型导致 CLI 崩溃 | 固定 HTTPS URL/版本/大小/hash；有限重定向、staging、拒绝 Zip Slip/link/reparse point、原子切换；MediaWorker 首次使用前全量 CLI/model SHA-256，失败不启动 CLI；Job Object 约束子树 | 合成 archive/hash/timeout/cancel/repair、受管/手工路径、worker integrity-fail-before-CLI、wheel asset denylist；真实模型/内存另列设备 Gate | 当前用户完全受控、手工非受管模型和 upstream parser 缺陷不在此控制的保证内；不得宣称上游 issue 已修复 |
 | TM-W00-17 | 恶意/脆弱 GPT-SoVITS 服务或模型处理导致远端命令执行、数据泄露或错误响应；预检被误写成安全认证 | 应用不安装/打包/启动/升级服务，不调用有副作用的 `/set_refer_audio`；只连接用户显式配置且通过 W08 endpoint/TLS policy 的服务；预检只发送固定短语和已保存 preset/reference，响应受 deadline/bytes/WAV 校验且不播放并清理 | W19 fake API v2 route/synthesis、错误 body/path sentinel、deadline/cleanup 与设置/事件边界测试；真实服务仅做人类体验 Gate | [GHSL-2025-045～048](https://securitylab.github.com/advisories/GHSL-2025-045_GHSL-2025-048_RVC-Boss_GPT-SoVITS/) 披露命令注入，[GHSL-2025-049～053](https://securitylab.github.com/advisories/GHSL-2025-049_GHSL-2025-053_RVC-Boss_GPT-SoVITS/) 披露不安全反序列化/RCE；两组测试 `20250228v3`。服务及模型资产安全不由本应用证明，用户配置的 reference/prompt 会到达该服务 |
+| TM-W00-18 | 多个 VTS writer、迟到 mouth progress 或错误红眼所有权导致旧 turn 重放、取消后重新张嘴、姿态残留或关闭人工状态；progress 泄漏 PCM/路径 | 单写者 AvatarRuntime；urgent bounded queue + latest frame；turn/playback/VTS/model generation；strict finite scalar `job.progress`；全部 terminal path 归零；release/Neutral/cancel 生命周期；`off/manual/system` Expression 所有权；状态不可验证即禁用自动层 | W28 fake VTS/event malformed、slow writer、fake clock/seed、20k frame、10k coalescing、progress flood/stale/terminal、PCM RMS 与 Avatar failure isolation；真实 VTS lifecycle/reconnect/manual-system 以及真实输出 silence/ramp/cancel/drain | VTS/driver/display latency 和主观自然度仍需真实体验；真实中文 GPT-SoVITS 当前未配置；私有配置 exact-byte guard 有等价 metadata 差异，只能声明 semantic 未改写 |
 
 ## 反方审查清单
 

@@ -7,7 +7,7 @@ whereas importing ``sounddevice`` is deliberately confined to
 """
 
 from app.media.client import MediaWorkerAudioPlayer, create_media_worker_audio_player
-from app.media.types import AudioOutputDevice, OutputDeviceList
+from app.media.types import AudioOutputDevice, MouthEnvelopeSample, OutputDeviceList
 from app.media.voice import (
     MediaWorkerVoiceInput,
     VoiceCaptureError,
@@ -20,6 +20,7 @@ __all__ = [
     "AudioOutputDevice",
     "MediaWorkerAudioPlayer",
     "MediaWorkerVoiceInput",
+    "MouthEnvelopeSample",
     "OutputDeviceList",
     "VoiceCaptureError",
     "VoiceCaptureState",

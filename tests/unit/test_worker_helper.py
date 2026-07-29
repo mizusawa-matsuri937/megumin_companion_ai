@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from app.workers.access import ApprovedResourcePolicy, AuthorizedResource
-from app.workers.helper import HelperRuntime
+from app.workers.helper import HelperRuntime, emit_job_progress
 from app.workers.protocol import FrameDecoder, HelperMessage, encode_message
 
 
@@ -18,6 +18,9 @@ class _Handler:
         self._fail_close = fail_close
         self.hold_started = asyncio.Event()
         self.hold_release = asyncio.Event()
+        self.late_progress_release = asyncio.Event()
+        self.late_progress_result: asyncio.Future[bool] | None = None
+        self.flood_emitted = 0
 
     async def run_job(
         self,
@@ -38,6 +41,33 @@ class _Handler:
             self.hold_started.set()
             await self.hold_release.wait()
             return {}
+        if job_kind == "progress":
+            for index in range(1, 1001):
+                assert emit_job_progress("mouth_envelope", index / 1000)
+            self.hold_started.set()
+            await self.hold_release.wait()
+            return {"status": "ok"}
+        if job_kind == "progress.late":
+            loop = asyncio.get_running_loop()
+            self.late_progress_result = loop.create_future()
+
+            async def publish_after_result() -> None:
+                await self.late_progress_release.wait()
+                assert self.late_progress_result is not None
+                self.late_progress_result.set_result(emit_job_progress("mouth_envelope", 0.75))
+
+            asyncio.create_task(publish_after_result())
+            return {"status": "ok"}
+        if job_kind == "progress.flood":
+            for _batch in range(100):
+                for _ in range(10):
+                    self.flood_emitted += 1
+                    assert emit_job_progress(
+                        "mouth_envelope",
+                        (self.flood_emitted % 1000) / 1000,
+                    )
+                await asyncio.sleep(0)
+            return {"status": "ok"}
         if job_kind == "fail":
             raise RuntimeError("W12_HELPER_EXCEPTION_BODY_SENTINEL")
         if job_kind == "invalid.result":
@@ -264,6 +294,175 @@ def test_helper_initial_pipe_failure_is_content_free_and_closes_handler() -> Non
         )
         assert await close_failure_runtime.run() == 3
         assert close_failure_handler.closed
+
+    asyncio.run(scenario())
+
+
+def test_helper_progress_is_bounded_latest_wins_and_terminal_has_priority() -> None:
+    async def scenario() -> None:
+        assert not emit_job_progress("mouth_envelope", 0.5)
+        pipes = _MemoryPipes()
+        handler = _Handler()
+        runtime = HelperRuntime(
+            role="media",
+            handler=handler,
+            heartbeat_interval_seconds=0.005,
+            read=pipes.read,
+            write=pipes.write,
+        )
+        task = asyncio.create_task(runtime.run())
+        await pipes.next_message("hello")
+        await pipes.input.put(
+            encode_message(
+                HelperMessage(
+                    message_type="handshake.accepted",
+                    payload={"role": "media"},
+                )
+            )
+        )
+        await pipes.input.put(
+            encode_message(
+                HelperMessage(
+                    message_type="job.start",
+                    request_id="progress-1",
+                    payload={"job_kind": "progress", "resources": []},
+                )
+            )
+        )
+        await asyncio.wait_for(handler.hold_started.wait(), timeout=1)
+        progress = await pipes.next_message("job.progress")
+        assert progress.request_id == "progress-1"
+        assert progress.payload == {
+            "kind": "mouth_envelope",
+            "sequence": 1000,
+            "value": 1.0,
+        }
+        handler.hold_release.set()
+        completed = await pipes.next_message("job.completed")
+        assert completed.request_id == "progress-1"
+        assert completed.payload == {"status": "ok"}
+        await pipes.input.put(encode_message(HelperMessage(message_type="shutdown", payload={})))
+        assert await task == 0
+
+    asyncio.run(scenario())
+
+
+def test_helper_rejects_progress_once_terminal_delivery_has_started() -> None:
+    async def scenario() -> None:
+        pipes = _MemoryPipes()
+        handler = _Handler()
+        terminal_write_started = asyncio.Event()
+        terminal_write_release = asyncio.Event()
+        output_decoder = FrameDecoder()
+
+        async def controlled_write(data: bytes) -> None:
+            messages = output_decoder.feed(data)
+            assert len(messages) == 1
+            if messages[0].message_type == "job.completed":
+                terminal_write_started.set()
+                await terminal_write_release.wait()
+            await pipes.output.put(data)
+
+        runtime = HelperRuntime(
+            role="media",
+            handler=handler,
+            heartbeat_interval_seconds=10.0,
+            read=pipes.read,
+            write=controlled_write,
+        )
+        task = asyncio.create_task(runtime.run())
+        await pipes.next_message("hello")
+        await pipes.input.put(
+            encode_message(
+                HelperMessage(
+                    message_type="handshake.accepted",
+                    payload={"role": "media"},
+                )
+            )
+        )
+        await pipes.input.put(
+            encode_message(
+                HelperMessage(
+                    message_type="job.start",
+                    request_id="progress-late",
+                    payload={"job_kind": "progress.late", "resources": []},
+                )
+            )
+        )
+        await asyncio.wait_for(terminal_write_started.wait(), timeout=1)
+        handler.late_progress_release.set()
+        assert handler.late_progress_result is not None
+        assert not await asyncio.wait_for(handler.late_progress_result, timeout=1)
+        terminal_write_release.set()
+        completed = await pipes.next_message("job.completed")
+        assert completed.request_id == "progress-late"
+        await asyncio.sleep(0.02)
+        assert pipes.output.empty()
+
+        await pipes.input.put(encode_message(HelperMessage(message_type="shutdown", payload={})))
+        assert await task == 0
+
+    asyncio.run(scenario())
+
+
+def test_helper_progress_flood_coalesces_without_starving_heartbeat_or_terminal() -> None:
+    async def scenario() -> None:
+        pipes = _MemoryPipes()
+        handler = _Handler()
+        output_decoder = FrameDecoder()
+
+        async def slow_progress_write(data: bytes) -> None:
+            messages = output_decoder.feed(data)
+            assert len(messages) == 1
+            if messages[0].message_type == "job.progress":
+                await asyncio.sleep(0.003)
+            await pipes.output.put(data)
+
+        runtime = HelperRuntime(
+            role="media",
+            handler=handler,
+            heartbeat_interval_seconds=0.005,
+            read=pipes.read,
+            write=slow_progress_write,
+        )
+        task = asyncio.create_task(runtime.run())
+        await pipes.next_message("hello")
+        await pipes.input.put(
+            encode_message(
+                HelperMessage(
+                    message_type="handshake.accepted",
+                    payload={"role": "media"},
+                )
+            )
+        )
+        await pipes.input.put(
+            encode_message(
+                HelperMessage(
+                    message_type="job.start",
+                    request_id="progress-flood",
+                    payload={"job_kind": "progress.flood", "resources": []},
+                )
+            )
+        )
+
+        observed: list[HelperMessage] = []
+        async with asyncio.timeout(1):
+            while not any(message.message_type == "job.completed" for message in observed):
+                observed.append(await pipes.next_message())
+
+        progress = [item for item in observed if item.message_type == "job.progress"]
+        heartbeats = [item for item in observed if item.message_type == "heartbeat"]
+        assert handler.flood_emitted == 1000
+        assert 0 < len(progress) < handler.flood_emitted
+        assert heartbeats
+        assert observed[-1].message_type == "job.completed"
+        assert observed[-1].request_id == "progress-flood"
+        await asyncio.sleep(0)
+        assert "progress-flood" not in runtime._progress_latest
+        assert "progress-flood" not in runtime._progress_open_jobs
+
+        await pipes.input.put(encode_message(HelperMessage(message_type="shutdown", payload={})))
+        assert await task == 0
 
     asyncio.run(scenario())
 

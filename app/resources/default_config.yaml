@@ -81,6 +81,34 @@ vts:
     proxy_url: null
     ca_bundle_path: null
 
+# W28：默认没有任何私人模型、动作或 Expression 名称。VTS 开启后可先使用
+# 标准输入参数；主体动作和自动红眼只有在用户私有设置中补齐语义名称后才可用。
+avatar:
+  enabled: true
+  parameter_control_enabled: true
+  micro_motion_enabled: true
+  lip_sync_enabled: true
+  body_motion_enabled: true
+  auto_red_eye_enabled: true
+  tick_hz: 25
+  keepalive_seconds: 0.5
+  urgent_queue_capacity: 32
+  playback_chunk_ms: 30
+  mouth_noise_floor: 0.02
+  mouth_gain: 4
+  mouth_attack_seconds: 0.04
+  mouth_release_seconds: 0.12
+  head_amplitude_degrees: 2
+  gaze_amplitude: 0.18
+  breathing_amplitude: 0.03
+  red_eye_duration_seconds: 2
+  red_eye_fade_seconds: 0.1
+  release_hotkey_name: ""
+  red_eye_hotkey_name: ""
+  red_eye_expression_file: ""
+  body_motion_hotkeys: {}
+  model_motion_hotkeys: {}
+
 emotion:
   enabled: true
   max_delta_per_event: 0.15

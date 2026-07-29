@@ -217,6 +217,103 @@ class VTSConfig(StrictModel):
         return self
 
 
+class AvatarConfig(StrictModel):
+    """Versioned, asset-neutral Avatar Runtime controls.
+
+    Model names and hotkey/expression names are user data.  Defaults therefore
+    enable only parameter control; discrete body motion and automatic red-eye
+    stay unavailable until semantic names are supplied in the private user
+    settings layer.
+    """
+
+    enabled: bool = True
+    parameter_control_enabled: bool = True
+    micro_motion_enabled: bool = True
+    lip_sync_enabled: bool = True
+    body_motion_enabled: bool = True
+    auto_red_eye_enabled: bool = True
+    tick_hz: float = Field(default=25.0, ge=10.0, le=60.0)
+    keepalive_seconds: float = Field(default=0.5, gt=0.0, le=0.9)
+    urgent_queue_capacity: int = Field(default=32, ge=4, le=256)
+    playback_chunk_ms: float = Field(default=30.0, ge=10.0, le=100.0)
+    mouth_noise_floor: float = Field(default=0.02, ge=0.0, lt=1.0)
+    mouth_gain: float = Field(default=4.0, gt=0.0, le=100.0)
+    mouth_attack_seconds: float = Field(default=0.04, ge=0.001, le=2.0)
+    mouth_release_seconds: float = Field(default=0.12, ge=0.001, le=5.0)
+    head_amplitude_degrees: float = Field(default=2.0, ge=0.0, le=10.0)
+    gaze_amplitude: float = Field(default=0.18, ge=0.0, le=0.5)
+    breathing_amplitude: float = Field(default=0.03, ge=0.0, le=0.2)
+    red_eye_duration_seconds: float = Field(default=2.0, gt=0.0, le=30.0)
+    red_eye_fade_seconds: float = Field(default=0.1, ge=0.0, le=2.0)
+    release_hotkey_name: str = Field(default="", max_length=256)
+    red_eye_hotkey_name: str = Field(default="", max_length=256)
+    red_eye_expression_file: str = Field(default="", max_length=256)
+    body_motion_hotkeys: dict[str, tuple[str, ...]] = Field(default_factory=dict)
+    model_motion_hotkeys: dict[str, dict[str, tuple[str, ...]]] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_avatar_names_and_bounds(self) -> AvatarConfig:
+        if (1.0 / self.tick_hz) > self.keepalive_seconds:
+            raise ValueError("Avatar tick period exceeds the VTS keepalive bound")
+        names = (
+            self.release_hotkey_name,
+            self.red_eye_hotkey_name,
+            self.red_eye_expression_file,
+        )
+        if any("\x00" in value or value != value.strip() for value in names):
+            raise ValueError("Avatar semantic names are invalid")
+        if self.red_eye_expression_file and (
+            not self.red_eye_expression_file.casefold().endswith(".exp3.json")
+            or "/" in self.red_eye_expression_file
+            or "\\" in self.red_eye_expression_file
+        ):
+            raise ValueError("Avatar red-eye expression file is invalid")
+        if bool(self.red_eye_hotkey_name) != bool(self.red_eye_expression_file):
+            raise ValueError("Avatar red-eye hotkey and expression must be configured together")
+        if len(self.body_motion_hotkeys) > 32 or len(self.model_motion_hotkeys) > 32:
+            raise ValueError("Avatar motion mapping exceeds its bound")
+        self._validate_motion_map(self.body_motion_hotkeys)
+        for model_name, mapping in self.model_motion_hotkeys.items():
+            if (
+                not isinstance(model_name, str)
+                or not model_name.strip()
+                or model_name != model_name.strip()
+                or "\x00" in model_name
+                or len(model_name) > 256
+            ):
+                raise ValueError("Avatar model override name is invalid")
+            self._validate_motion_map(mapping)
+        return self
+
+    @staticmethod
+    def _validate_motion_map(mapping: Mapping[str, tuple[str, ...]]) -> None:
+        if len(mapping) > 32:
+            raise ValueError("Avatar motion mapping exceeds its bound")
+        for semantic, candidates in mapping.items():
+            if (
+                not isinstance(semantic, str)
+                or not semantic
+                or len(semantic) > 64
+                or not semantic.isascii()
+                or not semantic.replace("_", "").isalnum()
+                or not semantic[0].isalpha()
+                or semantic != semantic.casefold()
+                or not isinstance(candidates, tuple)
+                or not 1 <= len(candidates) <= 4
+                or len(set(candidates)) != len(candidates)
+            ):
+                raise ValueError("Avatar motion mapping is invalid")
+            if any(
+                not isinstance(candidate, str)
+                or not candidate.strip()
+                or candidate != candidate.strip()
+                or "\x00" in candidate
+                or len(candidate) > 256
+                for candidate in candidates
+            ):
+                raise ValueError("Avatar motion hotkey name is invalid")
+
+
 class EmotionConfig(StrictModel):
     enabled: bool = True
     max_delta_per_event: float = Field(default=0.15, gt=0.0, le=1.0)
@@ -368,6 +465,7 @@ class Settings(StrictModel):
     llm: LLMConfig = Field(default_factory=LLMConfig)
     tts: TTSConfig = Field(default_factory=TTSConfig)
     vts: VTSConfig = Field(default_factory=VTSConfig)
+    avatar: AvatarConfig = Field(default_factory=AvatarConfig)
     emotion: EmotionConfig = Field(default_factory=EmotionConfig)
     storage: StorageConfig = Field(default_factory=StorageConfig)
     memory: MemoryConfig = Field(default_factory=MemoryConfig)

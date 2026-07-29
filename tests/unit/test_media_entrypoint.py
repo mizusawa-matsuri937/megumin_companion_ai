@@ -32,9 +32,24 @@ def test_media_entrypoint_builds_private_runtime_from_validated_options(
             captured["roots"] = roots
 
     class FakeHandler:
-        def __init__(self, *, selected_device_id: str | None, maximum_wave_bytes: int) -> None:
+        def __init__(
+            self,
+            *,
+            selected_device_id: str | None,
+            maximum_wave_bytes: int,
+            playback_chunk_ms: float,
+            mouth_noise_floor: float,
+            mouth_gain: float,
+            mouth_attack_seconds: float,
+            mouth_release_seconds: float,
+        ) -> None:
             captured["selected_device_id"] = selected_device_id
             captured["maximum_wave_bytes"] = maximum_wave_bytes
+            captured["playback_chunk_ms"] = playback_chunk_ms
+            captured["mouth_noise_floor"] = mouth_noise_floor
+            captured["mouth_gain"] = mouth_gain
+            captured["mouth_attack_seconds"] = mouth_attack_seconds
+            captured["mouth_release_seconds"] = mouth_release_seconds
 
     class FakeRuntime:
         def __init__(
@@ -70,6 +85,11 @@ def test_media_entrypoint_builds_private_runtime_from_validated_options(
     assert captured["roots"] == {"audio_temp": tmp_path}
     assert captured["selected_device_id"] == output_device_id
     assert captured["maximum_wave_bytes"] == 2048
+    assert captured["playback_chunk_ms"] == 30.0
+    assert captured["mouth_noise_floor"] == 0.02
+    assert captured["mouth_gain"] == 4.0
+    assert captured["mouth_attack_seconds"] == 0.04
+    assert captured["mouth_release_seconds"] == 0.12
     assert captured["role"] == "media"
     assert captured["maximum_active_jobs"] == 1
 

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import timedelta
 
+from app.avatar import AvatarRuntime
 from app.clients.llm import MockLLMProvider, OpenAICompatibleLLMProvider
 from app.clients.llm.base import LLMProvider
 from app.clients.tts import GPTSoVITSPreset, GPTSoVITSProvider, MockTTSProvider, TTSProvider
@@ -17,7 +19,7 @@ from app.clients.vts import (
 )
 from app.config import ConfigurationError, Settings
 from app.emotion import EmotionEngine, EmotionSegmentDecorator, ExpressionCooldown, SystemClock
-from app.media import create_media_worker_audio_player
+from app.media import MouthEnvelopeSample, create_media_worker_audio_player
 from app.pipelines import DialoguePipeline
 from app.pipelines.audio_player import AudioPlayer, SilentAudioPlayer
 from app.prompts import (
@@ -71,6 +73,7 @@ def build_dialogue_pipeline(
     prompt_context_source: PromptContextSource | None = None,
     llm_provider: LLMProvider | None = None,
     temp_registry: TempAssetRegistry | None = None,
+    mouth_envelope_listener: Callable[[MouthEnvelopeSample], object] | None = None,
 ) -> DialoguePipeline | None:
     settings.validate_runtime_limits()
     llm = llm_provider or build_llm_provider(settings)
@@ -80,7 +83,10 @@ def build_dialogue_pipeline(
     tts = _build_tts(settings, temp_registry=temp_registry)
     player: AudioPlayer
     if settings.pipeline.playback_mode == "system":
-        player = create_media_worker_audio_player(settings)
+        player = create_media_worker_audio_player(
+            settings,
+            mouth_envelope_listener=mouth_envelope_listener,
+        )
     else:
         player = SilentAudioPlayer()
     clock = SystemClock()
@@ -220,6 +226,37 @@ def build_vts_event_sink(
     sink = VTSTurnEventSink(bridge)
     sink.start()
     return sink
+
+
+def build_avatar_runtime(
+    settings: Settings,
+    *,
+    token_store: TokenStore | None = None,
+) -> AvatarRuntime | None:
+    """Build, but do not start, the single VTS owner used by W28."""
+
+    if not settings.vts.enabled or not settings.avatar.enabled:
+        return None
+    return AvatarRuntime(
+        lambda: VTSClient(
+            settings.vts.uri,
+            request_timeout_seconds=settings.vts.request_timeout_seconds,
+            proxy_url=settings.vts.transport.proxy_url,
+            ca_bundle_path=settings.vts_ca_bundle_path(),
+        ),
+        token_store
+        or DPAPITokenStore(
+            vts_token_file(
+                settings.paths,
+                settings.vts_token_path(),
+            )
+        ),
+        plugin_name=settings.vts.plugin_name,
+        plugin_developer=settings.vts.plugin_developer,
+        config=settings.avatar,
+        reconnect_initial_seconds=settings.vts.reconnect_initial_seconds,
+        reconnect_max_seconds=settings.vts.reconnect_max_seconds,
+    )
 
 
 def _resolve_llm_api_key(

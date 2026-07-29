@@ -24,6 +24,7 @@ from app.workers.supervisor import (
     SupervisorConfig,
     WorkerActualState,
     WorkerError,
+    WorkerJobProgress,
     WorkerSupervisor,
 )
 
@@ -112,6 +113,30 @@ class _FakeJobProcess:
                     asyncio.get_running_loop().call_soon(self._finish, 17)
             elif message.message_type == "job.start":
                 if message.payload["job_kind"] == "complete":
+                    self._stdout.put_nowait(
+                        encode_message(
+                            HelperMessage(
+                                message_type="job.completed",
+                                request_id=message.request_id,
+                                payload={"status": "ok"},
+                            )
+                        )
+                    )
+                elif message.payload["job_kind"] == "progress":
+                    for sequence, value in ((1, 0.25), (2, 0.75), (2, 0.9), (1, 0.1)):
+                        self._stdout.put_nowait(
+                            encode_message(
+                                HelperMessage(
+                                    message_type="job.progress",
+                                    request_id=message.request_id,
+                                    payload={
+                                        "kind": "mouth_envelope",
+                                        "sequence": sequence,
+                                        "value": value,
+                                    },
+                                )
+                            )
+                        )
                     self._stdout.put_nowait(
                         encode_message(
                             HelperMessage(
@@ -315,6 +340,50 @@ def test_successful_handshake_job_and_orderly_shutdown() -> None:
             "job.start",
             "shutdown",
         ]
+
+    asyncio.run(scenario())
+
+
+def test_worker_progress_validates_sequence_and_callback_failure_cannot_block_terminal() -> None:
+    async def scenario() -> None:
+        adapter = _FakeJobAdapter()
+        supervisor = WorkerSupervisor(
+            name="media-worker",
+            role="media",
+            command=("trusted-helper",),
+            adapter=adapter,
+            config=_config(),
+        )
+        await supervisor.start()
+        observed: list[WorkerJobProgress] = []
+
+        def progress(item: WorkerJobProgress) -> None:
+            observed.append(item)
+            if item.sequence == 1:
+                raise RuntimeError("progress callback body must stay isolated")
+
+        result = await supervisor.run_job(
+            job_id="progress-job",
+            job_kind="progress",
+            progress_callback=progress,
+        )
+        assert result == {"status": "ok"}
+        assert observed == [
+            WorkerJobProgress(
+                job_id="progress-job",
+                kind="mouth_envelope",
+                sequence=1,
+                value=0.25,
+            ),
+            WorkerJobProgress(
+                job_id="progress-job",
+                kind="mouth_envelope",
+                sequence=2,
+                value=0.75,
+            ),
+        ]
+        assert (await supervisor.snapshot()).active_jobs == 0
+        await supervisor.stop()
 
     asyncio.run(scenario())
 

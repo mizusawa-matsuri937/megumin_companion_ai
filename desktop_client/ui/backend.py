@@ -468,6 +468,10 @@ class DesktopChatRuntime:
                     raise RuntimeError("desktop_runtime_unavailable")
                 memory_runtime = getattr(application.state, "memory_runtime", None)
                 temp_registry = getattr(application.state, "temp_asset_registry", None)
+                avatar_runtime = getattr(application.state, "avatar_runtime", None)
+                avatar_snapshot = getattr(avatar_runtime, "snapshot", None)
+                if not callable(avatar_snapshot):
+                    avatar_snapshot = None
                 try:
                     voice_input = build_voice_input(
                         settings,
@@ -489,6 +493,7 @@ class DesktopChatRuntime:
                             provider_preflight=ProviderPreflightRunner(
                                 temp_registry=temp_registry,
                             ),
+                            avatar_snapshot=avatar_snapshot,
                         ),
                         client_id=self._client_id,
                     )

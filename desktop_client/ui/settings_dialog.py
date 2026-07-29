@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
+    QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
     QGridLayout,
@@ -206,6 +207,7 @@ class SettingsDialog(QDialog):
         self.tabs = QTabWidget(self)
         self.tabs.setAccessibleName("设置页面")
         self.tabs.addTab(self._build_connection_tab(), "连接与设备")
+        self.tabs.addTab(self._build_avatar_tab(), "Avatar")
         self.tabs.addTab(self._build_preflight_tab(), "服务预检")
         self.tabs.addTab(self._build_features_tab(), "功能与隐私")
         self.tabs.addTab(self._build_memory_tab(), "历史与记忆")
@@ -350,6 +352,92 @@ class SettingsDialog(QDialog):
         secrets_layout.addWidget(revoke_vts, 3, 2)
         secrets_layout.addWidget(self.vts_secret_state, 4, 0, 1, 3)
         layout.addWidget(secrets)
+        layout.addStretch(1)
+        return page
+
+    def _build_avatar_tab(self) -> QWidget:
+        page = QWidget(self)
+        layout = QVBoxLayout(page)
+        guidance = QLabel(
+            "这里只保存 Avatar Runtime 的安全开关和音量口型校准值；"
+            "不显示或修改私人模型、动作、Expression、Hotkey ID 或资产路径。"
+            "所有更改均在重启应用后生效。",
+            page,
+        )
+        guidance.setWordWrap(True)
+        layout.addWidget(guidance)
+
+        controls = QGroupBox("Avatar Runtime 安全开关", page)
+        controls_form = QFormLayout(controls)
+        self.avatar_enabled = QCheckBox("启用 Avatar Runtime", controls)
+        self.avatar_parameter_control_enabled = QCheckBox("启用 VTS 参数控制", controls)
+        self.avatar_micro_motion_enabled = QCheckBox("启用程序微动作", controls)
+        self.avatar_lip_sync_enabled = QCheckBox("启用音量口型", controls)
+        self.avatar_body_motion_enabled = QCheckBox("启用主体动作", controls)
+        self.avatar_auto_red_eye_enabled = QCheckBox("启用系统自动红眼", controls)
+        for checkbox in (
+            self.avatar_enabled,
+            self.avatar_parameter_control_enabled,
+            self.avatar_micro_motion_enabled,
+            self.avatar_lip_sync_enabled,
+            self.avatar_body_motion_enabled,
+            self.avatar_auto_red_eye_enabled,
+        ):
+            checkbox.toggled.connect(self._mark_form_dirty_bool)
+        controls_form.addRow("总开关", self.avatar_enabled)
+        controls_form.addRow("参数控制", self.avatar_parameter_control_enabled)
+        controls_form.addRow("程序微动作", self.avatar_micro_motion_enabled)
+        controls_form.addRow("音量口型", self.avatar_lip_sync_enabled)
+        controls_form.addRow("主体动作", self.avatar_body_motion_enabled)
+        controls_form.addRow("自动红眼", self.avatar_auto_red_eye_enabled)
+        layout.addWidget(controls)
+
+        calibration = QGroupBox("音量口型校准", page)
+        calibration_form = QFormLayout(calibration)
+        self.avatar_mouth_noise_floor = self._avatar_spin_box(
+            calibration,
+            accessible_name="Avatar 口型噪声门限",
+            minimum=0.0,
+            maximum=0.999,
+            decimals=3,
+            step=0.005,
+        )
+        self.avatar_mouth_gain = self._avatar_spin_box(
+            calibration,
+            accessible_name="Avatar 口型增益",
+            minimum=0.01,
+            maximum=100.0,
+            decimals=2,
+            step=0.25,
+        )
+        self.avatar_mouth_attack_seconds = self._avatar_spin_box(
+            calibration,
+            accessible_name="Avatar 口型开启平滑时间",
+            minimum=0.001,
+            maximum=2.0,
+            decimals=3,
+            step=0.01,
+            suffix=" 秒",
+        )
+        self.avatar_mouth_release_seconds = self._avatar_spin_box(
+            calibration,
+            accessible_name="Avatar 口型闭合平滑时间",
+            minimum=0.001,
+            maximum=5.0,
+            decimals=3,
+            step=0.01,
+            suffix=" 秒",
+        )
+        calibration_form.addRow("噪声门限（0–1）", self.avatar_mouth_noise_floor)
+        calibration_form.addRow("增益", self.avatar_mouth_gain)
+        calibration_form.addRow("开启平滑", self.avatar_mouth_attack_seconds)
+        calibration_form.addRow("闭合平滑", self.avatar_mouth_release_seconds)
+        layout.addWidget(calibration)
+
+        save = QPushButton("保存 Avatar 设置（重启后生效）", page)
+        save.setAccessibleName("保存 Avatar 设置")
+        save.clicked.connect(self._save_settings)
+        layout.addWidget(save)
         layout.addStretch(1)
         return page
 
@@ -507,6 +595,8 @@ class SettingsDialog(QDialog):
         layout = QFormLayout(page)
         self.debug_version = QLabel("—", page)
         self.debug_capabilities = QLabel("—", page)
+        self.debug_avatar = QLabel("—", page)
+        self.debug_avatar.setWordWrap(True)
         self.debug_queues = QLabel("—", page)
         self.debug_error_code = QLabel("—", page)
         self.debug_note = QLabel(
@@ -518,6 +608,7 @@ class SettingsDialog(QDialog):
         refresh.clicked.connect(lambda: self._submit(ManagementDebugCommand()))
         layout.addRow("版本", self.debug_version)
         layout.addRow("能力", self.debug_capabilities)
+        layout.addRow("Avatar", self.debug_avatar)
         layout.addRow("桥队列", self.debug_queues)
         layout.addRow("最近错误码", self.debug_error_code)
         layout.addRow("说明", self.debug_note)
@@ -529,6 +620,27 @@ class SettingsDialog(QDialog):
         edit.setAccessibleName(accessible_name)
         edit.textEdited.connect(self._mark_form_dirty)
         return edit
+
+    def _avatar_spin_box(
+        self,
+        parent: QWidget,
+        *,
+        accessible_name: str,
+        minimum: float,
+        maximum: float,
+        decimals: int,
+        step: float,
+        suffix: str = "",
+    ) -> QDoubleSpinBox:
+        control = QDoubleSpinBox(parent)
+        control.setAccessibleName(accessible_name)
+        control.setRange(minimum, maximum)
+        control.setDecimals(decimals)
+        control.setSingleStep(step)
+        control.setKeyboardTracking(False)
+        control.setSuffix(suffix)
+        control.valueChanged.connect(self._mark_form_dirty_float)
+        return control
 
     def _secret_edit(self, accessible_name: str) -> QLineEdit:
         # A credential must not mark unrelated settings as a persistent draft.
@@ -549,6 +661,10 @@ class SettingsDialog(QDialog):
             self._form_dirty = True
 
     def _mark_form_dirty_index(self, _index: int) -> None:
+        if not self._populating_form:
+            self._form_dirty = True
+
+    def _mark_form_dirty_float(self, _value: float) -> None:
         if not self._populating_form:
             self._form_dirty = True
 
@@ -666,6 +782,18 @@ class SettingsDialog(QDialog):
                         startup_enabled=self.startup_enabled.isChecked(),
                         output_device_id=self._selected_output_device_id(),
                         system_playback_enabled=self.system_playback_enabled.isChecked(),
+                        avatar_enabled=self.avatar_enabled.isChecked(),
+                        avatar_parameter_control_enabled=(
+                            self.avatar_parameter_control_enabled.isChecked()
+                        ),
+                        avatar_micro_motion_enabled=self.avatar_micro_motion_enabled.isChecked(),
+                        avatar_lip_sync_enabled=self.avatar_lip_sync_enabled.isChecked(),
+                        avatar_body_motion_enabled=self.avatar_body_motion_enabled.isChecked(),
+                        avatar_auto_red_eye_enabled=self.avatar_auto_red_eye_enabled.isChecked(),
+                        avatar_mouth_noise_floor=self.avatar_mouth_noise_floor.value(),
+                        avatar_mouth_gain=self.avatar_mouth_gain.value(),
+                        avatar_mouth_attack_seconds=self.avatar_mouth_attack_seconds.value(),
+                        avatar_mouth_release_seconds=self.avatar_mouth_release_seconds.value(),
                     )
                 )
             )
@@ -841,6 +969,16 @@ class SettingsDialog(QDialog):
             self.stt_enabled.setChecked(form.stt_enabled)
             self.startup_enabled.setChecked(form.startup_enabled)
             self.system_playback_enabled.setChecked(form.system_playback_enabled)
+            self.avatar_enabled.setChecked(form.avatar_enabled)
+            self.avatar_parameter_control_enabled.setChecked(form.avatar_parameter_control_enabled)
+            self.avatar_micro_motion_enabled.setChecked(form.avatar_micro_motion_enabled)
+            self.avatar_lip_sync_enabled.setChecked(form.avatar_lip_sync_enabled)
+            self.avatar_body_motion_enabled.setChecked(form.avatar_body_motion_enabled)
+            self.avatar_auto_red_eye_enabled.setChecked(form.avatar_auto_red_eye_enabled)
+            self.avatar_mouth_noise_floor.setValue(form.avatar_mouth_noise_floor)
+            self.avatar_mouth_gain.setValue(form.avatar_mouth_gain)
+            self.avatar_mouth_attack_seconds.setValue(form.avatar_mouth_attack_seconds)
+            self.avatar_mouth_release_seconds.setValue(form.avatar_mouth_release_seconds)
             scope_index = self.tts_ref_audio_scope.findData(form.tts_ref_audio_scope)
             self.tts_ref_audio_scope.setCurrentIndex(max(0, scope_index))
             self._populating_form = False
@@ -1017,6 +1155,22 @@ class SettingsDialog(QDialog):
             self.debug_capabilities.setText(
                 f"文字聊天：{'可用' if debug.capabilities.text_chat else '不可用'}；"
                 f"停止：{'可用' if debug.capabilities.turn_cancel else '不可用'}"
+            )
+            layer_labels = {
+                "parameter_control": "参数控制",
+                "lip_sync": "音量口型",
+                "body_motion": "主体动作",
+                "automatic_red_eye": "自动红眼",
+            }
+            self.debug_avatar.setText(
+                "；".join(
+                    (
+                        f"{layer_labels[layer.name]}："
+                        f"{'可用' if layer.available else '不可用'}"
+                        f"{f'（{layer.reason_code}）' if layer.reason_code else ''}"
+                    )
+                    for layer in debug.avatar_layers
+                )
             )
             self.debug_queues.setText(
                 f"命令 {debug.command_queue_count}/{debug.command_queue_capacity}；"
