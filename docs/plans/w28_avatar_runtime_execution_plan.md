@@ -1,6 +1,7 @@
 # W28：Avatar Runtime、程序微动作与音量口型执行计划
 
-> 状态：**产品实现、完整本地质量门与实机验收已完成；发布与自然度 Gate 待关闭**
+> 状态：**产品实现、Draft PR 与交付代码 exact-head 自动门已完成；PR 未合并，真实中文 TTS 与自然度
+> Gate 待关闭**
 >
 > 最后核验：2026-07-29（Asia/Shanghai）
 >
@@ -85,8 +86,8 @@
 
 - 已实现单写者 AvatarRuntime、VTS 参数/event/Expression API、程序微动作、整轮动作生命周期、红眼所有权、
   MediaWorker 分块 RMS/`job.progress`、真实输出 drain、设置/管理面与故障隔离。
-- 扩展聚焦矩阵为 `267 passed`；最终完整套件为 `1328 passed, 3 skipped`，aggregate branch coverage
-  `90.09%`。Ruff、format、strict mypy、lock、diff、正式文档、候选隐私扫描和 CI 同款
+- 扩展聚焦矩阵为 `267 passed`；交付代码 head 的当前完整套件为 `1334 passed, 3 skipped`，
+  aggregate branch coverage `90.55%`。Ruff、format、strict mypy、lock、diff、正式文档、候选隐私扫描和 CI 同款
   wheel/source-quarantine/installed-artifact smoke 均通过。
 - 真实 VTS 已覆盖参数、idle、动作、红眼所有权和重连；真实 MediaWorker/输出设备已覆盖 silence、
   固定幅度、ramp、cancel、output drain 和 MouthOpen 归零。发布前最终 stage/semantic guard 与外部状态恢复
@@ -95,8 +96,13 @@
   形成证据；不能用合成音替代。
 - 当前只冻结现有 EmotionEngine 的整轮结果；受信任 LLM 结构化 `AvatarTurnPlan` 尚未实现。
 - 正式证据、客观失败和剩余 Gate 见
-  [W28 实现记录](../implementation/w28_avatar_runtime.md)。完成前上游复核未发现依赖选择漂移；focused commit、
-  stacked Draft PR 和 exact-head CI 仍待执行。
+  [W28 实现记录](../implementation/w28_avatar_runtime.md)。完成前上游复核未发现依赖选择漂移；三项
+  交付代码提交已推送，stacked Draft PR
+  [#33](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/33) 已创建。交付代码 head
+  `a0b46bc8d7d46087b5cbf2db1a43f063ede62ab8` 的
+  [push](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/30445790871) /
+  [PR](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/30445798402) 双 OS
+  `quality` 与 `installed-wheel` 共 8 项全部通过；PR 仍为 open Draft，未合并。
 
 ## 3. 目标和完成定义
 
@@ -721,6 +727,6 @@ Avatar Runtime ADR 至少记录：
 - [x] 真实 VTS、MediaWorker 和实际输出播放已验证（真实中文 TTS 仍未配置）
 - [x] 私有配置/资产未提交、semantic 未意外改写（exact-byte metadata 差异已如实记录）
 - [x] ADR、数据流、威胁模型、计划、实现记录和索引同步
-- [ ] 聚焦提交已推送，Draft PR 已创建
-- [ ] 未合并
+- [x] 聚焦提交已推送，Draft PR 已创建
+- [x] 保持未合并
 - [x] `.agents/CONTEXT_MEMORY.md` 已更新

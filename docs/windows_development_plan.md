@@ -2,8 +2,8 @@
 
 > 原始版本：2026-07-17 Gate W0 决策落版
 >
-> 最新修订：2026-07-29 W28 Avatar Runtime 本地实现、完整质量门与实机验收完成，发布待关闭；
-> W20～W27 的既有编号和范围不变
+> 最新修订：2026-07-29 W28 Avatar Runtime 已形成 stacked Draft PR，交付代码 exact-head 自动门通过；
+> PR 未合并，真实中文 TTS 与自然度 Gate 待关闭；W20～W27 的既有编号和范围不变
 >
 > 代码基线：`agent/windows-development-baseline` / `d56cfbd`
 >
@@ -766,10 +766,13 @@ flowchart LR
 #### PR W28：Avatar Runtime、程序微动作与音量口型
 
 > **实施状态（2026-07-29）：** 产品代码、完整本地质量门、真实 VTS 和真实 MediaWorker/输出设备验收已在
-> `codex/w28-avatar-runtime` 本地工作树完成；最终完整套件为 `1328 passed, 3 skipped`、aggregate branch
-> coverage `90.09%`，静态/类型/lock/文档/隐私与 CI 同款 wheel 隔离门均通过。focused commit、以 W19
-> 为 base 的 Draft PR、exact-head CI 和主观自然度 Gate 待关闭。当前用户设置没有 GPT-SoVITS preset，
-> 故真实中文 TTS 播放仍未验证。
+> `codex/w28-avatar-runtime` 完成；当前精确树为 `1334 passed, 3 skipped`、aggregate branch coverage
+> `90.55%`，静态/类型/lock/文档/隐私与 CI 同款 wheel 隔离门均通过。三项交付代码提交已推送，以 W19
+> `a64f5ac12a4b14175ecbfd2ac0d76168ac01f589` 为 base 的 stacked Draft PR
+> [#33](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/33) 已创建；交付代码 head
+> `a0b46bc8d7d46087b5cbf2db1a43f063ede62ab8` 的 push/PR 双 OS `quality` 与 `installed-wheel`
+> 共 8 项全部通过。PR 仍为 open Draft、未合并；当前用户设置没有 GPT-SoVITS preset，故真实中文 TTS
+> 播放仍未验证，主观自然度 Gate 也仍待所有者判断。
 > 详细执行包与证据见 [`plans/w28_avatar_runtime_execution_plan.md`](./plans/w28_avatar_runtime_execution_plan.md)
 > 和 [`implementation/w28_avatar_runtime.md`](./implementation/w28_avatar_runtime.md)。
 

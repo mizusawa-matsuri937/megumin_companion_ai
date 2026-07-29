@@ -76,7 +76,7 @@
 - [W17：MediaWorker 播放、输出设备与 Gate A（已合并，PR #30）](implementation/w17_media_worker_audio.md)
 - [W18：Push-to-talk、麦克风 ring buffer 与 Whisper Job（已合并）](implementation/w18_push_to_talk_whisper.md)
 - [W19：真实 VTS/GPT-SoVITS 配置向导与联动（Draft PR #32，自动门通过；真实体验 Gate 待完成）](implementation/w19_provider_preflight.md)
-- [W28：Avatar Runtime、程序微动作与音量口型（本地完整质量门与真实 VTS/实际输出已验证；发布和自然度 Gate 待完成）](implementation/w28_avatar_runtime.md)
+- [W28：Avatar Runtime、程序微动作与音量口型（Draft PR #33；交付代码自动门与真实 VTS/实际输出已验证，未合并；真实中文 TTS 和自然度 Gate 待完成）](implementation/w28_avatar_runtime.md)
 
 ## 当前专项计划
 

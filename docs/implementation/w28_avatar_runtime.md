@@ -1,11 +1,14 @@
 # W28：Avatar Runtime、程序微动作与音量口型
 
-> 状态：产品代码、完整本地质量门、真实 VTS 与真实 MediaWorker/输出设备验收已完成；focused commit、
-> stacked Draft PR 和 exact-head CI 待完成。真实中文 GPT-SoVITS 因当前用户配置未启用而未验证，
-> 主观自然度 Gate 仍待所有者判断。
+> 状态：产品代码、完整本地质量门、真实 VTS 与真实 MediaWorker/输出设备验收已完成；三项交付代码提交已推送，
+> stacked Draft PR [#33](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/33) 已创建，
+> 交付代码 head `a0b46bc8d7d46087b5cbf2db1a43f063ede62ab8` 的 push/PR 双 OS 自动门全部通过。
+> PR 仍为 open Draft 且未合并。真实中文 GPT-SoVITS 因当前用户配置未启用而未验证，主观自然度 Gate
+> 仍待所有者判断。
 >
 > 最后核验：2026-07-29（Asia/Shanghai）。工作分支 `codex/w28-avatar-runtime`，stacked base 为
-> `codex/w19-provider-preflight@a64f5ac12a4b14175ecbfd2ac0d76168ac01f589`。
+> `codex/w19-provider-preflight@a64f5ac12a4b14175ecbfd2ac0d76168ac01f589`；当前已核验交付代码 head 为
+> `a0b46bc8d7d46087b5cbf2db1a43f063ede62ab8`。
 
 ## 实现范围
 
@@ -82,7 +85,7 @@ uv run pytest --no-cov --basetemp .pytest-w28-expanded \
 - Avatar failure isolation：真实 TurnService/DialoguePipeline/父侧 MediaWorker job 在 Avatar sink 抛错时
   仍产生文字、播放和完成事件，聚焦矩阵 `12 passed`。
 
-最终本地 pytest/branch coverage：
+功能提交前的完整本地 pytest/branch coverage：
 
 ```text
 uv run pytest --basetemp .pytest-w28-full-coverage-final \
@@ -93,7 +96,18 @@ uv run pytest --basetemp .pytest-w28-full-coverage-final \
 `90.09%`，满足 `fail-under=90`。三个 skip 分别是 optional RapidOCR、optional Pillow 和当前账户无法创建
 directory symlink；没有 W28 断言失败。
 
-最终静态、锁文件与差异检查：
+跨平台覆盖补强与 Windows CI deadline fixture 修复后的当前精确树：
+
+```text
+uv run pytest --basetemp .pytest-w28-headless-full \
+  --cov-report=json:.agents/w28_headless_fix_full_coverage.json
+```
+
+结果：收集 1,337 项，`1334 passed, 3 skipped in 260.04s`，aggregate branch coverage
+`90.55%`。同一 headless production-composition smoke 在 10 个独立 pytest 进程中 10/10 通过；相关
+application/chat/bootstrap/API/health 矩阵为 `50 passed in 10.96s`。
+
+当前静态、锁文件与差异检查：
 
 ```text
 $trackedPython = @(git ls-files -- '*.py')
@@ -104,11 +118,11 @@ uv lock --check
 git diff --check
 ```
 
-结果依次为 `All checks passed!`、`244 files already formatted`、
-`Success: no issues found in 250 source files`、`Resolved 65 packages in 2ms` 和通过。直接对 `.` 运行
+结果依次为 `All checks passed!`、`257 files already formatted`、
+`Success: no issues found in 250 source files`、`Resolved 65 packages in 1ms` 和通过。直接对 `.` 运行
 Ruff 会扫描必须保留但不提交的 `.agents/` 及 pytest 故障 fixture；因此本地检查使用与干净 CI checkout
-等价的 tracked Python 集合。55 个候选文件、8,759 个新增行的 denylist 扫描没有绝对私有路径、私有 VTS
-存储标识、私有模型名、已知私有 ID 或凭据字面量。
+等价的 tracked Python 集合。功能提交的 55 个候选文件及后续测试提交均分别执行 staged denylist；
+没有绝对私有路径、私有 VTS 存储标识、私有模型名、已知私有 ID、受保护资产或凭据字面量。
 
 最终 wheel/source-quarantine/installed-artifact smoke：
 
@@ -124,7 +138,47 @@ uv run --no-project --python 3.11 python tools/w05_ci_smoke.py \
 结果：installed smoke `status=ok`、`source_tree_imported=false`、145 members，manifest SHA-256
 `45b0a6f266fa1afcd579ec99507daa401eca1ca3483474cc131c4484010d242d`。额外内容扫描没有私有存储、
 私有模型或凭据字面量；evidence 不含绝对 Windows 路径。两个 W28 专用临时产物目录核验后已精确删除，
-未触碰 `dist` 中其他历史内容。exact-head CI 仍必须在发布后独立通过。
+未触碰 `dist` 中其他历史内容。交付代码 head 的四个 installed-wheel job 后续也全部通过。
+
+## 发布与 CI 修复证据
+
+聚焦提交：
+
+1. `a9cf2cbaba6e985b8a4e7d0226421308faaa6f80`：
+   `W28 implement avatar runtime and volume lip sync`，55 个 W28 文件。
+2. `f48cf1044104b1aca69d70d15090820c5a56ccf7`：
+   `W28 cover cross-platform avatar safety boundaries`，只增加跨平台安全边界测试。
+3. `a0b46bc8d7d46087b5cbf2db1a43f063ede62ab8`：
+   `W28 stabilize Windows headless smoke deadline`，只调整一个既有 production-composition 测试 fixture，
+   产品默认 deadline 未改变。
+
+Draft PR [#33](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/33) 为 open Draft，
+base 是 `codex/w19-provider-preflight@a64f5ac12a4b14175ecbfd2ac0d76168ac01f589`，交付代码 head 是
+`codex/w28-avatar-runtime@a0b46bc8d7d46087b5cbf2db1a43f063ede62ab8`；W28 没有混入 W19 PR。
+
+客观 CI 失败与修复没有被 rerun 掩盖：
+
+- 功能 head `a9cf2cb` 的 macOS quality 实际为 `1314 passed, 17 skipped`、coverage `89.76%`，低于
+  90%；macOS/Windows 还各有两个测试文件的 Ruff I001。Windows 测试 coverage 本身为 `90.12%`。
+  修复方式是整理 import，并为 runtime/controller/event/VTS 的真实跨平台失败边界增加测试，不降低阈值、
+  不加 coverage pragma。
+- `f48cf10` 的 push run
+  [30443623946](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/30443623946)
+  四项全绿；PR run
+  [30443627328](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/30443627328)
+  唯一失败于未改产品代码的默认 headless smoke。过载 Windows runner 中该测试把产品组合启动/关闭压进
+  人为 2 秒预算，captured 状态为 ready/stopped 均 false；同 job 其余 `1335 passed, 1 skipped`，
+  coverage `90.55%`，新增 W28 测试全部通过。测试 fixture 改为 10 秒 scheduler headroom，产品默认
+  5 秒 deadline 保持不变。
+
+交付代码 head `a0b46bc8...` 的最终自动门：
+
+- [push run 30445790871](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/30445790871)：
+  macOS/Windows `quality` 与 `installed-wheel` 四项全部 success；
+- [PR run 30445798402](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/30445798402)：
+  macOS/Windows `quality` 与 `installed-wheel` 四项全部 success。
+
+本状态文档同步会形成后续 docs-only PR head；该 head 仍须独立通过自身 CI，不能借用上述代码 head 的绿灯。
 
 ## 完成前上游复核
 
@@ -209,5 +263,6 @@ latency 与 VTS 显示 latency 仍属于主观自然度 Gate。
 
 ## 发布状态
 
-W28 必须只暂存本任务文件，排除用户修改的根 `AGENTS.md`、整个 `.agents/` 和所有私有资产。最终提交、
-stacked Draft PR URL、exact head 和 CI 将在完整质量门后回填；未获授权不得合并。
+W28 三项交付代码提交已推送，stacked Draft PR #33 已创建，交付代码 head 的 push/PR 双 OS 自动门全部通过。
+提交范围排除了用户修改的根 `AGENTS.md`、整个 `.agents/` 和所有私有资产。PR 仍为 open Draft，
+未获授权不得合并；真实中文 TTS 与主观自然度仍是明确未关闭 Gate。
