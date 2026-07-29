@@ -2,8 +2,9 @@
 
 > 原始版本：2026-07-17 Gate W0 决策落版
 >
-> 最新修订：2026-07-30 W29 五情绪 TTS/VTS 联动已完成本地实现、私有安装、真实中文链路和完整质量门；
-> stacked Draft PR 与 exact-head CI 待完成，主观试听 Gate 保留；W20～W27 的既有编号和范围不变
+> 最新修订：2026-07-30 W29 五情绪 TTS/VTS 联动已完成本地实现、私有安装、真实中文链路、完整质量门、
+> 功能提交和 stacked Draft PR #34；本状态同步后的 exact-head CI 待完成，主观试听 Gate 保留；
+> W20～W27 的既有编号和范围不变
 >
 > 代码基线：`agent/windows-development-baseline` / `d56cfbd`
 >
@@ -811,8 +812,11 @@ flowchart LR
 > **实施状态（2026-07-30）：** `codex/w29-five-emotion-tts` 已完成公共实现、五槽仓库外私有安装、
 > 真实中文 gateway→MediaWorker→VTS 链路和本地完整质量门。当前精确树收集 1,470 项，
 > `1467 passed, 3 skipped`，aggregate branch coverage `90.55%`；Ruff、279 文件格式、strict mypy
-> 272 source 和根/网关两个 lock check 通过。聚焦提交、以 `codex/w28-avatar-runtime` 为 base 的
-> stacked Draft PR 和该 PR 最新 exact-head CI 尚未完成，不能写成发布通过。证据见
+> 272 source 和根/网关两个 lock check 通过。功能提交
+> [`3de8bc5`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/3de8bc599b2dde2db42460f39dd231739c9422ec)
+> 已推送，以 `codex/w28-avatar-runtime` 为 base 的 stacked Draft PR
+> [#34](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/34) 已创建并核对 base/head；
+> 本状态同步后的 PR 最新 exact-head CI 尚未完成，不能写成发布通过。证据见
 > [`plans/w29_five_emotion_tts_vts_execution_plan.md`](./plans/w29_five_emotion_tts_vts_execution_plan.md)、
 > [`implementation/w29_five_emotion_tts_vts.md`](./implementation/w29_five_emotion_tts_vts.md) 和
 > [`adr/ADR-W29-private-tts-gateway-and-structured-turns.md`](./adr/ADR-W29-private-tts-gateway-and-structured-turns.md)。
@@ -1138,10 +1142,10 @@ flowchart LR
    ADR-W29、W29 实现记录和本地恢复状态；不得重问已确认问题或把私有路径/资产复制到 Git。
 2. W29 以 W28 exact head 为 stacked base；W28/W19 未合并时不得把它们的 diff 混入 W29 审计或改写其历史
    Gate。发布前重新查询两项 Draft PR、远端 base/head 和 CI。
-3. W29 公共实现、私有安装、五槽校准和真实链路已经完成；当前先关闭正式文档、wheel/source quarantine、
-   staged 私有 denylist 和最终私有 runtime smoke。
-4. 只暂存 W29 公共代码、合成测试、公共依赖清单和正式文档；形成聚焦提交、push、以 W28 分支为 base
-   的 stacked Draft PR，并等待该最新 exact head 的 macOS/Windows `quality` 与 `installed-wheel`。
+3. W29 公共实现、私有安装、五槽校准、真实链路、正式文档、wheel/source quarantine、staged 私有
+   denylist、最终私有 runtime smoke、功能提交、push 和 stacked Draft PR #34 已完成。
+4. 提交本次正式状态同步，并等待 PR 最新 exact head 的 push/PR 两次 macOS/Windows `quality` 与
+   `installed-wheel`；随后终审 base/head/diff/review/conversation/mergeability/隐私。
 5. 不合并。所有者试听五种音色、情绪差异、中文自然度和整体动作观感前，不把主观 Gate 写成通过。
 6. W20～W27 的编号、范围和依赖保持；W24 在当前顺序中依赖 W29。
 

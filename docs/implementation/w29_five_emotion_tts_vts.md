@@ -1,10 +1,12 @@
 # W29：五情绪 GPT-SoVITS 与 VTS 动作联动
 
-> 状态：公共实现、私有运行时、真实 VTS/MediaWorker 链路和本地完整质量门已完成；提交、Draft PR 与
-> exact-head CI 待完成。PR 不合并，所有者主观试听 Gate 保留。
+> 状态：公共实现、私有运行时、真实 VTS/MediaWorker 链路、本地完整质量门、功能提交和 stacked
+> Draft PR #34 已完成；本状态同步后的 exact-head CI 待完成。PR 不合并，所有者主观试听 Gate 保留。
 > 最后核验：2026-07-30（Asia/Shanghai）
 > 工作分支：`codex/w29-five-emotion-tts`
 > stacked base：`codex/w28-avatar-runtime@b09841c13f1a733ec267027df62da6da7fc31fb6`
+> 功能提交：[`3de8bc5`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/3de8bc599b2dde2db42460f39dd231739c9422ec)
+> Draft PR：[#34](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/34)
 
 ## 实现范围
 
@@ -145,12 +147,12 @@ provenance 不含绝对路径、私有 marker 或 secret。
   Git 外。
 - 私有安装/校准/VTS/真实链路脚本与状态只在未跟踪 `.agents/`，不得暂存或打包。
 - tracked 测试只使用合成 WAV、虚拟槽名、fake backend 和稳定 error code，不包含受保护角色资产。
-- wheel/source quarantine 与未暂存候选的日志/secret/path denylist 已通过；提交前仍需对精确 staged diff
-  再做一次独立范围和隐私扫描。
+- wheel/source quarantine、未暂存候选和 staged diff 的日志/secret/path denylist 均已通过；功能提交
+  精确为 64 个公共文件，`AGENTS.md`、`.agents/`、私有资产、构建产物和 pytest 临时目录均未进入提交。
 
 ## 残余 Gate 与回滚
 
-- 待完成：精确 staged 审计、聚焦提交、push、stacked Draft PR、最新 exact-head 双 OS CI 和 PR 终审。
+- 待完成：本状态同步提交、PR 最新 exact-head 双 OS CI 和 PR 终审。
 - 所有者主观 Gate：试听五种声音的音色/情绪差异、中文自然度，并观察随机动作与台词是否协调。
 - 回滚：关闭 gateway 启动器，将 TTS provider 切回 Mock 或 silent；Avatar 和文字继续，嘴保持闭合。
   不删除私有声音、运行时、VTS 配置或备份。

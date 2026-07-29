@@ -1,6 +1,7 @@
 # W29：五情绪 GPT-SoVITS 与 VTS 动作联动执行计划
 
-> 状态：公共实现、私有安装、真实链路和本地质量门已完成；提交、stacked Draft PR 与 exact-head CI 待完成
+> 状态：公共实现、私有安装、真实链路、本地质量门、功能提交和 stacked Draft PR #34 已完成；
+> 本状态同步后的 exact-head CI 待完成
 > 最后核验：2026-07-30（Asia/Shanghai）
 
 ## 目标
@@ -67,7 +68,7 @@
 - [x] 当前精确树完整 pytest/branch coverage、Ruff、format、mypy 与两个 lock check。
 - [x] W29 ADR、数据流、威胁模型、当前目标、计划与实现记录完成终审。
 - [x] wheel/source-quarantine、installed-artifact 和私有 denylist 通过。
-- [ ] 形成聚焦提交、推送并创建以 W28 分支为 base 的 stacked Draft PR。
+- [x] 形成聚焦提交、推送并创建以 W28 分支为 base 的 stacked Draft PR #34。
 - [ ] PR 最新 exact head 的 macOS/Windows quality 与 installed-wheel 全部通过。
 - [ ] 所有者试听五种音色、情绪差异、中文自然度与整体动作观感。
 

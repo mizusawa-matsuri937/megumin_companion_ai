@@ -2,8 +2,11 @@
 
 > **最新状态更新（2026-07-30，Asia/Shanghai）：** 当前唯一活跃任务为 W29「五情绪 GPT-SoVITS 与
 > VTS 动作联动」。工作分支 `codex/w29-five-emotion-tts` 基于未合并的 W28 exact head
-> `b09841c13f1a733ec267027df62da6da7fc31fb6`；W29 将以 `codex/w28-avatar-runtime` 为 base 创建
-> stacked Draft PR，当前尚未提交、推送或创建 PR，不能把本地证据写成发布完成。
+> `b09841c13f1a733ec267027df62da6da7fc31fb6`；功能提交
+> [`3de8bc5`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/3de8bc599b2dde2db42460f39dd231739c9422ec)
+> 已推送，stacked Draft PR [#34](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/34)
+> 已创建。PR base/head 已核对为 `codex/w28-avatar-runtime@b09841c...` →
+> `codex/w29-five-emotion-tts@3de8bc5...`；本状态同步后的新 exact head 仍须独立通过双 OS CI。
 >
 > 当前工作树已实现严格流式结构化主情绪/focused 变体/分段红眼协议、本地 EmotionEngine 最终裁决、
 > 五声音槽和速率映射（`excited → excited_explosion@1.00`）、确定性重切、有序播放红眼、TTS 失败视觉
@@ -26,9 +29,9 @@
 > `1467 passed, 3 skipped`，aggregate branch coverage `90.55%`；Ruff、279 文件格式、strict mypy
 > 272 source 与根/网关两个 lock check 均通过。
 >
-> 正式文档终审、wheel/source-quarantine、installed-artifact、未暂存候选私有 denylist 和最终私有
-> runtime wheel 刷新/网关 smoke 已通过。当前下一步只剩精确 staged denylist、聚焦提交、push、stacked
-> Draft PR 和最新 exact-head 双 OS CI。不得合并。
+> 正式文档终审、wheel/source-quarantine、installed-artifact、候选与 staged 私有 denylist、最终私有
+> runtime wheel 刷新/网关 smoke、聚焦提交、push 和 stacked Draft PR 均已完成。当前只剩本状态提交、
+> PR 最新 exact-head 的 push/PR 双 OS `quality`/`installed-wheel` 和最终 PR 审计。不得合并。
 > 唯一保留的人工 Gate 是所有者试听五种音色、情绪差异、中文自然度与整体动作观感。详情见
 > [W29 实现记录](../implementation/w29_five_emotion_tts_vts.md)、
 > [ADR-W29](../adr/ADR-W29-private-tts-gateway-and-structured-turns.md) 和
