@@ -4,7 +4,7 @@
 >
 > 最新修订：2026-07-30 当前活跃任务为 W30「DeepSeek V4 Flash 独立接入」：以
 > `codex/w28-avatar-runtime@b09841c13f1a733ec267027df62da6da7fc31fb6` 为独立工作树基线，
-> 本地实现和完整自动化质量门已在 `local-unrecorded` 工作树通过；W30 提交、Draft PR、最终 head CI 和真实 Key
+> 核心实现 `cd5cd43` 已推送至 Draft PR #35，本地完整自动化质量门通过；该 PR 最终 head CI 和真实 Key
 > 证据仍待完成。W28 的既有记录保留为历史，W20～W27
 > 的编号和范围不变；W29 是暂停的独立工作树，不由本计划改写其范围或验收状态。
 >

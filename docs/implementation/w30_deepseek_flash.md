@@ -1,7 +1,8 @@
 # W30：DeepSeek V4 Flash 独立接入
 
-> **状态：** 本地实现和完整自动化质量门已通过（尚在 `local-unrecorded` 工作树）；待建立 W30 聚焦提交、推送、Draft PR
-> 与该最终 head 的 CI。真实 DeepSeek Key 连通性仍未验证。
+> **状态：** 核心实现已作为 [`cd5cd43`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/cd5cd4333ac0ebd6ce0f97a9e5f63e0bdf4f1fb9)
+> 推送至 [Draft PR #35](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/35)。本地完整自动化质量门已通过；
+> PR 最终 head 的 CI 和真实 DeepSeek Key 连通性仍未验证。
 >
 > **最后核验：** 2026-07-30（Asia/Shanghai）；本文创建时的基线为
 > `codex/w30-deepseek-flash@b09841c13f1a733ec267027df62da6da7fc31fb6`。
@@ -54,7 +55,7 @@
 | W30 需求、固定 Flash、Pro 延后、既有开关复用 | 已确认 | 所有者 2026-07-30 指令与 ADR-W30。 |
 | DeepSeek API 的 chat-completion 形状与多轮请求方式 | 已确认 | 官方 [Chat Completions](https://api-docs.deepseek.com/api/create-chat-completion/) 与 [多轮对话](https://api-docs.deepseek.com/guides/multi_round_chat)。 |
 | V4 仅作为本任务文本 Provider | 已确认 | 官方集成说明；不把图像支持写入 W30。 |
-| 当前实现、MockTransport、DPAPI、UI 和 prompt gate 的自动化结果 | 本地已验证（未提交） | 聚焦 `172 passed`；完整 `1379 passed, 3 skipped, 90.39%`，并通过 lint/type/lock/build/smoke/link/sensitive 扫描。尚无 exact commit 或远端 CI。 |
+| 当前实现、MockTransport、DPAPI、UI 和 prompt gate 的自动化结果 | 本地已验证、核心提交已推送 | 核心实现为 `cd5cd43`；聚焦 `172 passed`；完整 `1379 passed, 3 skipped, 90.39%`，并通过 lint/type/lock/build/smoke/link/sensitive 扫描。Draft PR #35 的最终 head CI 尚未完成。 |
 | 真实 Key、账户权限、服务可用性、计费和真实远端响应 | 未验证 | 本任务未持有或请求真实 Key，自动化不得联网。 |
 | DeepSeek 远端处理/保留/地域政策 | 外部服务边界 | 以 [隐私政策](https://cdn.deepseek.com/policies/en-US/deepseek-privacy-policy.html) 为准；本项目不能替代该政策或作零保留承诺。 |
 
@@ -74,8 +75,8 @@ uv run pytest --no-cov \
   tests/unit/ui/test_w16_management.py
 ```
 
-上述聚焦命令得到 `172 passed in 8.01s`；完整质量门结果见上一节。下一步只可暂存 W30 文件、创建聚焦提交、推送并建立 Draft PR，
-然后核验该最终 head 的远端检查。不得用 MockTransport 绿灯替代真实 API 或隐私验收。
+上述聚焦命令得到 `172 passed in 8.01s`；完整质量门结果见上一节。核心变更已按 `cd5cd43` 推送到 Draft PR #35；
+下一步是把状态记录更新推送到该 PR 并核验最终 head 的远端检查。不得用 MockTransport 绿灯替代真实 API 或隐私验收。
 
 ## 剩余风险与人工项
 
