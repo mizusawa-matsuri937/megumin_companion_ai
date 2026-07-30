@@ -4,8 +4,8 @@
 >
 > 最新修订：2026-07-30 W29 五情绪 TTS/VTS 联动的既有实现、私有安装、真实中文链路、完整质量门、
 > 功能提交和 stacked Draft PR #34 均保留；当前代码审计确认 gateway permit 泄漏这一 P0 合并阻断项，
-> 同时复核到既有 cancellation circuit 会在未结算 worker 存在时 fail closed。P0 的本地修复与自动化
-> 证据已完成，待形成新的 exact head 并完成 CI；circuit 的安全恢复需要独立生命周期设计。不得把既有 CI 或主观试听 Gate 当作这些缺陷已关闭；W20～W27 的
+> 同时复核到既有 cancellation circuit 会在未结算 worker 存在时 fail closed。P0 提交 `a790f47` 的本地与
+> push/PR CI 证据已完成（8/8）；本状态记录仍待自身 exact-head CI。circuit 的安全恢复需要独立生命周期设计。不得把既有 CI 或主观试听 Gate 当作这些缺陷已关闭；W20～W27 的
 > 既有编号和范围不变
 >
 > 代码基线：`agent/windows-development-baseline` / `d56cfbd`
@@ -827,12 +827,12 @@ flowchart LR
 > [`implementation/w29_five_emotion_tts_vts.md`](./implementation/w29_five_emotion_tts_vts.md) 和
 > [`adr/ADR-W29-private-tts-gateway-and-structured-turns.md`](./adr/ADR-W29-private-tts-gateway-and-structured-turns.md)。
 
-> **P0 稳定性修复（2026-07-30，本地验证完成）：** 应用 gateway client 在完成 worker callback 中漏掉
+> **P0 稳定性修复（2026-07-30，代码 head CI 已通过）：** 应用 gateway client 在完成 worker callback 中漏掉
 > `BoundedSemaphore` permit 归还，已确认为 #34 合并阻断项。现有“未结算取消 worker 时拒绝所有新请求”是 W08
 > 明确的 fail-closed circuit，而非可直接删除的偶然代码；在单 owner、三请求 admission 与不可中止推理线程下，
 > 删除它会把故障改为队列堆积/429，不能称为恢复。P0 必须证明连续成功合成不会耗尽容量并保留取消/清理语义；
-> 这些本地验证已通过，当前仍待 P0 的聚焦提交、push 与新 exact-head CI。完整 WAV 的首句延迟、流式 PCM 和
-> 卡死 gateway 的 restart/self-healing 需后续架构/安全设计。
+> 本地验证与 P0 提交 `a790f47` 的 push/PR 双 workflow 8/8 均已通过；当前状态记录仍待自身 exact-head CI。
+> 完整 WAV 的首句延迟、流式 PCM 和卡死 gateway 的 restart/self-healing 需后续架构/安全设计。
 
 - **责任：AI-R；声音/角色资产和主观自然度 H。依赖：W28；风险：P1-03、P1-04、P1-05、P1-07、
   P1-14、P2-04、P2-06。**
@@ -1158,9 +1158,9 @@ flowchart LR
 3. W29 公共实现、私有安装、五槽校准、真实链路、正式文档、wheel/source quarantine、staged 私有
    denylist、最终私有 runtime smoke、功能提交、push 和 stacked Draft PR #34 已完成；这不覆盖随后
    确认的 P0 gateway permit/取消缺陷。
-4. 先修复 permit 生命周期并增加连续多轮回归；保留 W08 cancellation circuit，随后为卡死 inference 的
-   bounded recovery 单独设计生命周期 owner。再在新 exact head 运行质量门并重审
-   PR 的 base/head/diff/review/conversation/mergeability/隐私。
+4. P0 `a790f47` 已修复 permit 生命周期、通过连续多轮回归与代码 head 的新质量门；保留 W08 cancellation
+   circuit，并为卡死 inference 的 bounded recovery 单独设计生命周期 owner。现在形成状态记录、等待其
+   exact-head CI，再重审 PR 的 base/head/diff/review/conversation/mergeability/隐私。
 5. 不合并。所有者试听五种音色、情绪差异、中文自然度和整体动作观感前，不把主观 Gate 写成通过；也不得
    把完整 WAV 延迟或未来 streaming/restart 设计误写成 P0 已解决。
 6. W20～W27 的编号、范围和依赖保持；W24 在当前顺序中依赖 W29。

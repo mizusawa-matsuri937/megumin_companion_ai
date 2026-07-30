@@ -1,8 +1,8 @@
 # W29：五情绪 GPT-SoVITS 与 VTS 动作联动
 
 > 状态：公共实现、私有运行时、真实 VTS/MediaWorker 链路、功能提交和 stacked Draft PR #34 已完成。
-> 2026-07-30 发现确定性的 gateway permit 泄漏后，P0 修复及本地质量门已完成；待形成新的 exact head、
-> push/PR CI 和终审。PR 不合并，所有者主观试听 Gate 保留。
+> 2026-07-30 发现确定性的 gateway permit 泄漏后，P0 提交 `a790f47` 及其 push/PR CI 8/8 已完成；
+> 此状态记录待形成新 exact head 并终审。PR 不合并，所有者主观试听 Gate 保留。
 > 最后核验：2026-07-30（Asia/Shanghai）
 > 工作分支：`codex/w29-five-emotion-tts`
 > stacked base：`codex/w28-avatar-runtime@b09841c13f1a733ec267027df62da6da7fc31fb6`
@@ -59,6 +59,11 @@ uv lock --check
 uv lock --check --project deploy/tts_gateway
 → 全部通过
 ```
+
+- P0 聚焦提交 [`a790f47`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/a790f478426c876d366965afe9404d3d69af906b)
+  已推送；其 [push workflow](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/30516799937) 与
+  [PR workflow](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/30516802283) 的 macOS/Windows
+  `quality` 和 `installed-wheel` 共 8 项均成功。该实现记录的状态提交仍须以自己的 exact head 重跑 CI。
 
 - `_synthesis_cancellations` circuit 未在本修复中删除：它是 W08 明确的 fail-closed worker ownership，不是已证明的
   permit 泄漏根因。当前单 owner gateway 的阻塞推理不能由协程真正中止；直接允许更多新请求只会填满 admission

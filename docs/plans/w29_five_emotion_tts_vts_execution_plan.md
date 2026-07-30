@@ -1,8 +1,9 @@
 # W29：五情绪 GPT-SoVITS 与 VTS 动作联动执行计划
 
 > 状态：公共实现、私有安装、真实链路、本地质量门、功能提交、stacked Draft PR #34 和既有
-> exact-head CI 已完成；2026-07-30 代码审计确认 P0 gateway 稳定性缺陷，修复与其自动化证据成为新的
-> 合并阻断项。所有者主观试听 Gate 保留
+> exact-head CI 已完成；2026-07-30 代码审计确认的 P0 gateway 稳定性缺陷已由
+> `a790f47` 修复，其代码 head 的 push/PR CI 8/8 成功；本状态记录仍须接受自身 exact-head CI。所有者
+> 主观试听 Gate 保留
 > 最后核验：2026-07-30（Asia/Shanghai）
 
 ## 目标
@@ -75,7 +76,7 @@
 
 本 CI 关闭记录本身仍按同一规则接受独立检查；最终报告必须重新读取 PR live latest head/checks。
 
-### F. P0 gateway 稳定性修复（本地验证完成，仍阻止 #34 合并）
+### F. P0 gateway 稳定性修复（代码 head CI 已通过；状态记录待复核）
 
 - [x] 将 synthesis permit 的归还绑定到每一个已登记 worker 的唯一终态；不得因成功、失败、取消、关闭或
   task 在首次调度前取消而泄漏或重复归还 permit。
@@ -83,7 +84,12 @@
   断言，避免修复 permit 时破坏 W08 的 fail-closed worker ownership。
 - [x] 本地聚焦与完整自动化质量门通过：`1468 passed, 3 skipped`，coverage `90.52%`；Ruff、format、
   strict mypy 与两个 lock check 通过。
-- [ ] 仅暂存本任务文件、形成 P0 聚焦提交、推送并以新的 exact head 重做 Draft PR 检查审计。
+- [x] 仅暂存本任务文件、形成并推送 P0 聚焦提交
+  [`a790f47`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/a790f478426c876d366965afe9404d3d69af906b)；其
+  [push](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/30516799937) 与
+  [PR](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/30516802283) workflow 的
+  macOS/Windows `quality` 和 `installed-wheel` 共 8 项均成功。
+- [ ] 形成此状态记录的聚焦提交，等待其自身 exact-head CI，并重新审计 Draft PR 的最新 base/head/diff/checks。
 
 下列属于后续优化，**不**由本 P0 修复冒充完成：provider 并发度与 pipeline 队列容量分离、首段优先、
 真正的流式 PCM 播放、卡死 inference 的 gateway restart/self-healing。当前 cancellation circuit 会在

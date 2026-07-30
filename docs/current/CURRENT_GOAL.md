@@ -1,8 +1,8 @@
 # 当前产品目标
 
-> **最新状态更新（2026-07-30，Asia/Shanghai）：** W29/#34 进入 P0 稳定性修复，**不得合并**。当前
+> **最新状态更新（2026-07-30，Asia/Shanghai）：** W29/#34 的 P0 稳定性修复代码已通过 CI，**不得合并**。当前
 > `codex/w29-five-emotion-tts` head 为
-> [`aae8631`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/aae8631c5491784b9b571c9d55c98c45344ddff9)；
+> [`a790f47`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/a790f478426c876d366965afe9404d3d69af906b)；
 > #32、#33、#34 仍为 stacked、open Draft。当前代码审计已确认一个确定性的合并阻断缺陷，并复核到一项
 > 需后续设计的取消恢复风险：
 >
@@ -16,9 +16,12 @@
 > 原有 cancellation circuit、临时 WAV 清理、generation 迟到事件拒绝和关闭语义不回归。下一阶段才为
 > stuck inference 设计有界恢复：它必须有明确的 gateway 生命周期 owner、restart/readiness/close 竞争和
 > 一次性重试边界，不能仅删除 circuit 而把旧 GPU 工作堆进网关 admission 队列。
-> 本地 P0 实现现已完成：done callback 以 membership guard 唯一归还 permit，连续成功与取消后恢复
-> 回归均已加入。最新完整自动化为 `1468 passed, 3 skipped`、coverage `90.52%`，Ruff、format、strict mypy
-> 与两个 lock check 均通过；这些是当前未提交工作树的本地证据，尚不能替代新 commit/PR exact-head CI。
+> P0 提交 [`a790f47`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/a790f478426c876d366965afe9404d3d69af906b)
+> 已推送：done callback 以 membership guard 唯一归还 permit，连续成功与取消后恢复回归均已加入。完整本地
+> 自动化为 `1468 passed, 3 skipped`、coverage `90.52%`，Ruff、format、strict mypy 与两个 lock check 均通过；
+> 该代码 head 的 [push workflow](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/30516799937)
+> 与 [PR workflow](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/30516802283) 均为
+> macOS/Windows `quality` 与 `installed-wheel` 8/8 成功。此状态记录形成的新 exact head 仍须独立 CI 复核。
 > 已确认的边界：legacy Mock 文本先显示是既有产品行为，不等同于故障；网关完整 WAV 后才播放造成的首句延迟
 > 也尚未修复。流式 PCM、首段优先、独立 provider 并发度、gateway restart/self-healing 属于后续阶段，
 > 其中 restart/streaming 会改变现有 launcher/私有网关边界，必须先单独设计并更新 ADR、数据流与威胁模型。
