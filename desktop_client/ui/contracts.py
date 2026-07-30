@@ -300,6 +300,7 @@ class SettingsSnapshot:
     llm_secret_configured: bool
     vts_secret_configured: bool
     settings_schema_upgrade_required: bool
+    deepseek_flash_configured: bool = False
     stt_runtime: SttRuntimeStatus = field(
         default_factory=lambda: SttRuntimeStatus(SttRuntimeState.missing)
     )
@@ -321,6 +322,42 @@ class SettingsSaveCommand:
     command_id: str = field(default_factory=lambda: prefixed_id("cmd"))
     protocol_version: Literal[1] = field(default=BRIDGE_PROTOCOL_VERSION, init=False)
     type: Literal["settings.save"] = field(default="settings.save", init=False)
+
+    def __post_init__(self) -> None:
+        _validate_command_id(self.command_id)
+
+
+@dataclass(frozen=True, slots=True)
+class DeepSeekFlashConfigureCommand:
+    """Save one purpose-bound DeepSeek key and activate the fixed Flash profile."""
+
+    value: str = field(repr=False)
+    command_id: str = field(default_factory=lambda: prefixed_id("cmd"))
+    protocol_version: Literal[1] = field(default=BRIDGE_PROTOCOL_VERSION, init=False)
+    type: Literal["deepseek.flash.configure"] = field(
+        default="deepseek.flash.configure",
+        init=False,
+    )
+
+    def __post_init__(self) -> None:
+        _validate_command_id(self.command_id)
+        _validate_bounded_text(
+            self.value,
+            field_name="DeepSeek API key",
+            maximum=MAX_SECRET_CHARS,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class DeepSeekFlashDisableCommand:
+    """Disable the DeepSeek profile before revoking its isolated credential."""
+
+    command_id: str = field(default_factory=lambda: prefixed_id("cmd"))
+    protocol_version: Literal[1] = field(default=BRIDGE_PROTOCOL_VERSION, init=False)
+    type: Literal["deepseek.flash.disable"] = field(
+        default="deepseek.flash.disable",
+        init=False,
+    )
 
     def __post_init__(self) -> None:
         _validate_command_id(self.command_id)
@@ -517,6 +554,8 @@ class ManagementDebugCommand:
 ManagementCommand: TypeAlias = (
     ManagementRefreshCommand
     | SettingsSaveCommand
+    | DeepSeekFlashConfigureCommand
+    | DeepSeekFlashDisableCommand
     | SttInstallCommand
     | AudioOutputDevicesCommand
     | ProviderPreflightCommand

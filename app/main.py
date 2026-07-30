@@ -41,9 +41,12 @@ from app.health import (
 )
 from app.memory.analyzer import LLMMemoryCandidateAnalyzer
 from app.memory.runtime import MemoryRuntime, SafeModeMemoryRuntime, create_memory_runtime
+from app.perception.guards import TextRedactor
+from app.perception.prompt_context import ApprovedVisualSummary, PerceptionPromptContextSource
 from app.proactive import ProactivePolicy, ProactiveRuntime
+from app.prompts import CompositePromptContextSource
 from app.runtime_storage import prepare_runtime_storage
-from app.schemas import FeatureName, utc_now
+from app.schemas import FeatureName, PerceptionContext, utc_now
 from app.storage import SQLiteIdempotencyStore
 
 
@@ -116,9 +119,12 @@ def create_app(
     dev_api: DevAPIConfig | None = None,
     health_providers: Sequence[HealthProvider] = (),
     safe_mode: bool = False,
+    allow_deepseek_env_fallback: bool = False,
 ) -> FastAPI:
     resolved_settings = settings or load_settings()
     resolved_settings.validate_runtime_limits()
+    if allow_deepseek_env_fallback and dev_api is None:
+        raise ValueError("DEEPSEEK_API_KEY 回退仅可用于显式 --dev-api 运行面。")
     if dev_api is not None:
         dev_api = apply_hard_limits(dev_api, resolved_settings.limits)
     dev_api_security = DevAPISecurity(dev_api) if dev_api is not None else None
@@ -143,6 +149,9 @@ def create_app(
         app.state.idempotency_store = None
         app.state.avatar_runtime = None
         app.state.vts_event_sink = None
+        app.state.perception_context_source = None
+        app.state.publish_perception = None
+        app.state.publish_approved_visual_summary = None
         app.state.temp_asset_registry = runtime_storage.temp_registry
         standalone_analyzer_provider: LLMProvider | None = None
         try:
@@ -150,6 +159,10 @@ def create_app(
             if resolved_settings.storage.enabled:
                 analyzer = None
                 if resolved_settings.memory.candidate_analysis_enabled:
+                    if resolved_settings.llm.provider.strip().casefold() == "deepseek":
+                        raise RuntimeError(
+                            "DeepSeek Flash 不能用于长期记忆候选写入；请先关闭候选分析。"
+                        )
                     standalone_analyzer_provider = build_llm_provider(resolved_settings)
                     if standalone_analyzer_provider is None:
                         raise RuntimeError("记忆候选分析已启用，但没有配置可用的 LLM provider。")
@@ -208,8 +221,40 @@ def create_app(
                 else None
             )
             app.state.proactive_runtime = proactive_runtime
+            perception_context_source = (
+                PerceptionPromptContextSource(
+                    memory_runtime.features,
+                    max_age=timedelta(
+                        seconds=resolved_settings.perception.prompt_context_max_age_seconds
+                    ),
+                    redactor=TextRedactor(max_chars=resolved_settings.perception.max_summary_chars),
+                )
+                if isinstance(memory_runtime, MemoryRuntime)
+                else None
+            )
+            app.state.perception_context_source = perception_context_source
             if isinstance(memory_runtime, MemoryRuntime) and proactive_runtime is not None:
                 memory_runtime.add_feature_transition_handler(proactive_runtime.apply_feature_state)
+            if isinstance(memory_runtime, MemoryRuntime) and perception_context_source is not None:
+                memory_runtime.add_feature_transition_handler(
+                    perception_context_source.apply_feature_state
+                )
+
+                async def publish_perception(context: PerceptionContext | None) -> None:
+                    """Keep raw perception out of prompts while preserving proactive input."""
+
+                    if proactive_runtime is not None:
+                        await proactive_runtime.update_perception(context)
+
+                async def publish_approved_visual_summary(
+                    approved: ApprovedVisualSummary | None,
+                ) -> None:
+                    """Accept only the future privacy-bound prompt capability."""
+
+                    perception_context_source.publish_approved(approved)
+
+                app.state.publish_perception = publish_perception
+                app.state.publish_approved_visual_summary = publish_approved_visual_summary
             avatar_runtime = build_avatar_runtime(resolved_settings)
             app.state.avatar_runtime = avatar_runtime
             if avatar_runtime is not None:
@@ -229,14 +274,19 @@ def create_app(
                 build_dialogue_pipeline(
                     resolved_settings,
                     prompt_context_source=(
-                        memory_runtime.context_source
+                        CompositePromptContextSource(
+                            memory_runtime.context_source,
+                            perception_context_source,
+                        )
                         if isinstance(memory_runtime, MemoryRuntime)
+                        and perception_context_source is not None
                         else None
                     ),
                     temp_registry=runtime_storage.temp_registry,
                     mouth_envelope_listener=(
                         avatar_runtime.offer_mouth_envelope if avatar_runtime is not None else None
                     ),
+                    allow_deepseek_env_fallback=allow_deepseek_env_fallback,
                 ),
                 observers=observers,
                 event_sinks=event_sinks,

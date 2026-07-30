@@ -1,13 +1,16 @@
 # Windows Gate W0 威胁模型
 
-> 版本：2026-07-29
+> 版本：2026-07-30
 > 状态：项目所有者自审通过；没有独立人工安全/隐私 reviewer
 > 范围：Windows 11 x64、标准用户、单交互会话、私人使用
+> W30 注记：DeepSeek Flash 的固定文本出口、专用 DPAPI 密钥和提示注入边界已纳入本模型，且本地完整自动化质量门已通过；
+> W30 的提交、Draft PR、最终 head CI、真实 Key 和远端服务行为仍须独立核验。
 
 ## 保护目标
 
 - 用户明确发送的对话、近期历史和长期记忆。
 - API key、VTS token、DPAPI 密文和 provider 身份。
+- DeepSeek 专用 key-id/purpose、固定 endpoint/model/thinking 组合，以及不会把图像、multipart content 或 tool call 送出进程的约束。
 - 麦克风 PCM/WAV、指定窗口截图、OCR 文本和脱敏前图像。
 - SQLite/WAL、配置、日志、缓存、temp、迁移 backup。
 - turn 幂等、计费、播放/VTS generation 和 feature 实际状态。
@@ -39,8 +42,8 @@
 | TM-W00-06 | native thread 卡死且继续持有敏感数据 | worker 进程、Job Object、hard deadline、kill、scavenger；W17 播放 wire 仅允许批准根相对引用；W18 PTT PCM/WAV/JSON 仅在 MediaWorker，有界 ring 不逐帧排入 parent loop，whisper timeout 走 terminate→grace→kill | W12 hanging child/tree tests；W17 fake descriptor/device/cancel/deadline tests；W18 ring/timeout/cancel/cleanup、Windows synthetic whisper child-tree tests；真实驱动体验另列设备 Gate | 强杀不是物理内存/磁盘擦除证明；原生 driver abort 和真实录音指示受设备差异影响 |
 | TM-W00-07 | 截图捕获错误窗口或包含敏感内容 | 指定窗口 recheck、Guard、锁屏/权限 fail closed、禁止全屏 fallback | 多显示器/DPI/UWP/管理员/RDP 人工 Gate | OCR/Guard false negative 不可能证明为零 |
 | TM-W00-08 | 云端收到未经脱敏截图 | cloud 默认关闭；显式启用；全 OCR bbox 遮挡；最终本地检查；未知即跳过 | sentinel、出口审计、真实敏感窗口 Gate | 本地检测 false negative 和 provider 保留策略 |
-| TM-W00-09 | 屏幕/云返回提示注入 | 标记 untrusted；不当用户命令；不产生长期记忆候选 | prompt injection tests | 模型仍可能受内容影响，需要最小权限和 UI 解释 |
-| TM-W00-10 | secret 泄露到日志/fixture/artifact | DPAPI、key-aware redaction、allowlist 诊断、sentinel scan | artifact/log/export scan | 新字段可能绕过脱敏，需 schema review |
+| TM-W00-09 | 屏幕/云返回或 W30 脱敏视觉摘要中的提示注入 | 标记 `untrusted`；不当用户命令；不产生长期记忆候选；W30 只在视觉开关、单次同意、新鲜、非敏感同时成立时注入摘要 | prompt injection、gate/freshness/sensitive、candidate-analysis-reject tests | 模型仍可能受内容影响，需要最小权限和 UI 解释 |
+| TM-W00-10 | secret 泄露到日志/fixture/artifact | DPAPI、key-aware redaction、allowlist 诊断、sentinel scan；W30 DeepSeek key 使用独立 purpose-bound 槽，不写 YAML/通用槽 | artifact/log/export scan、专用密钥 configure/revoke 与异常/snapshot sentinel tests | 新字段可能绕过脱敏，需 schema review |
 | TM-W00-11 | 半迁移、旧版本写新 DB、backup 丢失 | checkpoint/backup、staging verify、原子 switch、兼容矩阵 | 每阶段 fault injection | 文件锁/杀毒软件会延迟恢复 |
 | TM-W00-12 | 卸载删除过多或保留 secret | 明确选择；默认保留非秘密数据、删除/revoke secret；pending 报告 | fresh/upgrade/uninstall VM | 用户可能误解保留内容，需清晰文案 |
 | TM-W00-13 | 崩溃重启造成 crash loop/后台录音捕获 | crash marker、budget/quarantine、feature actual state reconcile；W18 只有显式 PTT start 才打开输入设备，默认不持续监听 | repeated crash/restart tests；W18 start/cancel/watchdog/worker cleanup tests | 设备/驱动特定问题、真实锁屏和系统级 hotkey 仍需真实环境/后续 adapter |
@@ -49,6 +52,7 @@
 | TM-W00-16 | 受管 STT 下载被篡改、ZIP 越界或恶意模型导致 CLI 崩溃 | 固定 HTTPS URL/版本/大小/hash；有限重定向、staging、拒绝 Zip Slip/link/reparse point、原子切换；MediaWorker 首次使用前全量 CLI/model SHA-256，失败不启动 CLI；Job Object 约束子树 | 合成 archive/hash/timeout/cancel/repair、受管/手工路径、worker integrity-fail-before-CLI、wheel asset denylist；真实模型/内存另列设备 Gate | 当前用户完全受控、手工非受管模型和 upstream parser 缺陷不在此控制的保证内；不得宣称上游 issue 已修复 |
 | TM-W00-17 | 恶意/脆弱 GPT-SoVITS 服务或模型处理导致远端命令执行、数据泄露或错误响应；预检被误写成安全认证 | 应用不安装/打包/启动/升级服务，不调用有副作用的 `/set_refer_audio`；只连接用户显式配置且通过 W08 endpoint/TLS policy 的服务；预检只发送固定短语和已保存 preset/reference，响应受 deadline/bytes/WAV 校验且不播放并清理 | W19 fake API v2 route/synthesis、错误 body/path sentinel、deadline/cleanup 与设置/事件边界测试；真实服务仅做人类体验 Gate | [GHSL-2025-045～048](https://securitylab.github.com/advisories/GHSL-2025-045_GHSL-2025-048_RVC-Boss_GPT-SoVITS/) 披露命令注入，[GHSL-2025-049～053](https://securitylab.github.com/advisories/GHSL-2025-049_GHSL-2025-053_RVC-Boss_GPT-SoVITS/) 披露不安全反序列化/RCE；两组测试 `20250228v3`。服务及模型资产安全不由本应用证明，用户配置的 reference/prompt 会到达该服务 |
 | TM-W00-18 | 多个 VTS writer、迟到 mouth progress 或错误红眼所有权导致旧 turn 重放、取消后重新张嘴、姿态残留或关闭人工状态；progress 泄漏 PCM/路径 | 单写者 AvatarRuntime；urgent bounded queue + latest frame；turn/playback/VTS/model generation；strict finite scalar `job.progress`；全部 terminal path 归零；release/Neutral/cancel 生命周期；`off/manual/system` Expression 所有权；状态不可验证即禁用自动层 | W28 fake VTS/event malformed、slow writer、fake clock/seed、20k frame、10k coalescing、progress flood/stale/terminal、PCM RMS 与 Avatar failure isolation；真实 VTS lifecycle/reconnect/manual-system 以及真实输出 silence/ramp/cancel/drain | VTS/driver/display latency 和主观自然度仍需真实体验；真实中文 GPT-SoVITS 当前未配置；私有配置 exact-byte guard 有等价 metadata 差异，只能声明 semantic 未改写 |
+| TM-W00-19 | DeepSeek 路由/模型/thinking 漂移、通用密钥混用、图像/tool call/原始感知数据出站、候选写入误用 Flash、或将外部服务承诺为本地保证 | 专用固定 `DeepSeekFlashLLMProvider`；固定 HTTPS endpoint/Flash/disabled thinking；请求 image 或 non-string multipart content 与任一 response choice 的 tool call 本地拒绝；HTTP/SSE/JSON 的 `insufficient_system_resource` 受控为 retryable unavailable；专用 purpose-bound DPAPI 槽的 post-replace 回滚和 write-only UI；桌面不读环境 key；候选分析开启即拒绝配置/组合；视觉 prompt 只接收无 ID 的有限语义标签并拒绝自由文本/URI/path | MockTransport 覆盖固定 header/payload、SSE/JSON/finish/error；fake DPAPI configure/revoke/post-replace rollback 与 sentinel scan；原始 `PerceptionContext`/URL/OCR/title/path 自由文本、视觉 gate/budget/prompt-injection 测试；真实 Key 仅在用户明确触发的非敏感检查中使用 | 本地不能证明账号权限、服务可用性、费用、限流、远端停止、地域、保留或政策；任何用户允许的文本上下文仍会离开设备 |
 
 ## 反方审查清单
 
@@ -79,3 +83,8 @@
 7. **RR-W00-07 GPT-SoVITS 上游与服务边界：** 官方项目仍由用户在应用包外自行部署和管理。W19 的成功 preflight
    只证明一次 API/preset/reference 组合返回了合规 WAV，不证明服务版本没有已知/未知漏洞、模型可信、远端不会保留输入，
    也不提供独立许可证/安全审计。公开发布或改变服务管理边界前必须重新评估上游版本、advisory、依赖和资产许可。
+8. **RR-W00-08 DeepSeek 远端文本处理与政策：** 启用 W30 后，当前用户文字及用户已打开的历史、长期记忆检索、
+   合规视觉摘要文本可能到达 DeepSeek。固定模型、TLS、DPAPI 与本地拒绝图像并不能控制远端账号、地域、保留、
+   模型改进、计费或政策变化；项目不承诺零保留或不用于训练。以
+   [DeepSeek 隐私政策](https://cdn.deepseek.com/policies/en-US/deepseek-privacy-policy.html)为准，私人使用由所有者
+   显式知情选择；公开分发或改变发送字段前必须重新进行隐私、法律、许可与服务条款审查。

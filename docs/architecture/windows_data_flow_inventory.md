@@ -1,12 +1,13 @@
 # Windows 数据流与保留清单
 
-> 版本：2026-07-29
+> 版本：2026-07-30
 > 状态：Gate W0 已批准的目标契约；W17/W18 的 MediaWorker 音频路径已实现并验证，W19 的 provider
 > 配置与显式联合 preflight 已在本地工作树实现并完成聚焦 fake/headless 验证。W28 的单写者
 > AvatarRuntime、标量 mouth progress 和真实输出 drain 已在本地工作树实现并完成对应自动/实机验证。受管中文 STT
 > runtime 已由 [`224e06f`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/224e06f9cbb1d2ab0cc2260fb244b1f74cd7dfbc)
 > 加入并完成该 code head 的 CI；W28 完整质量门、Draft PR、真实中文 TTS 和主观自然度 Gate 仍未完成；
-> 其他行仍不代表代码已经实现。
+> 其他行仍不代表代码已经实现。W30 已在 `local-unrecorded` 工作树完成 DeepSeek Flash 的文本出口、专用密钥与
+> 脱敏摘要组合实现，并通过完整本地自动化质量门；W30 提交、Draft PR、最终 head CI 和真实 Key 验证尚未形成证据。
 > 关联：[`../adr/README.md`](../adr/README.md)、[`../decisions/w00_owner_decisions.md`](../decisions/w00_owner_decisions.md)、
 > [`../decisions/w18_managed_chinese_stt_runtime.md`](../decisions/w18_managed_chinese_stt_runtime.md)
 
@@ -21,7 +22,7 @@ flowchart LR
     B <-->|"继承匿名 pipe + typed JSON"| M["MediaWorker / Job Object"]
     B <-->|"继承匿名 pipe + typed JSON"| P["PerceptionWorker / Job Object"]
     B <-->|"仅显式确认：固定 HTTPS STT 资产"| R["GitHub / Hugging Face"]
-    B -->|"HTTPS/WSS"| E["外部 LLM/TTS/VTS"]
+    B -->|"HTTPS/WSS"| E["外部 LLM/TTS/VTS（含固定文本 DeepSeek）"]
     P -->|"显式 opt-in + 脱敏图像 + TLS"| C["云视觉 provider"]
     B --> S[("LocalAppData state")]
 ```
@@ -29,6 +30,10 @@ flowchart LR
 用户输入、dev API、helper protocol、外部 provider 和屏幕内容都属于不可信边界。截图/PCM 原始数据留在 worker；云视觉
 是独立网络出口，不因 vision 本地启用而自动启用。STT runtime 下载也是单独网络边界：仅用户确认安装/修复时访问固定
 GitHub/Hugging Face HTTPS URL，绝不发送录音、转写、设备名或用户路径。
+
+DeepSeek 是与云视觉分离的文本 HTTPS 出口：只在用户启用专用 provider 后，才可能发送当前用户文字和既有开关
+已允许的历史/长期记忆检索/有限语义标签生成的摘要文本。它不接收截图、图像 URL、窗口标题、OCR 原文、bbox、路径或 observation ID；
+关闭视觉或单次不同意时不附加摘要。远端对文本的处理、保留和地域仍是外部服务边界，不能由本地 TLS 或 DPAPI 消除。
 
 ## W19 provider preflight 数据流（2026-07-25）
 
@@ -65,6 +70,45 @@ sequenceDiagram
   GPT-SoVITS endpoint。`service_resource` 的可见性只能由该服务本次 `/tts` 结果证明。
 - 预检 WAV 使用既有 TTS temp owner，cache 关闭，不进入 MediaWorker/playback；成功、失败和 close 都走既有清理。
 - VTS token 仍只在 current-user DPAPI store 与 VTS 官方认证请求之间流动；设置页和 preflight snapshot 不回显。
+
+## W30 DeepSeek Flash 文本出站数据流（2026-07-30）
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant Q as Qt
+    participant B as BackendThread
+    participant D as DeepSeek
+
+    U->>Q: 文本 + 本轮 screen_context_allowed
+    Q->>B: typed UserMessage
+    B->>B: 既有 history/memory feature 与 token budget
+    alt vision 已启用、单次同意、摘要新鲜且非敏感
+        B->>B: 附加 ApprovedVisualSummary 的固定语义标签文本（untrusted, non-persistable, no ID）
+    else 任一条件不满足或无可用摘要
+        B->>B: 不附加视觉上下文
+    end
+    alt candidate analysis 已启用
+        B-->>Q: 拒绝 DeepSeek 启动/配置；不发请求
+    else 可发送文本回合
+        B->>D: HTTPS POST /chat/completions；Bearer + 固定 Flash + thinking disabled
+        D-->>B: 有界 SSE/JSON 文本或稳定错误
+        B-->>Q: 既有 turn event / reason code
+    end
+```
+
+W30 的以下事实是接口契约，不是对真实服务或视觉生产链路的验收声明：
+
+- endpoint 固定为 `https://api.deepseek.com/chat/completions`，模型固定为 `deepseek-v4-flash`，请求带
+  `thinking: {"type":"disabled"}`；用户不能以通用 Provider 设置覆盖这些字段。
+- Provider 在请求离开进程前拒绝 image content 或 non-string multipart content，响应 tool call 也拒绝；
+  `insufficient_system_resource` 映射为可重试的 unavailable。原始截图、脱敏图像、image URL、窗口标题、OCR 原文、
+  bbox、屏幕路径和未脱敏摘要均不在该序列中。
+- `PerceptionPromptContextSource` 只能接收 privacy-reviewed 的有限标签 `ApprovedVisualSummary`，并在本地映射为固定
+  文本后再次脱敏；没有自由文本入口，因此泛用 `PerceptionContext`、OCR/title/path 文本及其 observation ID 不能进入
+  prompt。敏感、过期、视觉关闭、无单次同意或生成文本含 URL/路径会清除/省略该上下文。它不捕获窗口、不运行 OCR，也不保存摘要。
+- 近期历史和长期记忆**检索**继续使用原有 feature/预算；W30 不开启它们，也不允许 Flash 走长期记忆候选分析或写入。
+- 响应和错误仍经过既有有界流式/JSON 路径；本地取消只能关闭本地 HTTP 请求，不能保证远端已停止处理。
 
 ## W28 实际播放口型与 Avatar 数据流（2026-07-29）
 
@@ -124,10 +168,12 @@ sequenceDiagram
 | 原始指定窗口截图 | PerceptionWorker | 不返回主进程 | 默认内存 only；无普通 temp | 禁止直接上传 | 本地处理结束立即 wipe；worker kill 后残留扫描 | 不记图像、标题或路径 |
 | OCR 文本/bbox | PerceptionWorker | 只返回必要的脱敏摘要；bbox 用于本地遮挡 | 默认不持久化 | 原始 OCR 禁止外发；只用于生成脱敏图像 | 单帧生命周期后 wipe | 不记 OCR 文本 |
 | 脱敏窗口图像 | PerceptionWorker | 默认不返回主进程；由受控 cloud adapter 发送 | 默认不持久化 | 仅用户显式启用云视觉、全部本地检查成功时通过 TLS 上传 | 请求完成/取消后 wipe；禁止缓存 | 只记 provider、bytes、latency、reason code，不记内容 |
-| PerceptionContext | PerceptionWorker/Backend | 脱敏摘要进入 prompt，标记 untrusted | 默认不单独持久化 | 可作为本轮 LLM 上下文 | turn 结束释放；不得生成长期记忆候选 | 不记摘要正文 |
+| PerceptionContext / ApprovedVisualSummary | PerceptionWorker/Backend | 泛用 `PerceptionContext` 不进入 W30 prompt；仅有限非敏感语义标签可映射为固定文本、二次脱敏后进入，标记 untrusted | 默认不单独持久化；内存中至多保留一条最新摘要至新鲜期 | 仅作为本轮文本 LLM 上下文；**禁止**原图/image URL/OCR 原文/title/bbox/path/observation ID/自由文本出口 | 敏感、过期、视觉关闭、URI/path 或失效代际时清除；不得生成长期记忆候选 | 不记摘要正文 |
 | 近期历史 | MemoryRuntime/SQLite | backend 内部 | `state/companion.sqlite3` + WAL | 用户显式 export；作为 LLM 上下文 | 默认 7 天、clear/retention/checkpoint | 不记录记录内容 |
 | 长期记忆 | MemoryService/SQLite | backend 内部 | 同一 DB，显式 opt-in | 用户显式 export；作为 LLM 上下文 | confirm/update/delete/clear；凭据永不成为候选 | 只记记录 id/操作/状态 |
-| API key/VTS token | Secret store | provider adapter 只在使用时读取 | DPAPI current-user 密文文件 | 仅发给对应 endpoint/协议 | replace/revoke/reset；普通卸载默认删除 | 不记录值、密文、header 或路径 |
+| 通用 LLM API key/VTS token | Secret store | 对应 provider adapter 只在使用时读取 | DPAPI current-user 密文文件 | 仅发给对应 endpoint/协议 | replace/revoke/reset；普通卸载默认删除 | 不记录值、密文、header 或路径 |
+| DeepSeek API key（W30） | 专用 Secret store | 仅 `DeepSeekFlashLLMProvider` 读取；桌面配置命令 write-only | 独立、purpose-bound 的 DPAPI current-user 密文槽；不写 YAML 或通用 LLM 槽 | 仅作为 Bearer 发至固定 `https://api.deepseek.com/chat/completions` | 停用时先切 `llm.provider=none` 并 reload，再 revoke；撤销失败仍保持远端 provider 禁用 | 不记录值、密文、header、文件路径或请求正文 |
+| DeepSeek Chat 请求（W30） | Backend/固定 Flash provider | 仅进程内组合用户文字与已获现有开关允许的历史、记忆检索、无 ID 的批准有限语义标签摘要 | 不新增请求正文持久化；既有历史/记忆各自按其行的保留规则 | 仅 HTTPS 的固定 DeepSeek chat endpoint；文本模型，不含图像、multipart content 或 tool call | 响应/取消后释放本地请求对象；远端处理/保留由 DeepSeek 外部政策决定 | 只记稳定状态、provider/model、长度/延迟；不记正文、摘要或 header |
 | 用户设置 | Config owner | UI command → config service | `config/settings.yaml`，带 schema version；W19 preset/reference/prompt 属于用户私密配置但不是 secret | 无，除非对应 provider 请求需要最小配置 | 升级迁移/卸载选择 | 只记 schema/version/字段类别；不记 reference/prompt/完整路径 |
 | 日志/健康/诊断 | 单 writer/exporter | allowlist event | `logs`，10 MiB × 5 且最多 14 天 | 用户显式导出脱敏诊断包 | rotation + retention | 禁止正文、截图、OCR、音频、secret、完整路径 |
 | TTS 临时 WAV | TTS owner；正常播放期间由 MediaWorker 独占消费；W19 preflight WAV 不播放 | 正常播放只提交批准根下的 `ResourceReference`；preflight WAV 不跨入 helper；wire 不含绝对路径、PCM、WAV body 或 native device index | `temp/audio`；可选 `cache/audio` 默认关闭，preflight 强制关闭 cache | 正常路径仅到本地 MediaWorker playback；preflight 无播放出口 | 取消/消费后 release；preflight 成功立即 discard；W12 terminal cleanup 与 scavenger；受 W07 在途音频预算约束 | 只记 job id、bytes、duration、稳定 error/notice code |
@@ -171,3 +217,5 @@ sequenceDiagram
 5. best-effort wipe/secure delete 不描述为 SSD 物理擦除保证。
 6. Avatar shutdown 在断开 VTS 前拒绝新 callback、令嘴归零、release 主体动作并显式关闭程序红眼；失败只降级
    Avatar，不能阻断文字或安全音频关闭。
+7. DeepSeek 停用先使 `llm.provider=none` 生效，再撤销专用密钥；撤销、reload 或密钥状态未知时不得恢复远端 provider，
+   更不得回退为通用密钥或图像输入。

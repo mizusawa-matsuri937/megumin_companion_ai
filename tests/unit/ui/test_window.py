@@ -150,6 +150,34 @@ def test_editor_tab_moves_focus_without_mutating_draft(qapp: QApplication) -> No
     window.close()
 
 
+def test_window_submits_visual_summary_consent_for_one_text_turn(qapp: QApplication) -> None:
+    bridge = ApplicationBridge()
+    host = BackendThreadHost(bridge, auto_restart_limit=0)
+    window = MainWindow(bridge, host)
+    window.model.connection_state = BackendState.ready
+    window.model.capabilities = BackendCapabilities(text_chat=True, turn_cancel=True)
+    window._sync_view()  # noqa: SLF001 - exercise the visible composer contract
+
+    assert not window.screen_context_checkbox.isChecked()
+    assert not window.screen_context_checkbox.isEnabled()
+    assert "尚未接入合规的视觉摘要来源" in window.screen_context_status.text()
+    window.set_visual_summary_available(True)
+    assert window.screen_context_checkbox.isEnabled()
+    window.editor.setPlainText("仅测试单次视觉摘要同意")
+    window.screen_context_checkbox.setChecked(True)
+    window._submit_message()  # noqa: SLF001 - exercise the shortcut target
+
+    commands = bridge.take_commands()
+    assert len(commands) == 1
+    command = commands[0]
+    assert isinstance(command, UserMessageCommand)
+    assert command.payload.screen_context_allowed
+    assert not window.screen_context_checkbox.isChecked()
+
+    window.close()
+    qapp.processEvents()
+
+
 def test_dynamic_status_accessible_names_follow_visible_values(
     qapp: QApplication,
 ) -> None:

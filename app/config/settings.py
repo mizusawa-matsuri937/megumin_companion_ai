@@ -337,6 +337,7 @@ class MemoryConfig(StrictModel):
 
 class PerceptionConfig(StrictModel):
     operation_timeout_seconds: float = Field(default=10.0, gt=0.0, le=120.0)
+    prompt_context_max_age_seconds: float = Field(default=30.0, gt=0.0, le=3_600.0)
     max_frame_bytes: int = Field(default=20 * 1024 * 1024, ge=1)
     minimum_hash_distance: float = Field(default=0.08, ge=0.0, le=1.0)
     max_tracked_windows: int = Field(default=128, ge=1, le=10_000)
@@ -570,10 +571,15 @@ class Settings(StrictModel):
     def known_secret_values(self) -> tuple[str, ...]:
         """Return configured secret values solely for exact-match log redaction."""
 
-        if not self.llm.api_key_env:
-            return ()
-        value = self._environment.get(self.llm.api_key_env, "").strip()
-        return (value,) if value else ()
+        values: list[str] = []
+        if self.llm.api_key_env:
+            value = self._environment.get(self.llm.api_key_env, "").strip()
+            if value:
+                values.append(value)
+        deepseek_value = self._environment.get("DEEPSEEK_API_KEY", "").strip()
+        if deepseek_value:
+            values.append(deepseek_value)
+        return tuple(values)
 
     def validate_runtime_limits(self) -> None:
         """Fail startup when a provider preference bypasses a W07 hard cap."""

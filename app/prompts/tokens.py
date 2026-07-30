@@ -9,9 +9,11 @@ class ProviderTokenEstimator:
     def __init__(self, *, provider: str, model: str) -> None:
         normalized_provider = provider.strip().casefold()
         normalized_model = model.strip().casefold()
-        if normalized_provider in {"openai", "openai_compatible"} or normalized_model.startswith(
-            ("gpt-", "o1", "o3", "o4")
-        ):
+        if normalized_provider in {
+            "openai",
+            "openai_compatible",
+            "deepseek",
+        } or normalized_model.startswith(("gpt-", "o1", "o3", "o4")):
             self.profile = "openai_cl100k_conservative"
             self._utf8_weighted = True
         else:

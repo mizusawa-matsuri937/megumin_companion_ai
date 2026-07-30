@@ -2,8 +2,11 @@
 
 > 原始版本：2026-07-17 Gate W0 决策落版
 >
-> 最新修订：2026-07-29 W28 Avatar Runtime 已形成 stacked Draft PR，交付代码 exact-head 自动门通过；
-> PR 未合并，真实中文 TTS 与自然度 Gate 待关闭；W20～W27 的既有编号和范围不变
+> 最新修订：2026-07-30 当前活跃任务为 W30「DeepSeek V4 Flash 独立接入」：以
+> `codex/w28-avatar-runtime@b09841c13f1a733ec267027df62da6da7fc31fb6` 为独立工作树基线，
+> 本地实现和完整自动化质量门已在 `local-unrecorded` 工作树通过；W30 提交、Draft PR、最终 head CI 和真实 Key
+> 证据仍待完成。W28 的既有记录保留为历史，W20～W27
+> 的编号和范围不变；W29 是暂停的独立工作树，不由本计划改写其范围或验收状态。
 >
 > 代码基线：`agent/windows-development-baseline` / `d56cfbd`
 >
@@ -451,6 +454,7 @@ updated_at: UTC
 | 边界 | timeout/cancel 后 owner | 是否真的停止 | 清理与重试 | 用户状态与无敏感日志 |
 | --- | --- | --- | --- | --- |
 | LLM HTTP stream | provider task，直到 response close | asyncio/httpx 可取消并 close；远端计算可能继续 | 不自动重放已播 turn；按错误类别人工/退避重试 | `llm_timeout/connection/protocol`，只记 provider/model/latency/id |
+| W30 DeepSeek Flash HTTP | 专用 provider task，直到 response close | 同上；本地取消不保证 DeepSeek 已停止处理 | 固定 endpoint/model/disabled thinking；图像、multipart content/tool call 本地拒绝，资源不足为 retryable unavailable；不得改为通用 key 或图像回退 | 稳定 `llm_*` reason code；不记 key、header、正文、视觉摘要或远端错误 body |
 | GPT-SoVITS HTTP/WAV | TTS provider + temp registry | request 可取消；远端合成未必停止 | `.part`/ephemeral 登记删除；文件锁下次重试 | 字幕继续，音频 degraded；只记 job id/bytes/duration |
 | VTS WebSocket/action | VTS bridge + generation | socket 可关闭；W28 使用已验证的专用 release 入口收束主体动作 | purge 旧 generation、release 主体动作、关闭程序红眼、参数归零、jitter reconnect；不得播放伪 Neutral motion | `vts_disconnected/auth/config`，不记 token/text |
 | PortAudio playback | MediaWorker | soft abort 失败则 Job hard kill | worker temp/lease scavenger，设备重枚举 | `audio_device_lost/hung`，不记 WAV 路径或正文 |
@@ -487,10 +491,29 @@ flowchart LR
     W12 --> W21
     W10 --> W22
     W19 --> W28 --> W24
+    W28 -. "独立工作树基线" .-> W30
     W22 --> W23 --> W24 --> W25 --> W26 --> W27
 ```
 
 不可逆基础是 W01～W12。W13 以后不得通过复制临时路径、旧 WS 契约或无界 queue 绕过前置 PR。
+
+### 独立工作项 W30：DeepSeek V4 Flash 文本接入
+
+W30 是从 W28 基线派生的独立、可回滚工作项，不是原 W00～W27 线性阶段的完成声明，也不依赖或修改暂停的 W29。
+详细范围以 [`plans/w30_deepseek_flash_execution_plan.md`](./plans/w30_deepseek_flash_execution_plan.md) 和
+[`adr/ADR-W30-deepseek-flash.md`](./adr/ADR-W30-deepseek-flash.md) 为准。
+
+- **当前状态：** 实施中；没有 W30 exact commit、完整质量门、Draft PR 或真实 Key 连通性证据。
+- **范围：** 专用 `DeepSeekFlashLLMProvider` 固定到 chat-completions、Flash 和 disabled thinking；专用
+  current-user DPAPI Key；桌面配置/停用命令；既有历史、长期记忆**检索**和视觉开关的受限复用；仅发送无 ID、无 URI/path
+  且无自由文本入口的 `ApprovedVisualSummary` 有限语义标签文本。
+- **禁止：** 不引入 SDK，不改通用兼容 Provider，不上传截图/图像 URL/OCR 原文/窗口标题，不接入 Pro 或长期记忆写入；
+  candidate analysis 开启时必须 fail closed。
+- **自动验收：** MockTransport、fake DPAPI、headless UI 与 prompt-context 测试覆盖固定请求、SSE/JSON、错误、
+  密钥隔离/撤销、无泄漏、上下文 gate 和预算。真实 API 不在自动化中调用。
+- **人工/外部边界：** 用户提供 Key 后才可显式进行一次不含历史、长期记忆或视觉摘要的非敏感检查。它不能证明远端
+  保留、地域、费用或长期可用性，且 Key/请求/响应正文不进入证据。
+- **回滚：** 先令 `llm.provider=none` 生效，再撤销专用密钥；保留通用 Provider 配置，不以通用密钥或图像输入绕过失败。
 
 ### Phase W0：决策、威胁模型与测试基准（2～4 工程日 + 人工签字）
 
@@ -920,6 +943,7 @@ flowchart LR
 | W18 | voice input、hotkey、whisper supervisor | STT helper protocol、device/hotkey config | callback/process tests + 多麦克风/热键/锁屏 H | `stt.enabled=false`，键盘继续 | XL |
 | W19 | VTS/TTS configuration wizard/preflight | preset/capability status schema | fake services + 真实 VTS/GPT-SoVITS/资产 H | text-only 或 silent 模式 | M |
 | W28 | AvatarRuntime、VTS parameter/event API、MediaWorker envelope | avatar config、受限 `job.progress`、turn plan/state contract | fake clock/VTS/worker stress + 真实 VTS/音频/自然度 H | avatar/lip-sync/auto-red-eye disabled；文字和原音频继续 | XL |
+| W30 | 专用 DeepSeek Flash Provider、secret store、bootstrap、prompt context、桌面设置 | 只切换 `llm.provider=deepseek`；独立 DPAPI 槽；不迁移/改写通用 LLM 配置或用户记忆 | MockTransport/DPAPI/UI/prompt gate + 全量质量门；用户显式、非敏感真实 Key 检查 | `llm.provider=none` 后 revoke 专用 key；保留通用配置 | M |
 | W20 | Windows session/focus/idle adapters、proactive counters | OS signal snapshot、counter DB migration | fake clock/state tests + Windows focus/lock/RDP H | vision/proactive actual disabled | L |
 | W21 | PerceptionWorker/capture adapter/WinRT binding | perception helper protocol v1；不迁移截图 | buffer/fault tests + 多显示器/权限/范围隐私 H | `vision=disabled`，移除 worker artifact | XL |
 | W22 | `app/main.py` perception composition、feature lifecycle | vision actual-state/generation DB migration | race/stale/sentinel tests + 敏感窗口 H | vision 强制 disabled，保留迁移后的状态 | XL |
@@ -973,6 +997,7 @@ flowchart LR
 | Beta A | W13～W16 | 30～46 日 | 可安装的安全文字桌面切片。 |
 | Beta B | W17～W19 | 38～58 日 | 增加真实语音、音频和 VTS provider/preflight。 |
 | Avatar Runtime closure | W28 | 旧估算外；完成基线/调研后校准 | 增加程序微动作、实际播放音量口型和可靠 VTS 生命周期。 |
+| DeepSeek Flash（独立） | W30 | 不纳入原线性工期；以独立质量门校验 | 可选固定文本 Provider；不表示视觉、Pro 或长期记忆写入完成。 |
 | Local RC | W20～W27 | 56～85 日 + soak | 完成 Windows 感知、主动发话、安装升级和发布 Gate。 |
 
 说明：
@@ -1091,17 +1116,18 @@ flowchart LR
 
 ## 11. 立即执行顺序
 
-2026-07-29 起，下列顺序覆盖本节此前基于 W05 的历史停点：
+2026-07-30 起，下列顺序覆盖本节此前基于 W28 的历史停点：
 
 1. 完整读取 [`current/CURRENT_GOAL.md`](./current/CURRENT_GOAL.md)、
-   [`plans/w28_avatar_runtime_execution_plan.md`](./plans/w28_avatar_runtime_execution_plan.md) 和本地 Avatar
-   handoff/恢复包；不得重问已确认问题或恢复已撤回答案。
-2. 重新查询 W19 Draft PR、远端 base/head、工作树和 CI。W28 不混入 W19：W19 已合并则从同步基线分支；
-   未合并且确有代码依赖则建立 stacked W28 Draft PR。
-3. 执行 W28：先做实施前开源调研和基线失败测试，再按 VTS API → 单写者 AvatarRuntime → 整轮动作/红眼
-   → Worker progress → 分块 RMS/口型 → 配置/UI → 自动化和真实验收的顺序实施。
-4. W20～W27 的编号、范围和依赖保持，不因 W28 提前执行而写成已完成；W24 在新顺序中依赖 W28。
-5. W28 通过完整质量门、真实 VTS/音频 Gate 并形成聚焦提交、推送和 Draft PR 后才能报告交付；不得合并。
+   [`plans/w30_deepseek_flash_execution_plan.md`](./plans/w30_deepseek_flash_execution_plan.md) 与
+   [`adr/ADR-W30-deepseek-flash.md`](./adr/ADR-W30-deepseek-flash.md)，再以当前工作树和测试核验实现事实。
+2. 保持 W30 独立于 W29：从指定 W28 基线工作树实施，不改动或暂存 W29 的 TTS/VTS、`.agents/`、`AGENTS.md` 或
+   未完成测试；不把 W29 的 PR/CI/Gate 作为 W30 证据。
+3. 先完成固定 Flash 文本 Provider、专用 DPAPI/启动组合、candidate-analysis fail-closed、设置命令和仅摘要的
+   prompt hook；然后运行 Mock/fake/GUI 自动化和完整质量门。不得为了连通性在自动化中使用真实 Key。
+4. W20～W27 的编号、范围和依赖保持不变；W30 既不表示视觉生产链路、Pro 或长期记忆写入完成，也不推进这些阶段。
+5. 仅在质量门通过后暂存 W30 预期文件、建立聚焦提交、推送并创建/更新 Draft PR。真实连通性只由用户明确发起的
+   非敏感检查验证，且不能代替外部服务隐私/保留审查。
 
 ## 12. 官方平台依据
 
@@ -1113,3 +1139,6 @@ flowchart LR
 - [Windows Known Folders / LocalAppData](https://learn.microsoft.com/en-us/windows/win32/shell/knownfolderid)
 - [Windows DACLs and ACEs](https://learn.microsoft.com/en-us/windows/win32/secauthz/dacls-and-aces)
 - [Windows.Graphics.Capture](https://learn.microsoft.com/en-us/uwp/api/windows.graphics.capture)
+- [DeepSeek Chat Completions](https://api-docs.deepseek.com/api/create-chat-completion/)
+- [DeepSeek 多轮对话](https://api-docs.deepseek.com/guides/multi_round_chat)
+- [DeepSeek 隐私政策](https://cdn.deepseek.com/policies/en-US/deepseek-privacy-policy.html)

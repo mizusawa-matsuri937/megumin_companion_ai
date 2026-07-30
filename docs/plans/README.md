@@ -4,9 +4,13 @@
 
 - [`../windows_development_plan.md`](../windows_development_plan.md) 是当前唯一的 Windows 分阶段执行计划。
   它定义 W 编号、依赖、验收、发布和人工 Gate；旧的按日顺序不能覆盖它。
+- [`w30_deepseek_flash_execution_plan.md`](w30_deepseek_flash_execution_plan.md) 是当前 W30 的详细执行包：
+  固定 DeepSeek Flash 文本 Provider、专用 DPAPI 密钥、既有上下文开关的受限复用和独立验证/回滚。
+  当前实施状态见 [`../implementation/w30_deepseek_flash.md`](../implementation/w30_deepseek_flash.md)。W29 是暂停的
+  独立工作树，既不是 W30 的代码来源，也不因本文而改变其验收状态。
 - [`w28_avatar_runtime_execution_plan.md`](w28_avatar_runtime_execution_plan.md) 是上位 Windows 计划中
   W28 的详细执行包，冻结 Avatar Runtime、程序微动作、实际播放音量口型、主体动作/红眼生命周期、
-  自动化、真实 VTS/音频 Gate 和 Draft PR 交付。它不是第二套排期；当前实现证据见
+  自动化、真实 VTS/音频 Gate 和 Draft PR 交付。它保留为既有计划，不是 W30 的完成证据；其实现证据见
   [`../implementation/w28_avatar_runtime.md`](../implementation/w28_avatar_runtime.md)。
 
 ## 历史计划
