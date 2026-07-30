@@ -1,7 +1,8 @@
 # W29：五情绪 GPT-SoVITS 与 VTS 动作联动执行计划
 
-> 状态：公共实现、私有安装、真实链路、本地质量门、功能提交、stacked Draft PR #34 和状态 head
-> `4404460` 的 exact-head 双 workflow 8/8 CI 已完成；所有者主观试听 Gate 保留
+> 状态：公共实现、私有安装、真实链路、本地质量门、功能提交、stacked Draft PR #34 和既有
+> exact-head CI 已完成；2026-07-30 代码审计确认 P0 gateway 稳定性缺陷，修复与其自动化证据成为新的
+> 合并阻断项。所有者主观试听 Gate 保留
 > 最后核验：2026-07-30（Asia/Shanghai）
 
 ## 目标
@@ -73,6 +74,22 @@
 - [ ] 所有者试听五种音色、情绪差异、中文自然度与整体动作观感。
 
 本 CI 关闭记录本身仍按同一规则接受独立检查；最终报告必须重新读取 PR live latest head/checks。
+
+### F. P0 gateway 稳定性修复（本地验证完成，仍阻止 #34 合并）
+
+- [x] 将 synthesis permit 的归还绑定到每一个已登记 worker 的唯一终态；不得因成功、失败、取消、关闭或
+  task 在首次调度前取消而泄漏或重复归还 permit。
+- [x] 增加容量为 1 的连续成功合成回归；保留原有 cancellation circuit、WAV/临时文件清理、关闭和 deadline
+  断言，避免修复 permit 时破坏 W08 的 fail-closed worker ownership。
+- [x] 本地聚焦与完整自动化质量门通过：`1468 passed, 3 skipped`，coverage `90.52%`；Ruff、format、
+  strict mypy 与两个 lock check 通过。
+- [ ] 仅暂存本任务文件、形成 P0 聚焦提交、推送并以新的 exact head 重做 Draft PR 检查审计。
+
+下列属于后续优化，**不**由本 P0 修复冒充完成：provider 并发度与 pipeline 队列容量分离、首段优先、
+真正的流式 PCM 播放、卡死 inference 的 gateway restart/self-healing。当前 cancellation circuit 会在
+未结束 worker 持有 slot 时 fail closed；直接删除它只会让旧 GPU 工作填满三请求 admission 队列，不能构成恢复。
+restart/self-healing 需要新的 gateway 生命周期 owner、readiness、close/cancel race 和重试边界；后两类变更会影响
+私有网关协议、MediaWorker 和 launcher owner，实施前必须更新 ADR、数据流和威胁模型。
 
 ## 客观验收摘要
 

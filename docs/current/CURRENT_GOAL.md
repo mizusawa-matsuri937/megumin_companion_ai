@@ -1,5 +1,29 @@
 # 当前产品目标
 
+> **最新状态更新（2026-07-30，Asia/Shanghai）：** W29/#34 进入 P0 稳定性修复，**不得合并**。当前
+> `codex/w29-five-emotion-tts` head 为
+> [`aae8631`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/aae8631c5491784b9b571c9d55c98c45344ddff9)；
+> #32、#33、#34 仍为 stacked、open Draft。当前代码审计已确认一个确定性的合并阻断缺陷，并复核到一项
+> 需后续设计的取消恢复风险：
+>
+> 1. `app/clients/tts/gateway.py` 在取得 synthesis permit 并创建 worker 后把释放责任交给 done callback，
+>    但 callback 没有归还 permit；连续成功合成会耗尽有界信号量并最终造成 `tts_total_timeout`。
+> 2. provider 将任一未完成的已取消 worker 视为全局 circuit breaker，直接向所有新 turn 返回
+>    `tts_cancel_timeout`。这会放大旧推理未退出时的用户可感知失败，但它是 W08 明确的 fail-closed
+>    语义，不是可以安全删除的一行偶然代码。
+>
+> 当前 P0 的可自动验收是：每个已创建 worker 恰好归还一个 permit；容量为 1 时连续成功合成至少三次；
+> 原有 cancellation circuit、临时 WAV 清理、generation 迟到事件拒绝和关闭语义不回归。下一阶段才为
+> stuck inference 设计有界恢复：它必须有明确的 gateway 生命周期 owner、restart/readiness/close 竞争和
+> 一次性重试边界，不能仅删除 circuit 而把旧 GPU 工作堆进网关 admission 队列。
+> 本地 P0 实现现已完成：done callback 以 membership guard 唯一归还 permit，连续成功与取消后恢复
+> 回归均已加入。最新完整自动化为 `1468 passed, 3 skipped`、coverage `90.52%`，Ruff、format、strict mypy
+> 与两个 lock check 均通过；这些是当前未提交工作树的本地证据，尚不能替代新 commit/PR exact-head CI。
+> 已确认的边界：legacy Mock 文本先显示是既有产品行为，不等同于故障；网关完整 WAV 后才播放造成的首句延迟
+> 也尚未修复。流式 PCM、首段优先、独立 provider 并发度、gateway restart/self-healing 属于后续阶段，
+> 其中 restart/streaming 会改变现有 launcher/私有网关边界，必须先单独设计并更新 ADR、数据流与威胁模型。
+> 详情与阶段顺序见 [W29 执行计划](../plans/w29_five_emotion_tts_vts_execution_plan.md)。
+
 > **最新状态更新（2026-07-30，Asia/Shanghai）：** 当前唯一活跃任务为 W29「五情绪 GPT-SoVITS 与
 > VTS 动作联动」。工作分支 `codex/w29-five-emotion-tts` 基于未合并的 W28 exact head
 > `b09841c13f1a733ec267027df62da6da7fc31fb6`；功能提交

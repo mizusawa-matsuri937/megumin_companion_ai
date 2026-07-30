@@ -109,6 +109,43 @@ def test_gateway_provider_probe_synthesize_discard_and_minimal_payload(tmp_path:
     asyncio.run(scenario())
 
 
+def test_gateway_provider_releases_capacity_after_every_success(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        provider = GPTSoVITSGatewayProvider(
+            "http://127.0.0.1:9880",
+            tmp_path / "audio",
+            _TOKEN,
+            max_owned_synthesis_tasks=1,
+            transport=httpx.MockTransport(
+                lambda _request: httpx.Response(
+                    200,
+                    headers={
+                        "Content-Type": "audio/wav",
+                        "X-TTS-Gateway-Protocol": "1",
+                    },
+                    content=_wave_bytes(),
+                )
+            ),
+        )
+        for index in range(3):
+            token = CancellationToken(f"turn-{index}")
+            result = await provider.synthesize(
+                _job(
+                    token,
+                    job_id=f"job-{index}",
+                    turn_id=f"turn-{index}",
+                    segment_id=f"segment-{index}",
+                ),
+                segment_index=0,
+                token=token,
+            )
+            assert result.success
+            await provider.discard(result)
+        await provider.close()
+
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize(
     "base_url",
     [
@@ -328,12 +365,13 @@ class _ChunkStream(httpx.AsyncByteStream):
 def test_gateway_provider_cancellation_removes_partial_audio(tmp_path: Path) -> None:
     async def scenario() -> None:
         stream = _BlockedStream()
-        provider = GPTSoVITSGatewayProvider(
-            "http://127.0.0.1:9880",
-            tmp_path,
-            _TOKEN,
-            transport=httpx.MockTransport(
-                lambda _request: httpx.Response(
+        requests = 0
+
+        def handler(_request: httpx.Request) -> httpx.Response:
+            nonlocal requests
+            requests += 1
+            if requests == 1:
+                return httpx.Response(
                     200,
                     headers={
                         "Content-Type": "audio/wav",
@@ -341,7 +379,21 @@ def test_gateway_provider_cancellation_removes_partial_audio(tmp_path: Path) -> 
                     },
                     stream=stream,
                 )
-            ),
+            return httpx.Response(
+                200,
+                headers={
+                    "Content-Type": "audio/wav",
+                    "X-TTS-Gateway-Protocol": "1",
+                },
+                content=_wave_bytes(),
+            )
+
+        provider = GPTSoVITSGatewayProvider(
+            "http://127.0.0.1:9880",
+            tmp_path,
+            _TOKEN,
+            max_owned_synthesis_tasks=1,
+            transport=httpx.MockTransport(handler),
         )
         token = CancellationToken("turn")
         task = asyncio.create_task(provider.synthesize(_job(token), segment_index=0, token=token))
@@ -351,6 +403,20 @@ def test_gateway_provider_cancellation_removes_partial_audio(tmp_path: Path) -> 
             await task
         assert list(tmp_path.rglob("*.wav")) == []
         assert list(tmp_path.rglob("*.part")) == []
+        recovery_token = CancellationToken("recovery-turn")
+        recovery = await provider.synthesize(
+            _job(
+                recovery_token,
+                job_id="recovery-job",
+                turn_id="recovery-turn",
+                segment_id="recovery-segment",
+            ),
+            segment_index=0,
+            token=recovery_token,
+        )
+        assert recovery.success
+        await provider.discard(recovery)
+        assert requests == 2
         await provider.close()
 
     asyncio.run(scenario())
@@ -420,8 +486,18 @@ def test_gateway_provider_maps_bounded_transport_failures(
             transport=httpx.MockTransport(handler),
         )
         token = CancellationToken("turn")
+        # This matrix validates transport/error classification.  Only the
+        # first-byte case is intended to exercise its deadline; keeping the
+        # other immediate MockTransport cases at 20 ms makes their result
+        # depend on coverage-run scheduling rather than the branch under test.
+        first_byte_timeout_ms = 20 if kind == "first_byte" else 200
+        timeout_ms = 300 if kind == "first_byte" else 500
         result = await provider.synthesize(
-            _job(token, first_byte_timeout_ms=20),
+            _job(
+                token,
+                first_byte_timeout_ms=first_byte_timeout_ms,
+                timeout_ms=timeout_ms,
+            ),
             segment_index=0,
             token=token,
         )

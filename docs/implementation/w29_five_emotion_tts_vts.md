@@ -1,8 +1,8 @@
 # W29：五情绪 GPT-SoVITS 与 VTS 动作联动
 
-> 状态：公共实现、私有运行时、真实 VTS/MediaWorker 链路、本地完整质量门、功能提交、stacked
-> Draft PR #34 和状态 head `4404460` 的 exact-head 双 workflow 8/8 CI 已完成。PR 不合并，
-> 所有者主观试听 Gate 保留。
+> 状态：公共实现、私有运行时、真实 VTS/MediaWorker 链路、功能提交和 stacked Draft PR #34 已完成。
+> 2026-07-30 发现确定性的 gateway permit 泄漏后，P0 修复及本地质量门已完成；待形成新的 exact head、
+> push/PR CI 和终审。PR 不合并，所有者主观试听 Gate 保留。
 > 最后核验：2026-07-30（Asia/Shanghai）
 > 工作分支：`codex/w29-five-emotion-tts`
 > stacked base：`codex/w28-avatar-runtime@b09841c13f1a733ec267027df62da6da7fc31fb6`
@@ -26,6 +26,45 @@
 完整决策见
 [ADR-W29](../adr/ADR-W29-private-tts-gateway-and-structured-turns.md)，执行顺序见
 [W29 计划](../plans/w29_five_emotion_tts_vts_execution_plan.md)。
+
+## 2026-07-30 P0 gateway permit 修复
+
+### 已确认事实与实施
+
+- `GPTSoVITSGatewayProvider` 在取得 synthesis permit、创建并登记 worker 后，原 done callback 只清理
+  task 集合，遗漏 `BoundedSemaphore.release()`。因此每个成功、失败或取消的已登记 worker 都会泄漏一个 permit；
+  默认容量为 8，实际何时失声取决于每轮分句数量，不能写成固定轮次。
+- callback 现以 task membership guard 执行 `remove → cancellation cleanup → release`。这既保证每个已登记 worker
+  恰好归还一个 permit，也避免意外重复 callback 造成 `BoundedSemaphore` 过度归还；task 创建失败仍由既有外层
+  `finally` 归还尚未 handoff 的 permit。
+- 新增容量为 1 时连续三次成功合成的回归；扩展取消回归，确认取消后没有 `.part`/WAV 残留且下一次合成可成功。
+- 全量首次运行客观失败于 `stream_large` 参数化 fixture：该用例本来只检查响应大小，但也把 first-byte deadline
+  设为 20ms。该设置在 coverage run 调度下会偶发先报告 first-byte timeout。fixture 现仅为真正的 first-byte
+  timeout 用例保留 20ms；其他错误分类使用 200ms first-byte / 500ms total deadline。此为测试意图隔离，
+  不改变产品 deadline。
+
+### 验证与边界
+
+```text
+uv run pytest --no-cov tests/unit/test_gpt_sovits_gateway.py
+→ 26 passed in 1.12s
+
+uv run pytest
+→ 1468 passed, 3 skipped in 133.58s; coverage 90.52%
+
+uv run ruff check app desktop_client tests tools
+uv run ruff format --check app desktop_client tests tools
+uv run mypy
+uv lock --check
+uv lock --check --project deploy/tts_gateway
+→ 全部通过
+```
+
+- `_synthesis_cancellations` circuit 未在本修复中删除：它是 W08 明确的 fail-closed worker ownership，不是已证明的
+  permit 泄漏根因。当前单 owner gateway 的阻塞推理不能由协程真正中止；直接允许更多新请求只会填满 admission
+  queue，并不能安全恢复。restart/self-healing 必须作为独立的生命周期/安全设计。
+- 本次在实施前复核 GPT-SoVITS（MIT、固定 commit）、Open-LLM-VTuber（MIT）与 LiveTalking（Apache-2.0）。
+  P0 未复制外部代码；未来流式实现只可复用固定 GPT-SoVITS 的 generator/packing 语义，其他项目仅作设计参考。
 
 ## 自动化证据
 

@@ -429,8 +429,15 @@ class GPTSoVITSGatewayProvider:
         task.cancel()
 
     def _synthesis_finished(self, task: asyncio.Task[AudioResult]) -> None:
-        self._synthesis_tasks.discard(task)
+        # A worker owns exactly one permit after ``synthesize`` hands off the
+        # acquired slot.  Keep the membership guard so an accidental duplicate
+        # callback cannot over-release BoundedSemaphore, including if a task is
+        # cancelled before its coroutine receives its first scheduling slice.
+        if task not in self._synthesis_tasks:
+            return
+        self._synthesis_tasks.remove(task)
         self._synthesis_cancellations.discard(task)
+        self._synthesis_capacity.release()
 
     def _is_closed(self) -> bool:
         """Re-read close state after an awaited capacity handoff."""
