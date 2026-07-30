@@ -174,7 +174,7 @@ off | manual | system(deadline, vts_generation, model_generation)
 
 本地控制器逐帧生成：
 
-- 自然眨眼，允许低概率双眨；
+- 固定每 4 秒一次的短单眨；不使用随机间隔或双眨；
 - 呼吸；
 - 小幅头部角度；
 - 眼球移动；
@@ -234,7 +234,7 @@ Mouth envelope ─┘      ├─ latest parameter-frame mailbox
 
 - 动画、平滑、眨眼、红眼截止、keepalive 和重试使用注入的 monotonic clock。
 - 测试使用 fake clock；不得用现实日期老化 fixture。
-- 随机选择、眨眼和视线目标使用可注入 RNG。
+- 随机候选选择和视线目标使用可注入 RNG；眨眼只使用可注入 monotonic clock，以固定 4 秒节奏调度。
 - 每个 turn、playback job、VTS 连接和模型状态都有 generation。
 - 取消、重连、模型切换和关闭后，旧 generation 的动作、帧、包络和 timer 全部失效。
 - 模型切换后不重播旧回复；下一轮同情绪可按“动作已中断”规则重新播放。
@@ -473,7 +473,7 @@ Mouth envelope ─┘      ├─ latest parameter-frame mailbox
 
 ### 9.2 AvatarRuntime
 
-- fake clock 下的单眨/双眨；
+- fake clock 下固定每 4 秒的单眨（不允许双眨）；
 - speaking/idle gaze 边界；
 - head/breathing 振幅；
 - emotion transition；

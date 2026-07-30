@@ -71,6 +71,19 @@ uv lock --check --project deploy/tts_gateway
 - 本次在实施前复核 GPT-SoVITS（MIT、固定 commit）、Open-LLM-VTuber（MIT）与 LiveTalking（Apache-2.0）。
   P0 未复制外部代码；未来流式实现只可复用固定 GPT-SoVITS 的 generator/packing 语义，其他项目仅作设计参考。
 
+## 2026-07-30 Avatar 眨眼节奏修正
+
+- `AvatarParameterController` 现在从首个参数帧起每 4 秒安排一次原有时长的单眨；眨眼不再随情绪活跃度随机
+  改变间隔，也不再产生随机双眨。
+- 新增 fake-clock 回归使用会强制旧实现双眨的 RNG，验证第 4 秒与第 8 秒各只有一次短眨，其他相邻时刻保持睁眼。
+- 本次只改变本地 Avatar 参数合成，不改变 VTS API、模型配置、动作/红眼所有权、口型或视线随机策略。
+- 定向 Avatar/controller/fake-VTS 矩阵为 `26 passed in 3.74s`；完整 `uv run pytest` 为
+  `1469 passed, 3 skipped in 152.00s`，aggregate coverage `90.53%`。Ruff lint、279 文件 format check 和
+  strict mypy（272 source）均通过。
+- 实施前和完成前复核了官方 VTube Studio API（MIT、公开维护、参数注入契约）以及 wallie-V2（MIT、36 commits、
+  仅作算法参考）。后者明确采用约 3.8 秒随机间隔和偶发双眨，直接与本次固定 4 秒需求冲突；未复制代码、未新增
+  依赖，也未扩大 VTS 或隐私边界。
+
 ## 自动化证据
 
 ### test-first 修复

@@ -25,6 +25,8 @@ _FACE_ANGLE_X = "FaceAngleX"
 _FACE_ANGLE_Y = "FaceAngleY"
 _FACE_ANGLE_Z = "FaceAngleZ"
 _FACE_POSITION_Y = "FacePositionY"
+_BLINK_INTERVAL_SECONDS = 4.0
+_BLINK_DURATION_SECONDS = 0.18
 
 
 class RandomSource(Protocol):
@@ -79,7 +81,6 @@ class AvatarParameterController:
         self._last_now: float | None = None
         self._next_blink_at: float | None = None
         self._blink_started: float | None = None
-        self._double_blink = False
         self._gaze_x = 0.0
         self._gaze_y = 0.0
         self._gaze_target_x = 0.0
@@ -149,7 +150,7 @@ class AvatarParameterController:
         profile = self._interpolated_profile(selected_now)
         values: dict[str, float] = {}
         if self._config.micro_motion_enabled:
-            blink = self._blink_openness(selected_now, profile.activity)
+            blink = self._blink_openness(selected_now)
             self._update_gaze(selected_now, delta, profile.activity)
             values.update(
                 {
@@ -209,35 +210,28 @@ class AvatarParameterController:
             transition_seconds=duration,
         )
 
-    def _blink_openness(self, now: float, activity: float) -> float:
+    def _blink_openness(self, now: float) -> float:
         if self._next_blink_at is None:
-            self._schedule_blink(now, activity)
+            self._next_blink_at = now + _BLINK_INTERVAL_SECONDS
         if (
             self._blink_started is None
             and self._next_blink_at is not None
             and now >= self._next_blink_at
         ):
-            self._blink_started = now
-            self._double_blink = self._rng.random() < 0.12
+            overdue_intervals = math.floor((now - self._next_blink_at) / _BLINK_INTERVAL_SECONDS)
+            self._next_blink_at += overdue_intervals * _BLINK_INTERVAL_SECONDS
+            self._blink_started = self._next_blink_at
+            self._next_blink_at += _BLINK_INTERVAL_SECONDS
         if self._blink_started is None:
             return 1.0
         elapsed = now - self._blink_started
-        pulses = ((0.0, 0.18), (0.25, 0.16)) if self._double_blink else ((0.0, 0.18),)
-        openness = 1.0
-        for offset, duration in pulses:
-            phase = (elapsed - offset) / duration
-            if 0.0 <= phase <= 1.0:
-                openness = min(openness, 1.0 - math.sin(math.pi * phase) ** 2)
-        if elapsed > pulses[-1][0] + pulses[-1][1]:
-            self._blink_started = None
-            self._schedule_blink(now, activity)
+        if elapsed <= 0.0:
             return 1.0
-        return openness
-
-    def _schedule_blink(self, now: float, activity: float) -> None:
-        lower = max(1.4, 2.4 / max(0.35, activity))
-        upper = max(lower + 0.2, 5.0 / max(0.35, activity))
-        self._next_blink_at = now + self._rng.uniform(lower, upper)
+        if elapsed > _BLINK_DURATION_SECONDS:
+            self._blink_started = None
+            return 1.0
+        phase = elapsed / _BLINK_DURATION_SECONDS
+        return 1.0 - math.sin(math.pi * phase) ** 2
 
     def _update_gaze(self, now: float, delta: float, activity: float) -> None:
         if self._next_gaze_at is None or now >= self._next_gaze_at:

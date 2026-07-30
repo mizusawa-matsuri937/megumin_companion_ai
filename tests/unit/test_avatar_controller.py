@@ -46,6 +46,38 @@ def _red_eye_owner(ownership: RedEyeOwnership) -> RedEyeOwner:
     return ownership.owner
 
 
+class _BlinkStressRng:
+    """Would force a double blink in the former randomized scheduler."""
+
+    def random(self) -> float:
+        return 0.0
+
+    def uniform(self, a: float, b: float) -> float:
+        return 4.0
+
+
+def test_controller_blinks_once_every_four_seconds_without_random_variation() -> None:
+    controller = AvatarParameterController(
+        AvatarConfig(),
+        _capabilities(),
+        rng=_BlinkStressRng(),
+    )
+
+    def eye_openness(now: float) -> float:
+        return _parameter_values(controller.compose(now=now, vts_generation=1, model_generation=1))[
+            "EyeOpenLeft"
+        ]
+
+    assert eye_openness(0.0) == pytest.approx(1.0)
+    assert eye_openness(3.99) == pytest.approx(1.0)
+    assert eye_openness(4.09) < 0.02
+    assert eye_openness(4.34) == pytest.approx(1.0)
+    controller.set_emotion(EmotionLabel.explosion_mode, now=4.34)
+    assert eye_openness(7.99) == pytest.approx(1.0)
+    assert eye_openness(8.09) < 0.02
+    assert eye_openness(8.34) == pytest.approx(1.0)
+
+
 def test_controller_is_seeded_bounded_and_audio_changes_only_mouth() -> None:
     config = AvatarConfig()
     first = AvatarParameterController(config, _capabilities(), rng=random.Random(17))

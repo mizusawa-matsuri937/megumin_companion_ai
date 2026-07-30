@@ -23,6 +23,7 @@ W09 的 VTS bridge、W17 的 MediaWorker 播放和现有 emotion event sink 各�
 - 离散动作使用有硬上限的优先队列；高频参数使用 latest-wins mailbox。最多一个参数请求在途，慢 VTS
   只合并旧帧，不追赶历史帧。
 - 参数 keepalive、眨眼、平滑、随机目标、重试和效果截止使用可注入 monotonic clock；随机行为使用可注入 RNG。
+- 眨眼从首个参数帧起固定每 4 秒执行一次短单眨，不受情绪活跃度或 RNG 影响；随机视线和动作候选保持可注入 RNG。
 
 ### generation 与生命周期
 
