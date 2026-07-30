@@ -1,7 +1,7 @@
 # W30：DeepSeek V4 Flash 独立接入执行计划
 
-> **状态：** 核心实现 `cd5cd43` 已推送至 Draft PR #35，且本地完整自动化质量门已通过；本文仍是范围与验收契约，不以此替代
-> 最终 head CI 或真实 API 验证。
+> **状态：** 核心实现 `cd5cd43` 已推送至 Draft PR #35，且本地完整自动化质量门和审计 head `e35dbc7` CI 已通过；
+> 本文仍是范围与验收契约，不以此替代真实 API 验证，任一新 head 都须重新核验。
 >
 > **基线：** `codex/w30-deepseek-flash@b09841c13f1a733ec267027df62da6da7fc31fb6`
 >

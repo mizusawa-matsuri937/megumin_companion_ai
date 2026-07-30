@@ -7,7 +7,7 @@
 > runtime 已由 [`224e06f`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/224e06f9cbb1d2ab0cc2260fb244b1f74cd7dfbc)
 > 加入并完成该 code head 的 CI；W28 完整质量门、Draft PR、真实中文 TTS 和主观自然度 Gate 仍未完成；
 > 其他行仍不代表代码已经实现。W30 核心实现 `cd5cd43` 已推送至 Draft PR #35，包含 DeepSeek Flash 的文本出口、专用密钥与
-> 脱敏摘要组合，并通过完整本地自动化质量门；该 PR 最终 head CI 和真实 Key 验证尚未形成证据。
+> 脱敏摘要组合，并通过完整本地自动化质量门及审计 head `e35dbc7` 的跨平台 CI；真实 Key 验证尚未形成证据，任一新 head 须重审。
 > 关联：[`../adr/README.md`](../adr/README.md)、[`../decisions/w00_owner_decisions.md`](../decisions/w00_owner_decisions.md)、
 > [`../decisions/w18_managed_chinese_stt_runtime.md`](../decisions/w18_managed_chinese_stt_runtime.md)
 
