@@ -10,8 +10,8 @@
 > [`19c7510`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/19c75105319ba630c5815de4a1265ae4010d6737)
 > 的 [push CI](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/30619684274) 与
 > [PR CI](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/30619687554) 均四项通过；PR #35 对应
-> base/head、差异、检查、评论、评审和 `0` 个 review thread 已复核。此审计记录本身是后续的仅文档 head，仍需以其最终
-> exact-head CI 和 PR 元数据完成闭环。这证明受控逻辑视口，不替代实际 Windows DPI/桌面 shell 的视觉验收。
+> base/head、差异、检查、评论、评审和 `0` 个 review thread 已复核。发布审计始终以 Draft PR 的实际 final head 及其
+> 对应 CI/PR 元数据为准，不能把本段文字自身当作证据。这证明受控逻辑视口，不替代实际 Windows DPI/桌面 shell 的视觉验收。
 
 > **2026-07-31 后续状态（优先于下方较早快照）：** Gateway compatibility 已由 `84c92bb` 推送。夹具修复提交
 > `a0ccfc6` 只调整测试夹具的事件同步和非 deadline 场景的时限余量；其 exact-code head 的 push workflow
@@ -60,7 +60,7 @@
 | 固定 endpoint/model、文本输入和多轮协议边界 | 已确认 | 官方 [Chat Completions](https://api-docs.deepseek.com/api/create-chat-completion/) 与[多轮对话](https://api-docs.deepseek.com/guides/multi_round_chat)。 |
 | W30 代码、MockTransport/DPAPI/UI/prompt gate 的自动化结果 | 本地与 PR 自动化已验证 | `cd5cd43` 的聚焦测试为 `172 passed`；完整 `uv run pytest` 为 `1379 passed, 3 skipped, 90.39%`，且 lint/type/lock/build/smoke/link/sensitive 扫描通过。PR #35 的审计 head `e35dbc7` 四项跨平台 CI 都通过；没有评论或评审，后续 head 必须重审。 |
 | W30 既有本地 Gateway compatibility | 本地与 `a0ccfc6` exact-code CI 已验证 | 2026-07-31 所有者授权；固定 loopback/protocol、专用 token/bootstrap、emotion slot adapter 与 UI/preflight 均已实现。夹具修复后的完整 `1432 passed, 3 skipped, 90.45%`、Ruff/mypy/lock/wheel/smoke 通过；`a0ccfc6` 的 push `30615939286` 与 PR `30615942372` 各四项跨平台 CI 通过。不访问真实 Gateway。 |
-| 设置页滚动可达性后续修复 | 代码 head 的本地/远端质量门已验证；审计文档 head 待最终 CI 闭环 | `SettingsDialog` 的“连接与设备”页已改为可滚动；紧凑 `820×650` 回归验证底部 DeepSeek API 密钥卡可滚到、完整可见并可获焦点。`19c7510` 的完整 `1433 passed, 3 skipped, 90.45%`、Ruff/format/mypy/lock、fresh wheel smoke、链接和候选敏感信息扫描通过，且 push `30619684274` 与 PR `30619687554` 均四项成功；无评论/评审/行级 review thread。尚未声称实际 Windows DPI 视觉通过；本审计文档的新 head 仍须最终 CI/PR 复核。 |
+| 设置页滚动可达性后续修复 | 代码 head 的本地/远端质量门已验证；发布以 exact-head CI/PR 元数据核对 | `SettingsDialog` 的“连接与设备”页已改为可滚动；紧凑 `820×650` 回归验证底部 DeepSeek API 密钥卡可滚到、完整可见并可获焦点。`19c7510` 的完整 `1433 passed, 3 skipped, 90.45%`、Ruff/format/mypy/lock、fresh wheel smoke、链接和候选敏感信息扫描通过，且 push `30619684274` 与 PR `30619687554` 均四项成功；无评论/评审/行级 review thread。尚未声称实际 Windows DPI 视觉通过；任何后续仅文档 head 也必须按其精确 CI/PR 元数据交付。 |
 | 真实 API Key、账户权限、远端响应、计费/限流与服务可用性 | 未验证 | 本任务未持有或请求 Key；自动化不得发起真实网络请求。 |
 | DeepSeek 的远端处理、保留、地域和政策 | 外部服务边界 | 项目无法保证；以 [DeepSeek 隐私政策](https://cdn.deepseek.com/policies/en-US/deepseek-privacy-policy.html) 为准。 |
 
@@ -85,8 +85,8 @@ W30 是以 W28 基线建立的独立 sibling 任务。W29 为暂停的独立工�
    的 push `30615939286` 和 PR `30615942372` 均四项通过。发布审计必须比较最终 PR #35 的
    base/head/diff/review/mergeability 与对应 CI 证据。自动化不调用真实 Gateway 或 DeepSeek。
 5. 设置页滚动可达性后续修复已完成紧凑逻辑视口、完整 pytest、Ruff/format/mypy/lock、fresh wheel smoke、文档链接和
-   候选敏感信息扫描；代码 head `19c7510` 的 push `30619684274` 和 PR `30619687554` 也均四项通过。此审计记录产生的
-   仅文档 head 仍须最终 exact-head CI/PR 复核。用户实际 Windows 缩放下的鼠标滚轮、滚动条和键盘访问属于无法由 headless
+   候选敏感信息扫描；代码 head `19c7510` 的 push `30619684274` 和 PR `30619687554` 也均四项通过。任何后续仅文档
+   head 都按其最终 exact-head CI/PR 元数据复核。用户实际 Windows 缩放下的鼠标滚轮、滚动条和键盘访问属于无法由 headless
    Qt 忠实替代的最小视觉/交互确认，不能把模拟结果写成已通过。
 6. 用户提供 Key 后，可由用户显式发起一次不带真实历史、长期记忆或视觉摘要的非敏感连通性验证。它只能证明当时的
    账号/网络/服务组合，不证明远端隐私政策或长期可用性；Key、请求正文和响应正文不入仓库或证据。
