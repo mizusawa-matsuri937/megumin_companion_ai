@@ -555,7 +555,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         dev_api = apply_hard_limits(dev_api, settings.limits)
     except ValueError as exc:
         parser.error(str(exc))
-    application = create_app(settings, dev_api=dev_api)
+    application = create_app(
+        settings,
+        dev_api=dev_api,
+        allow_deepseek_env_fallback=True,
+    )
     _print_dev_api_credential(dev_api)
     _run_server(
         application,

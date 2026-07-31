@@ -6,7 +6,13 @@ from pathlib import Path
 import pytest
 import yaml
 from app.config import ConfigurationError, load_settings, write_user_settings
-from app.config.settings import LLMConfig, ProviderTransportConfig, TTSConfig, VTSConfig
+from app.config.settings import (
+    AvatarConfig,
+    LLMConfig,
+    ProviderTransportConfig,
+    TTSConfig,
+    VTSConfig,
+)
 from app.paths import AppPaths
 
 
@@ -190,6 +196,14 @@ def test_explicit_config_does_not_change_managed_runtime_paths(tmp_path: Path) -
     assert settings.config_source == "内置默认配置 + 开发配置 custom.yaml"
     assert settings.paths == paths
     assert settings.log_file_path() == paths.logs / "app.jsonl"
+
+
+def test_avatar_tick_period_must_fit_inside_keepalive_bound() -> None:
+    with pytest.raises(ValueError, match="keepalive"):
+        AvatarConfig(tick_hz=10.0, keepalive_seconds=0.05)
+
+    config = AvatarConfig(tick_hz=10.0, keepalive_seconds=0.1)
+    assert config.keepalive_seconds == 0.1
 
 
 def test_layer_order_is_defaults_user_cli_then_environment(tmp_path: Path) -> None:

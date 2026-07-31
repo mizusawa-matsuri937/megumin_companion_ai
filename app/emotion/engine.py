@@ -141,6 +141,43 @@ class EmotionEngine:
             )
         )
 
+    def resolve_label_suggestion(
+        self,
+        label: EmotionLabel,
+        *,
+        at: datetime | None = None,
+    ) -> EmotionState:
+        """Bound one categorical LLM hint without accepting numeric model controls."""
+
+        if not isinstance(label, EmotionLabel):
+            raise ValueError("LLM emotion label is invalid")
+        occurred_at = at or self._clock.now()
+        before = self._state
+        if occurred_at < before.last_updated_at:
+            raise ValueError("emotion suggestions must be applied in chronological order")
+
+        updates: dict[str, object] = {
+            "last_updated_at": occurred_at,
+            "reason_code": "llm_label_suggestion",
+        }
+        if label is not before.dominant_label:
+            can_change = (
+                before.dominant_label is EmotionLabel.neutral
+                or occurred_at - before.label_since >= self._label_min_duration
+            )
+            if label is EmotionLabel.explosion_mode and self._last_explosion_at is not None:
+                can_change = can_change and (
+                    occurred_at - self._last_explosion_at >= self._explosion_cooldown
+                )
+            if can_change:
+                updates["dominant_label"] = label
+                updates["label_since"] = occurred_at
+                if label is EmotionLabel.explosion_mode:
+                    self._last_explosion_at = occurred_at
+
+        self._state = before.model_copy(update=updates)
+        return self._state
+
     def decay(self, *, at: datetime | None = None) -> EmotionTransition:
         occurred_at = at or self._clock.now()
         if occurred_at < self._state.last_updated_at:

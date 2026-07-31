@@ -40,6 +40,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--root", action="append", type=_root_argument, required=True)
     parser.add_argument("--output-device-id", default="")
     parser.add_argument("--maximum-wave-bytes", type=int, default=32 * 1024 * 1024)
+    parser.add_argument("--playback-chunk-ms", type=float, default=30.0)
+    parser.add_argument("--mouth-noise-floor", type=float, default=0.02)
+    parser.add_argument("--mouth-gain", type=float, default=4.0)
+    parser.add_argument("--mouth-attack-seconds", type=float, default=0.04)
+    parser.add_argument("--mouth-release-seconds", type=float, default=0.12)
     parser.add_argument("--stt-executable", type=_absolute_path_argument)
     parser.add_argument("--stt-model", type=_absolute_path_argument)
     parser.add_argument("--stt-temporary-root", type=_absolute_path_argument)
@@ -113,6 +118,11 @@ async def run(argv: Sequence[str] | None = None) -> int:
         handler_options: dict[str, object] = {
             "selected_device_id": args.output_device_id or None,
             "maximum_wave_bytes": args.maximum_wave_bytes,
+            "playback_chunk_ms": args.playback_chunk_ms,
+            "mouth_noise_floor": args.mouth_noise_floor,
+            "mouth_gain": args.mouth_gain,
+            "mouth_attack_seconds": args.mouth_attack_seconds,
+            "mouth_release_seconds": args.mouth_release_seconds,
         }
         if stt_config is not None:
             handler_options.update(

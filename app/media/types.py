@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import re
 from dataclasses import dataclass
 
@@ -85,3 +86,34 @@ class OutputDeviceList:
             not isinstance(self.reason_code, str) or not _REASON_CODE.fullmatch(self.reason_code)
         ):
             raise ValueError("audio output device reason is invalid")
+
+
+@dataclass(frozen=True, slots=True)
+class MouthEnvelopeSample:
+    """Content-free playback progress safe to cross the worker boundary."""
+
+    turn_id: str
+    playback_job_id: str
+    sequence: int
+    value: float
+    terminal: bool = False
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.turn_id, str)
+            or not self.turn_id
+            or len(self.turn_id) > 128
+            or "\x00" in self.turn_id
+            or not isinstance(self.playback_job_id, str)
+            or not self.playback_job_id
+            or len(self.playback_job_id) > 96
+            or isinstance(self.sequence, bool)
+            or not isinstance(self.sequence, int)
+            or self.sequence < 1
+            or isinstance(self.value, bool)
+            or not isinstance(self.value, (int, float))
+            or not math.isfinite(self.value)
+            or not 0.0 <= float(self.value) <= 1.0
+            or not isinstance(self.terminal, bool)
+        ):
+            raise ValueError("mouth envelope sample invalid")

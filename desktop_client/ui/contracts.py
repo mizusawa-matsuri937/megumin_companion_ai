@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -39,6 +40,20 @@ MAX_MANAGEMENT_PREVIEW_CHARS = 512
 MAX_MANAGEMENT_CONTENT_CHARS = 5_000
 MAX_MANAGEMENT_PATH_CHARS = 4_096
 MAX_SECRET_CHARS = 64 * 1024
+MAX_PROVIDER_PREFLIGHT_CHECKS = 7
+
+AvatarLayerName: TypeAlias = Literal[
+    "parameter_control",
+    "lip_sync",
+    "body_motion",
+    "automatic_red_eye",
+]
+AVATAR_LAYER_NAMES: tuple[AvatarLayerName, ...] = (
+    "parameter_control",
+    "lip_sync",
+    "body_motion",
+    "automatic_red_eye",
+)
 
 
 def _validate_bounded_text(
@@ -159,6 +174,21 @@ class DesktopSettingsForm:
     output_device_id: str = ""
     system_playback_enabled: bool = False
     stt_profile: str = MANAGED_STT_PROFILE
+    tts_preset_name: str = "default"
+    tts_ref_audio_path: str = ""
+    tts_ref_audio_scope: Literal["service_resource", "local_file"] = "service_resource"
+    tts_prompt_text: str = ""
+    tts_prompt_lang: str = "zh"
+    avatar_enabled: bool = True
+    avatar_parameter_control_enabled: bool = True
+    avatar_micro_motion_enabled: bool = True
+    avatar_lip_sync_enabled: bool = True
+    avatar_body_motion_enabled: bool = True
+    avatar_auto_red_eye_enabled: bool = True
+    avatar_mouth_noise_floor: float = 0.02
+    avatar_mouth_gain: float = 4.0
+    avatar_mouth_attack_seconds: float = 0.04
+    avatar_mouth_release_seconds: float = 0.12
 
     def __post_init__(self) -> None:
         for field_name, value, maximum, allow_empty in (
@@ -174,6 +204,20 @@ class DesktopSettingsForm:
             ("stt_model_path", self.stt_model_path, MAX_MANAGEMENT_PATH_CHARS, False),
             ("stt_device", self.stt_device, 256, True),
             ("output_device_id", self.output_device_id, 40, True),
+            ("tts_preset_name", self.tts_preset_name, 128, False),
+            (
+                "tts_ref_audio_path",
+                self.tts_ref_audio_path,
+                MAX_MANAGEMENT_PATH_CHARS,
+                True,
+            ),
+            (
+                "tts_prompt_text",
+                self.tts_prompt_text,
+                MAX_MANAGEMENT_CONTENT_CHARS,
+                True,
+            ),
+            ("tts_prompt_lang", self.tts_prompt_lang, 32, False),
         ):
             _validate_bounded_text(
                 value,
@@ -187,6 +231,61 @@ class DesktopSettingsForm:
             raise ValueError("output_device_id is outside the bridge bound")
         if not isinstance(self.system_playback_enabled, bool):
             raise ValueError("system_playback_enabled is outside the bridge bound")
+        for avatar_field_name, avatar_flag in (
+            ("avatar_enabled", self.avatar_enabled),
+            ("avatar_parameter_control_enabled", self.avatar_parameter_control_enabled),
+            ("avatar_micro_motion_enabled", self.avatar_micro_motion_enabled),
+            ("avatar_lip_sync_enabled", self.avatar_lip_sync_enabled),
+            ("avatar_body_motion_enabled", self.avatar_body_motion_enabled),
+            ("avatar_auto_red_eye_enabled", self.avatar_auto_red_eye_enabled),
+        ):
+            if not isinstance(avatar_flag, bool):
+                raise ValueError(f"{avatar_field_name} is outside the bridge bound")
+        for (
+            avatar_field_name,
+            numeric_value,
+            lower_bound,
+            upper_bound,
+            lower_inclusive,
+            upper_inclusive,
+        ) in (
+            ("avatar_mouth_noise_floor", self.avatar_mouth_noise_floor, 0.0, 1.0, True, False),
+            ("avatar_mouth_gain", self.avatar_mouth_gain, 0.0, 100.0, False, True),
+            (
+                "avatar_mouth_attack_seconds",
+                self.avatar_mouth_attack_seconds,
+                0.001,
+                2.0,
+                True,
+                True,
+            ),
+            (
+                "avatar_mouth_release_seconds",
+                self.avatar_mouth_release_seconds,
+                0.001,
+                5.0,
+                True,
+                True,
+            ),
+        ):
+            if (
+                isinstance(numeric_value, bool)
+                or not isinstance(numeric_value, (int, float))
+                or not math.isfinite(float(numeric_value))
+                or (
+                    float(numeric_value) < lower_bound
+                    if lower_inclusive
+                    else float(numeric_value) <= lower_bound
+                )
+                or (
+                    float(numeric_value) > upper_bound
+                    if upper_inclusive
+                    else float(numeric_value) >= upper_bound
+                )
+            ):
+                raise ValueError(f"{avatar_field_name} is outside the bridge bound")
+        if self.tts_ref_audio_scope not in {"service_resource", "local_file"}:
+            raise ValueError("tts_ref_audio_scope is outside the bridge bound")
         try:
             object.__setattr__(self, "stt_profile", managed_stt_manifest(self.stt_profile).profile)
         except ValueError as exc:
@@ -201,6 +300,7 @@ class SettingsSnapshot:
     llm_secret_configured: bool
     vts_secret_configured: bool
     settings_schema_upgrade_required: bool
+    deepseek_flash_configured: bool = False
     stt_runtime: SttRuntimeStatus = field(
         default_factory=lambda: SttRuntimeStatus(SttRuntimeState.missing)
     )
@@ -228,6 +328,42 @@ class SettingsSaveCommand:
 
 
 @dataclass(frozen=True, slots=True)
+class DeepSeekFlashConfigureCommand:
+    """Save one purpose-bound DeepSeek key and activate the fixed Flash profile."""
+
+    value: str = field(repr=False)
+    command_id: str = field(default_factory=lambda: prefixed_id("cmd"))
+    protocol_version: Literal[1] = field(default=BRIDGE_PROTOCOL_VERSION, init=False)
+    type: Literal["deepseek.flash.configure"] = field(
+        default="deepseek.flash.configure",
+        init=False,
+    )
+
+    def __post_init__(self) -> None:
+        _validate_command_id(self.command_id)
+        _validate_bounded_text(
+            self.value,
+            field_name="DeepSeek API key",
+            maximum=MAX_SECRET_CHARS,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class DeepSeekFlashDisableCommand:
+    """Disable the DeepSeek profile before revoking its isolated credential."""
+
+    command_id: str = field(default_factory=lambda: prefixed_id("cmd"))
+    protocol_version: Literal[1] = field(default=BRIDGE_PROTOCOL_VERSION, init=False)
+    type: Literal["deepseek.flash.disable"] = field(
+        default="deepseek.flash.disable",
+        init=False,
+    )
+
+    def __post_init__(self) -> None:
+        _validate_command_id(self.command_id)
+
+
+@dataclass(frozen=True, slots=True)
 class SttInstallCommand:
     """Explicitly install or repair the one managed local Chinese STT runtime."""
 
@@ -246,6 +382,18 @@ class AudioOutputDevicesCommand:
     command_id: str = field(default_factory=lambda: prefixed_id("cmd"))
     protocol_version: Literal[1] = field(default=BRIDGE_PROTOCOL_VERSION, init=False)
     type: Literal["audio.output_devices"] = field(default="audio.output_devices", init=False)
+
+    def __post_init__(self) -> None:
+        _validate_command_id(self.command_id)
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderPreflightCommand:
+    """Explicitly probe the persisted TTS/VTS configuration on BackendThread."""
+
+    command_id: str = field(default_factory=lambda: prefixed_id("cmd"))
+    protocol_version: Literal[1] = field(default=BRIDGE_PROTOCOL_VERSION, init=False)
+    type: Literal["provider.preflight"] = field(default="provider.preflight", init=False)
 
     def __post_init__(self) -> None:
         _validate_command_id(self.command_id)
@@ -406,8 +554,11 @@ class ManagementDebugCommand:
 ManagementCommand: TypeAlias = (
     ManagementRefreshCommand
     | SettingsSaveCommand
+    | DeepSeekFlashConfigureCommand
+    | DeepSeekFlashDisableCommand
     | SttInstallCommand
     | AudioOutputDevicesCommand
+    | ProviderPreflightCommand
     | SecretStoreCommand
     | SecretRevokeCommand
     | FeatureSetCommand
@@ -577,6 +728,63 @@ class AudioOutputDevicesEvent:
             _validate_command_id(self.command_id)
 
 
+class ProviderPreflightState(StrEnum):
+    pending = "pending"
+    running = "running"
+    ready = "ready"
+    skipped = "skipped"
+    failed = "failed"
+    action_required = "action_required"
+    reconnecting = "reconnecting"
+
+
+ProviderPreflightName: TypeAlias = Literal[
+    "tts_service",
+    "tts_preset",
+    "tts_reference",
+    "vts_service",
+    "vts_authentication",
+    "vts_model",
+    "vts_hotkeys",
+]
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderPreflightCheck:
+    """One content-free W19 capability check."""
+
+    name: ProviderPreflightName
+    state: ProviderPreflightState
+    reason_code: str | None = None
+    missing_count: int = 0
+
+    def __post_init__(self) -> None:
+        if self.reason_code is not None and not is_stable_reason_code(self.reason_code):
+            raise ValueError("provider preflight reason must be a stable code")
+        if self.missing_count < 0 or self.missing_count > 256:
+            raise ValueError("provider preflight count is outside the bridge bound")
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderPreflightEvent:
+    """A complete, bounded snapshot with no provider bodies or identifiers."""
+
+    checks: tuple[ProviderPreflightCheck, ...]
+    command_id: str | None = None
+    emitted_at: datetime = field(default_factory=utc_now)
+    protocol_version: Literal[1] = field(default=BRIDGE_PROTOCOL_VERSION, init=False)
+    type: Literal["provider.preflight"] = field(default="provider.preflight", init=False)
+
+    def __post_init__(self) -> None:
+        if not self.checks or len(self.checks) > MAX_PROVIDER_PREFLIGHT_CHECKS:
+            raise ValueError("provider preflight snapshot is outside the bridge bound")
+        names = tuple(check.name for check in self.checks)
+        if len(set(names)) != len(names):
+            raise ValueError("provider preflight names must be unique")
+        if self.command_id is not None:
+            _validate_command_id(self.command_id)
+
+
 @dataclass(frozen=True, slots=True)
 class FeatureStatesEvent:
     states: tuple[FeatureState, ...]
@@ -715,6 +923,32 @@ class ManagementResultEvent:
 
 
 @dataclass(frozen=True, slots=True)
+class AvatarLayerStatus:
+    """One content-free W28 layer capability shown by the desktop UI."""
+
+    name: AvatarLayerName
+    available: bool
+    reason_code: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.name not in AVATAR_LAYER_NAMES or not isinstance(self.available, bool):
+            raise ValueError("avatar layer status is invalid")
+        if self.reason_code is not None and not is_stable_reason_code(self.reason_code):
+            raise ValueError("avatar layer reason must be a stable code")
+
+
+def _default_avatar_layers() -> tuple[AvatarLayerStatus, ...]:
+    return tuple(
+        AvatarLayerStatus(
+            name=name,
+            available=False,
+            reason_code="avatar_disabled",
+        )
+        for name in AVATAR_LAYER_NAMES
+    )
+
+
+@dataclass(frozen=True, slots=True)
 class ManagementDebugEvent:
     version: str
     capabilities: BackendCapabilities
@@ -722,6 +956,7 @@ class ManagementDebugEvent:
     command_queue_capacity: int
     event_queue_count: int
     event_queue_capacity: int
+    avatar_layers: tuple[AvatarLayerStatus, ...] = field(default_factory=_default_avatar_layers)
     command_id: str | None = None
     emitted_at: datetime = field(default_factory=utc_now)
     protocol_version: Literal[1] = field(default=BRIDGE_PROTOCOL_VERSION, init=False)
@@ -739,6 +974,11 @@ class ManagementDebugEvent:
         ):
             if count < 0 or capacity < 1 or count > capacity:
                 raise ValueError("debug queue state is outside the bridge bound")
+        if (
+            len(self.avatar_layers) != len(AVATAR_LAYER_NAMES)
+            or tuple(layer.name for layer in self.avatar_layers) != AVATAR_LAYER_NAMES
+        ):
+            raise ValueError("avatar layer snapshot is outside the bridge contract")
         if self.command_id is not None:
             _validate_command_id(self.command_id)
 
@@ -754,6 +994,7 @@ BridgeEvent: TypeAlias = (
     | BridgeOverflowEvent
     | SettingsSnapshotEvent
     | AudioOutputDevicesEvent
+    | ProviderPreflightEvent
     | FeatureStatesEvent
     | MemoryListEvent
     | MemoryDetailEvent
@@ -791,6 +1032,7 @@ def is_terminal_event(event: BridgeEvent) -> bool:
         (
             SettingsSnapshotEvent,
             AudioOutputDevicesEvent,
+            ProviderPreflightEvent,
             FeatureStatesEvent,
             MemoryListEvent,
             MemoryDetailEvent,

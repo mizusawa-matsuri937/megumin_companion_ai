@@ -4,6 +4,7 @@ import asyncio
 import threading
 import wave
 from pathlib import Path
+from typing import Any
 
 import pytest
 from app.clients.llm import MockLLMProvider
@@ -153,31 +154,32 @@ def test_mock_tts_total_deadline_covers_wave_generation_and_registry_cleanup(
         temp_registry=registry,
     )
     original_write = provider._write_wave
-    write_started = threading.Event()
     release_write = threading.Event()
 
-    def controlled_slow_write(path: Path, frequency_hz: float) -> None:
-        write_started.set()
-        assert release_write.wait(timeout=1)
-        original_write(path, frequency_hz)
-
-    monkeypatch.setattr(provider, "_write_wave", controlled_slow_write)
-
     async def scenario() -> None:
+        loop = asyncio.get_running_loop()
+        original_loop_time = loop.time
+        deadline_offset_seconds = 0.0
+        write_started = asyncio.Event()
+        finish_owned_entered = asyncio.Event()
         token = CancellationToken("turn_mock_deadline")
-        controller_error: list[BaseException] = []
+        original_finish_owned = mock_tts_module._finish_owned
 
-        def release_after_deadline() -> None:
-            try:
-                assert write_started.wait(timeout=1)
-                assert not release_write.wait(timeout=0.15)
-                release_write.set()
-            except BaseException as exc:
-                controller_error.append(exc)
-                release_write.set()
+        def controlled_loop_time() -> float:
+            return original_loop_time() + deadline_offset_seconds
 
-        controller = threading.Thread(target=release_after_deadline)
-        controller.start()
+        def controlled_slow_write(path: Path, frequency_hz: float) -> None:
+            loop.call_soon_threadsafe(write_started.set)
+            assert release_write.wait(timeout=3)
+            original_write(path, frequency_hz)
+
+        async def observed_finish_owned(task: asyncio.Task[Any]) -> Any:
+            finish_owned_entered.set()
+            return await original_finish_owned(task)
+
+        monkeypatch.setattr(provider, "_write_wave", controlled_slow_write)
+        monkeypatch.setattr(mock_tts_module, "_finish_owned", observed_finish_owned)
+        loop.time = controlled_loop_time  # type: ignore[method-assign]
         task = asyncio.create_task(
             provider.synthesize(
                 TTSJob(
@@ -186,7 +188,7 @@ def test_mock_tts_total_deadline_covers_wave_generation_and_registry_cleanup(
                     text="synthetic",
                     connect_timeout_ms=5,
                     first_byte_timeout_ms=5,
-                    timeout_ms=100,
+                    timeout_ms=5_000,
                     cancellation_timeout_ms=200,
                     cancellation_token_id=token.token_id,
                 ),
@@ -195,11 +197,22 @@ def test_mock_tts_total_deadline_covers_wave_generation_and_registry_cleanup(
             )
         )
         try:
-            result = await asyncio.wait_for(task, timeout=1)
+            try:
+                await asyncio.wait_for(write_started.wait(), timeout=3)
+                deadline_offset_seconds = 10.0
+                await asyncio.sleep(0)
+                await asyncio.wait_for(finish_owned_entered.wait(), timeout=3)
+                assert not task.done()
+            finally:
+                release_write.set()
+            result = await asyncio.shield(task)
         finally:
-            controller.join(timeout=1)
+            release_write.set()
+            try:
+                await asyncio.gather(task, return_exceptions=True)
+            finally:
+                loop.time = original_loop_time  # type: ignore[method-assign]
 
-        assert controller_error == []
         assert write_started.is_set()
         assert not result.success
         assert result.error_code == "tts_total_timeout"

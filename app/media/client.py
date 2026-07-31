@@ -13,7 +13,12 @@ from uuid import uuid4
 
 from app.config import Settings
 from app.core.cancellation import CancellationToken
-from app.media.types import MAX_OUTPUT_DEVICES, AudioOutputDevice, OutputDeviceList
+from app.media.types import (
+    MAX_OUTPUT_DEVICES,
+    AudioOutputDevice,
+    MouthEnvelopeSample,
+    OutputDeviceList,
+)
 from app.pipelines.audio_player import AudioPlaybackResult
 from app.schemas import AudioResult
 from app.windows_security import directory_security_for_current_platform
@@ -22,6 +27,7 @@ from app.workers import (
     ResourceReference,
     SupervisorConfig,
     WorkerError,
+    WorkerJobProgress,
     WorkerSupervisor,
     process_adapter_for_current_platform,
 )
@@ -32,6 +38,7 @@ _RESOURCE_WAVE = "wave"
 _PLAYBACK_DEADLINE_SECONDS = 125.0
 _REVIEW_PLAYBACK_DEADLINE_SECONDS = 25.0
 _REVIEW_MAXIMUM_JOB_SECONDS = 30.0
+MouthEnvelopeListener = Callable[[MouthEnvelopeSample], object]
 
 
 class _MediaSupervisor(Protocol):
@@ -44,6 +51,7 @@ class _MediaSupervisor(Protocol):
         job_kind: str,
         resources: Sequence[ResourceReference] = (),
         hard_deadline_seconds: float | None = None,
+        progress_callback: Callable[[WorkerJobProgress], None] | None = None,
     ) -> dict[str, Any]: ...
 
     async def cancel_job(self, job_id: str, *, deadline_at: float | None = None) -> None: ...
@@ -63,6 +71,7 @@ class MediaWorkerAudioPlayer:
         supervisor_factory: Callable[[], _MediaSupervisor] | None = None,
         prepare_roots: Callable[[], None] | None = None,
         playback_deadline_seconds: float = _PLAYBACK_DEADLINE_SECONDS,
+        mouth_envelope_listener: MouthEnvelopeListener | None = None,
     ) -> None:
         if (supervisor is None) == (supervisor_factory is None):
             raise ValueError("media worker requires exactly one supervisor source")
@@ -82,6 +91,7 @@ class MediaWorkerAudioPlayer:
         self._supervisor_factory = supervisor_factory
         self._prepare_roots = prepare_roots
         self._playback_deadline_seconds = float(playback_deadline_seconds)
+        self._mouth_envelope_listener = mouth_envelope_listener
         self._operation_lock = asyncio.Lock()
         self._state_lock = asyncio.Lock()
         self._active_job_id: str | None = None
@@ -89,7 +99,12 @@ class MediaWorkerAudioPlayer:
         self._closed = False
 
     @classmethod
-    def for_settings(cls, settings: Settings) -> MediaWorkerAudioPlayer:
+    def for_settings(
+        cls,
+        settings: Settings,
+        *,
+        mouth_envelope_listener: MouthEnvelopeListener | None = None,
+    ) -> MediaWorkerAudioPlayer:
         roots = {
             _ROOT_TEMP: settings.paths.temp / "audio",
             _ROOT_CACHE: settings.paths.audio_cache,
@@ -104,7 +119,15 @@ class MediaWorkerAudioPlayer:
         def make_supervisor() -> WorkerSupervisor:
             prepare_roots()
             policy = ApprovedResourcePolicy(roots=roots)
-            command = _worker_command(roots, settings.pipeline.output_device_id)
+            command = _worker_command(
+                roots,
+                settings.pipeline.output_device_id,
+                playback_chunk_ms=settings.avatar.playback_chunk_ms,
+                mouth_noise_floor=settings.avatar.mouth_noise_floor,
+                mouth_gain=settings.avatar.mouth_gain,
+                mouth_attack_seconds=settings.avatar.mouth_attack_seconds,
+                mouth_release_seconds=settings.avatar.mouth_release_seconds,
+            )
             return WorkerSupervisor(
                 name="media",
                 role="media",
@@ -122,6 +145,7 @@ class MediaWorkerAudioPlayer:
             selected_device_id=settings.pipeline.output_device_id,
             supervisor_factory=make_supervisor,
             prepare_roots=prepare_roots,
+            mouth_envelope_listener=mouth_envelope_listener,
         )
 
     @classmethod
@@ -186,13 +210,45 @@ class MediaWorkerAudioPlayer:
             except Exception as exc:
                 return _worker_failure(exc)
             job_id = _job_id("play")
-            task = asyncio.create_task(
-                supervisor.run_job(
+            last_progress_sequence = 0
+
+            def progress_callback(progress: WorkerJobProgress) -> None:
+                nonlocal last_progress_sequence
+                if (
+                    progress.job_id != job_id
+                    or progress.kind != "mouth_envelope"
+                    or progress.sequence <= last_progress_sequence
+                ):
+                    return
+                try:
+                    sample = MouthEnvelopeSample(
+                        turn_id=result.turn_id,
+                        playback_job_id=job_id,
+                        sequence=progress.sequence,
+                        value=progress.value,
+                    )
+                except (TypeError, ValueError):
+                    return
+                last_progress_sequence = progress.sequence
+                self._notify_mouth_envelope(sample)
+
+            if self._mouth_envelope_listener is None:
+                run_job = supervisor.run_job(
                     job_id=job_id,
                     job_kind="media.play",
                     resources=(reference,),
                     hard_deadline_seconds=self._playback_deadline_seconds,
-                ),
+                )
+            else:
+                run_job = supervisor.run_job(
+                    job_id=job_id,
+                    job_kind="media.play",
+                    resources=(reference,),
+                    hard_deadline_seconds=self._playback_deadline_seconds,
+                    progress_callback=progress_callback,
+                )
+            task = asyncio.create_task(
+                run_job,
                 name=f"media-play-{job_id}",
             )
             async with self._state_lock:
@@ -222,6 +278,16 @@ class MediaWorkerAudioPlayer:
                     if self._active_job_id == job_id:
                         self._active_job_id = None
                         self._active_task = None
+                if self._mouth_envelope_listener is not None:
+                    self._notify_mouth_envelope(
+                        MouthEnvelopeSample(
+                            turn_id=result.turn_id,
+                            playback_job_id=job_id,
+                            sequence=last_progress_sequence + 1,
+                            value=0.0,
+                            terminal=True,
+                        )
+                    )
             return _parse_playback_result(payload)
 
     async def stop(self, *, immediate: bool = False) -> None:
@@ -290,18 +356,55 @@ class MediaWorkerAudioPlayer:
                 )
         raise ValueError("audio path is outside approved roots")
 
+    def _notify_mouth_envelope(self, sample: MouthEnvelopeSample) -> None:
+        listener = self._mouth_envelope_listener
+        if listener is None:
+            return
+        with suppress(Exception):
+            listener(sample)
 
-def create_media_worker_audio_player(settings: Settings) -> MediaWorkerAudioPlayer:
+
+def create_media_worker_audio_player(
+    settings: Settings,
+    *,
+    mouth_envelope_listener: MouthEnvelopeListener | None = None,
+) -> MediaWorkerAudioPlayer:
     """Construct the production player lazily; no worker starts during import."""
 
-    return MediaWorkerAudioPlayer.for_settings(settings)
+    return MediaWorkerAudioPlayer.for_settings(
+        settings,
+        mouth_envelope_listener=mouth_envelope_listener,
+    )
 
 
-def _worker_command(roots: Mapping[str, Path], selected_device_id: str | None) -> tuple[str, ...]:
+def _worker_command(
+    roots: Mapping[str, Path],
+    selected_device_id: str | None,
+    *,
+    playback_chunk_ms: float = 30.0,
+    mouth_noise_floor: float = 0.02,
+    mouth_gain: float = 4.0,
+    mouth_attack_seconds: float = 0.04,
+    mouth_release_seconds: float = 0.12,
+) -> tuple[str, ...]:
     executable = str(Path(sys.executable).resolve())
     command: list[str] = [executable, "-m", "app.media_entrypoint"]
     for root_id, root in sorted(roots.items()):
         command.extend(("--root", f"{root_id}={root.absolute()}"))
+    command.extend(
+        (
+            "--playback-chunk-ms",
+            str(playback_chunk_ms),
+            "--mouth-noise-floor",
+            str(mouth_noise_floor),
+            "--mouth-gain",
+            str(mouth_gain),
+            "--mouth-attack-seconds",
+            str(mouth_attack_seconds),
+            "--mouth-release-seconds",
+            str(mouth_release_seconds),
+        )
+    )
     if selected_device_id:
         command.extend(("--output-device-id", selected_device_id))
     return tuple(command)

@@ -70,13 +70,26 @@
 
 ## 当前 Wxx 实现记录
 
+- [W30：DeepSeek V4 Flash 独立接入（Draft PR #35；设置页滚动修复的代码 head CI 已通过，真实 Key 验证仍待进行）](implementation/w30_deepseek_flash.md)
 - [W14：文字对话、streaming、取消与恢复](implementation/w14_text_chat_streaming.md)
 - [W15：单实例、托盘和统一生命周期（已合并）](implementation/w15_single_instance_lifecycle.md)
 - [W16：设置、feature 与记忆管理最小 UI（已合并）](implementation/w16_settings_feature_memory_ui.md)
 - [W17：MediaWorker 播放、输出设备与 Gate A（已合并，PR #30）](implementation/w17_media_worker_audio.md)
-- [W18：Push-to-talk、麦克风 ring buffer 与 Whisper Job（Draft PR #31；受管中文 STT 新 head 待独立核验）](implementation/w18_push_to_talk_whisper.md)
+- [W18：Push-to-talk、麦克风 ring buffer 与 Whisper Job（已合并）](implementation/w18_push_to_talk_whisper.md)
+- [W19：真实 VTS/GPT-SoVITS 配置向导与联动（Draft PR #32，自动门通过；真实体验 Gate 待完成）](implementation/w19_provider_preflight.md)
+- [W28：Avatar Runtime、程序微动作与音量口型（Draft PR #33；交付代码自动门与真实 VTS/实际输出已验证，未合并；真实中文 TTS 和自然度 Gate 待完成）](implementation/w28_avatar_runtime.md)
+- [W29：五情绪 GPT-SoVITS 与 VTS 动作联动（Draft PR #34；P0 gateway permit 代码 head 已 8/8 CI 通过，状态记录仍待自身 exact-head CI；主观试听待完成）](implementation/w29_five_emotion_tts_vts.md)
 
-## 当前 W18 技术决策
+## 当前专项计划
+
+- [W30：DeepSeek V4 Flash 独立接入执行计划](plans/w30_deepseek_flash_execution_plan.md)：
+  独立 W30 的固定 Flash 文本出口、专用密钥、上下文开关、紧凑设置窗口的可达性回归与验收边界；不改变 W29 工作树或其验收状态。
+- [W28：Avatar Runtime、程序微动作与音量口型执行计划](plans/w28_avatar_runtime_execution_plan.md)：
+  正式范围、架构、阶段、自动化、真实 VTS/音频验收和 Draft PR 定义；完成证据以实现记录和 exact head 为准。
+- [W29：五情绪 GPT-SoVITS 与 VTS 动作联动执行计划](plans/w29_five_emotion_tts_vts_execution_plan.md)：
+  冻结结构化回合、五声音槽、安全私有网关、真实安装/播放和 stacked Draft PR 交付边界。
+
+## 仍生效的 W18 技术决策
 
 - [受管本地中文 STT 运行时选型](decisions/w18_managed_chinese_stt_runtime.md)：固定 `whisper.cpp` v1.9.1 与
   `ggml-base-q5_1.bin` 的来源、hash、许可、隐私边界和未关闭的上游安全风险。

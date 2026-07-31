@@ -1,6 +1,8 @@
 # Megumin Desktop Companion AI：Windows 开发执行计划
 
-> 版本：2026-07-17 Gate W0 决策落版
+> 原始版本：2026-07-17 Gate W0 决策落版
+>
+> 最新修订：2026-07-31 所有者已授权合并当前全部 PR，包括 W30/DeepSeek，并接受已记录的主观 Gate 与残余发布风险。W29 PR #34 已合入 W28；W30 必须先与该最新 W28/W29 组合、解析重叠并通过新 exact-head 质量门，随后再按堆栈逆序合并。未验证的真实 DeepSeek Key/账号/计费/远端保留不因合并授权而变成已验证；W20～W27 编号与范围不变。
 >
 > 代码基线：`agent/windows-development-baseline` / `d56cfbd`
 >
@@ -25,7 +27,7 @@ W0 架构/隐私决策
 → W1 可安装且安全的运行基座
 → W2 幂等、有界、可恢复的后端
 → W3 Windows 文本桌面垂直切片
-→ W4 语音、音频与 VTS 真实设备闭环
+→ W4 语音、音频、VTS 与 Avatar Runtime 真实设备闭环
 → W5 Windows 感知与主动发话
 → W6 安装、升级、长稳与发布审计
 ```
@@ -257,7 +259,9 @@ flowchart LR
     BE <-->|"继承匿名 pipe\ntyped JSON"| MW["MediaWorker\nJob Object"]
     BE <-->|"继承匿名 pipe\ntyped JSON"| PW["PerceptionWorker\nJob Object"]
     BE -->|"HTTPS"| LLM["LLM provider"]
-    BE -->|"HTTP loopback / HTTPS remote"| TTS["GPT-SoVITS"]
+    BE -->|"DPAPI Bearer + path-free loopback"| TG["私有 TTS 网关"]
+    TG -->|"固定 manifest / 离线推理"| TTS["GPT-SoVITS runtime"]
+    BE -.->|"W19 legacy 配置端点"| TTS
     BE -->|"WS loopback / WSS remote"| VTS["VTube Studio"]
     MW --> WH["whisper.cpp child tree"]
     BE --> DB[("SQLite/WAL")]
@@ -434,8 +438,10 @@ updated_at: UTC
 | `UserMessage.text` | 保留 20,000 字符 schema 上限；另设 provider token 总预算。 |
 | metadata | 8 KiB、最多 16 keys、深度 3；只允许批准字段。 |
 | LLM 完整输出 | 64 KiB UTF-8、128 segments、provider token 上限，任一达到即受控终止。 |
+| W29 结构化回合 | 顶层 plan + segments；只释放完整 schema 段；每轮最多 8 个红眼段；未知/重复/截断/超限 fail closed。 |
 | TTS job queue | 8；生产者背压；取消时原子清空和删除未消费文件。 |
 | ready audio queue | 4；总在途临时音频 64 MiB。 |
+| W29 私有 TTS gateway | JSON body 32 KiB；1 个活动推理 + 2 个等待请求；额外请求 429；单 worker/单切模锁。 |
 | 麦克风 PCM | 16 kHz mono int16，最长 120 秒约 3.84 MiB；预分配/有界，满后停止并报错。 |
 | perception | 同时 1 帧；新 tick 丢弃旧未开始 tick；单帧沿用 20 MiB 上限。 |
 | worker stderr | 每进程 1 MiB ring；只保留无内容诊断。 |
@@ -448,8 +454,9 @@ updated_at: UTC
 | 边界 | timeout/cancel 后 owner | 是否真的停止 | 清理与重试 | 用户状态与无敏感日志 |
 | --- | --- | --- | --- | --- |
 | LLM HTTP stream | provider task，直到 response close | asyncio/httpx 可取消并 close；远端计算可能继续 | 不自动重放已播 turn；按错误类别人工/退避重试 | `llm_timeout/connection/protocol`，只记 provider/model/latency/id |
-| GPT-SoVITS HTTP/WAV | TTS provider + temp registry | request 可取消；远端合成未必停止 | `.part`/ephemeral 登记删除；文件锁下次重试 | 字幕继续，音频 degraded；只记 job id/bytes/duration |
-| VTS WebSocket/action | VTS bridge + generation | socket 可关闭，VTS 已执行动作不可撤销 | purge 旧 generation、neutral reset、jitter reconnect | `vts_disconnected/auth/config`，不记 token/text |
+| W30 DeepSeek Flash HTTP | 专用 provider task，直到 response close | 同上；本地取消不保证 DeepSeek 已停止处理 | 固定 endpoint/model/disabled thinking；图像、multipart content/tool call 本地拒绝，资源不足为 retryable unavailable；不得改为通用 key 或图像回退 | 稳定 `llm_*` reason code；不记 key、header、正文、视觉摘要或远端错误 body |
+| GPT-SoVITS HTTP/WAV | W19 legacy provider，或 W29 provider + 私有 gateway/manifest owner | request 可取消；上游/本机 CUDA 推理在取消瞬间未必停止；launcher close 可杀完整 gateway 子树 | `.part`/ephemeral 登记删除；W29 事务切换完整 pair、失败回滚/quarantine；文件锁下次重试 | 字幕与视觉 fallback 继续，音频 degraded；只记 job id/bytes/duration/稳定码，不记 reference/prompt/path |
+| VTS WebSocket/action | VTS bridge + generation | socket 可关闭；W28 使用已验证的专用 release 入口收束主体动作 | purge 旧 generation、release 主体动作、关闭程序红眼、参数归零、jitter reconnect；不得播放伪 Neutral motion | `vts_disconnected/auth/config`，不记 token/text |
 | PortAudio playback | MediaWorker | soft abort 失败则 Job hard kill | worker temp/lease scavenger，设备重枚举 | `audio_device_lost/hung`，不记 WAV 路径或正文 |
 | 麦克风采集 | MediaWorker bounded buffer | stream close 失败则 Job hard kill | PCM wipe、temp registry、设备重选 | `mic_denied/disconnected/overflow`，不记 PCM/transcript |
 | whisper.cpp | MediaWorker supervisor/Job Object | terminate→grace→kill 整个子树 | 删除 WAV/JSON，crash budget 后 quarantine | `stt_timeout/model/process`，stderr 有界脱敏 |
@@ -483,11 +490,30 @@ flowchart LR
     W15 --> W20 --> W21 --> W22
     W12 --> W21
     W10 --> W22
-    W19 --> W24
+    W19 --> W28 --> W29 --> W24
+    W28 --> W30 --> W24
     W22 --> W23 --> W24 --> W25 --> W26 --> W27
 ```
 
 不可逆基础是 W01～W12。W13 以后不得通过复制临时路径、旧 WS 契约或无界 queue 绕过前置 PR。
+
+### 独立工作项 W30：DeepSeek V4 Flash 文本接入
+
+W30 是从 W28 基线派生的独立、可回滚工作项，不是原 W00～W27 线性阶段的完成声明，也不依赖或修改暂停的 W29。
+详细范围以 [`plans/w30_deepseek_flash_execution_plan.md`](./plans/w30_deepseek_flash_execution_plan.md) 和
+[`adr/ADR-W30-deepseek-flash.md`](./adr/ADR-W30-deepseek-flash.md) 为准。
+
+- **当前状态：** 实施中；没有 W30 exact commit、完整质量门、Draft PR 或真实 Key 连通性证据。
+- **范围：** 专用 `DeepSeekFlashLLMProvider` 固定到 chat-completions、Flash 和 disabled thinking；专用
+  current-user DPAPI Key；桌面配置/停用命令；既有历史、长期记忆**检索**和视觉开关的受限复用；仅发送无 ID、无 URI/path
+  且无自由文本入口的 `ApprovedVisualSummary` 有限语义标签文本。
+- **禁止：** 不引入 SDK，不改通用兼容 Provider，不上传截图/图像 URL/OCR 原文/窗口标题，不接入 Pro 或长期记忆写入；
+  candidate analysis 开启时必须 fail closed。
+- **自动验收：** MockTransport、fake DPAPI、headless UI 与 prompt-context 测试覆盖固定请求、SSE/JSON、错误、
+  密钥隔离/撤销、无泄漏、上下文 gate 和预算。真实 API 不在自动化中调用。
+- **人工/外部边界：** 用户提供 Key 后才可显式进行一次不含历史、长期记忆或视觉摘要的非敏感检查。它不能证明远端
+  保留、地域、费用或长期可用性，且 Key/请求/响应正文不进入证据。
+- **回滚：** 先令 `llm.provider=none` 生效，再撤销专用密钥；保留通用 Provider 配置，不以通用密钥或图像输入绕过失败。
 
 ### Phase W0：决策、威胁模型与测试基准（2～4 工程日 + 人工签字）
 
@@ -610,7 +636,8 @@ flowchart LR
 
 - **责任：AI-R。依赖：W06。风险：P1-06、P1-07、P2-04。**
 - reconnect 下限必须 `>0`；capped exponential backoff + jitter；认证/配置错误分类为非热重试。
-- action 带 turn generation；取消/新 turn/断线时 purge 旧动作并恢复 neutral。
+- action 带 turn generation；取消/新 turn/断线时 purge 旧动作。W09 历史实现中的 neutral 恢复语义由 W28
+  改为显式 release、红眼清理和参数归零；真正 Neutral 不播放主体 motion。
 - 启动 preflight 校验 VTS 可用性、认证、模型、hotkey ID；错误只禁用表情，不影响对话。
 - GPT-SoVITS reference path 分本机服务路径与远端服务资源，不假定 Windows 盘符可被远端看见。
 - **自动验收：** 零退避配置拒绝、断线交错、旧动作不重放、认证撤销、队列溢出。
@@ -696,7 +723,7 @@ flowchart LR
 - **人工验收：** 用户是否能正确理解历史、记忆、视觉、云端和删除语义。
 - **Gate W3 / Beta A：** 干净标准用户安装后，文字对话、取消、托盘、设置、退出和卸载 smoke 通过。
 
-### Phase W4：语音、音频和 VTS 真实设备闭环（8～12 工程日 + 设备人工 Gate）
+### Phase W4：语音、音频、VTS 和 Avatar Runtime 真实设备闭环（原 W17～W19 估算 8～12 工程日；W28/W29 另行校准 + 设备人工 Gate）
 
 #### PR W17：MediaWorker 播放、设备枚举与热插拔
 
@@ -741,6 +768,16 @@ flowchart LR
 
 #### PR W19：真实 VTS/GPT-SoVITS 配置向导与联动
 
+> **当前状态（2026-07-25）：** W19 已在 `codex/w19-provider-preflight` 工作树实现 typed 联合 preflight、
+> 默认 preset/reference 保存、固定文本且不播放的 GPT-SoVITS 端到端检查，以及 VTS API/auth/model/hotkey
+> 分阶段状态。fake HTTP/WebSocket、冷启动、撤销、断线、错误 preset、远端路径不回显和旧 generation 不重放的
+> 扩展聚焦矩阵为 60 passed；完整本地质量门已通过，功能提交
+> [`d641c29`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/d641c29b744bf400d46fe4453aefec0ed69044ee)
+> 已推送并创建 Draft PR [#32](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/32)；交付 head
+> `fc9222f` 的 [PR](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/30157041353) /
+> [push](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/30157040265) 双 OS 自动门已通过；
+> CI 关闭记录的新纯文档 head 仍须独立复核，下列真实体验 Gate 尚未完成。
+
 - **责任：AI-R；真实体验/资产 H。依赖：W09、W16～W18。**
 - preflight 页面展示服务连通、认证、模型、hotkey、preset、reference 资源可见性，不显示 secret。
 - 首次 VTS Allow 必须用户在 VTS 内操作；撤销/重连状态清楚。
@@ -748,6 +785,93 @@ flowchart LR
 - **自动验收：** fake capability server、冷启动、撤销、断线、错误 preset、远端路径不可见。
 - **人工验收：** 专用低额度 key、真实服务、声音/延迟、表情、取消与服务重启。
 - **Gate W4 / Beta B：** text + PTT + local STT + TTS + VTS 在至少三类音频设备上通过；无模型/服务时仍可文字使用。
+
+#### PR W28：Avatar Runtime、程序微动作与音量口型
+
+> **实施状态（2026-07-29）：** 产品代码、完整本地质量门、真实 VTS 和真实 MediaWorker/输出设备验收已在
+> `codex/w28-avatar-runtime` 完成；当前精确树为 `1334 passed, 3 skipped`、aggregate branch coverage
+> `90.55%`，静态/类型/lock/文档/隐私与 CI 同款 wheel 隔离门均通过。三项交付代码提交已推送，以 W19
+> `a64f5ac12a4b14175ecbfd2ac0d76168ac01f589` 为 base 的 stacked Draft PR
+> [#33](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/33) 已创建；交付代码 head
+> `a0b46bc8d7d46087b5cbf2db1a43f063ede62ab8` 的 push/PR 双 OS `quality` 与 `installed-wheel`
+> 共 8 项全部通过。PR 仍为 open Draft、未合并；当前用户设置没有 GPT-SoVITS preset，故真实中文 TTS
+> 播放仍未验证，主观自然度 Gate 也仍待所有者判断。
+> 详细执行包与证据见 [`plans/w28_avatar_runtime_execution_plan.md`](./plans/w28_avatar_runtime_execution_plan.md)
+> 和 [`implementation/w28_avatar_runtime.md`](./implementation/w28_avatar_runtime.md)。
+
+- **责任：AI-R；真实 VTS/音频和主观自然度 H。依赖：W19；风险：P1-03、P1-06、P1-07、P1-13、P2-04。**
+- 建立唯一 `AvatarRuntime` 和唯一 VTS 参数写入器；离散动作使用有界优先队列，高频参数使用
+  latest-frame mailbox，VTS 慢时合并旧帧而非排队追赶。
+- 扩展 VTS client 的参数能力查询/注入、Expression state/activation 和经严格 schema 验证的事件订阅；
+  按当前模型的唯一语义名称解析 hotkey，不硬编码私人 ID。
+- 整轮只冻结一个主情绪；主体动作在真实播放开始时触发一次，无音频时仍触发视觉一次。同情绪不重播，
+  情绪变化先调用专用 release，Neutral 只释放，取消立即闭嘴并释放，取消后同情绪下一轮可重播。
+- 本地控制器生成眨眼、说话/空闲视线、呼吸、低幅头动和低强度情绪微表情；音量包络只控制
+  `MouthOpen`，不做 MouthForm、FFT 宽/圆嘴或 viseme。
+- MediaWorker 按实际输出 PCM 分块计算 RMS，只通过严格、有界、latest-wins 的 `job.progress`
+  传递 0～1 标量；PCM、路径、设备名、对话和声音内容不离开 worker。取消、失败、崩溃和终态均由父侧
+  强制 MouthOpen=0。
+- 红眼使用显式 Expression activation 和 `off/manual/system` 所有权：系统约 2 秒关闭，活动中重触发只续期，
+  人工开启只能人工关闭；启动、重连、切模和正常退出无条件清理。
+- 私有模型、动作、Expression、声音、日志、截图、备份和绝对路径不得进入仓库、fixture、wheel 或 PR。
+- **自动验收：** VTS fake server；fake clock/seeded RNG；动作/Neutral/取消/red-eye 状态机；
+  worker progress schema/flood/stale/terminal；8/16/24/32-bit PCM RMS；慢 VTS、Worker crash、断线、
+  无音频、shutdown、数万帧稳定性；完整质量门和产物隔离。
+- **真实验收：** 真实 VTS 参数能力和 release→motion 顺序；真实 MediaWorker 分块播放、取消、静音和中文
+  TTS 口型；红眼人工/系统交错；模型切换/重连/退出清理。Mock、合成 WAV 和单个代表动作不得冒充完整证据。
+- **人工 Gate：** 只保留嘴部 gain/attack/release、眨眼、视线、呼吸和头动的主观自然度；协议、状态机、
+  计时、取消、队列和日志必须先由 AI 自动验证。
+- **回滚：** Avatar 参数和自动红眼 disabled；MouthOpen=0；主体动作在 release 不可靠时 disabled；
+  文字和原有安全音频路径继续。不得以损坏播放或可能关闭人工红眼换取功能。
+- **交付：** 聚焦提交、推送和 Draft PR 是 W28 完成定义的一部分；未获明确授权不得合并。
+
+#### PR W29：五情绪 GPT-SoVITS 与 VTS 动作联动
+
+> **实施状态（2026-07-30）：** `codex/w29-five-emotion-tts` 已完成公共实现、五槽仓库外私有安装、
+> 真实中文 gateway→MediaWorker→VTS 链路和本地完整质量门。当前精确树收集 1,470 项，
+> `1467 passed, 3 skipped`，aggregate branch coverage `90.55%`；Ruff、279 文件格式、strict mypy
+> 272 source 和根/网关两个 lock check 通过。功能提交
+> [`3de8bc5`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/3de8bc599b2dde2db42460f39dd231739c9422ec)
+> 已推送，以 `codex/w28-avatar-runtime` 为 base 的 stacked Draft PR
+> [#34](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/34) 已创建并核对 base/head；
+> 状态 head [`4404460`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/4404460c6b9fb4cd6140c070ab3831c491d0ca1b)
+> 的 [push workflow](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/30491796135)
+> 与 [PR workflow](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/30491797289)
+> 均 completed/success，macOS/Windows `quality` 与 `installed-wheel` 共 8 项通过。本 CI 关闭记录仍须
+> 独立检查，最终报告以 PR live latest head/checks 为准。证据见
+> [`plans/w29_five_emotion_tts_vts_execution_plan.md`](./plans/w29_five_emotion_tts_vts_execution_plan.md)、
+> [`implementation/w29_five_emotion_tts_vts.md`](./implementation/w29_five_emotion_tts_vts.md) 和
+> [`adr/ADR-W29-private-tts-gateway-and-structured-turns.md`](./adr/ADR-W29-private-tts-gateway-and-structured-turns.md)。
+
+> **P0 稳定性修复（2026-07-30，代码 head CI 已通过）：** 应用 gateway client 在完成 worker callback 中漏掉
+> `BoundedSemaphore` permit 归还，已确认为 #34 合并阻断项。现有“未结算取消 worker 时拒绝所有新请求”是 W08
+> 明确的 fail-closed circuit，而非可直接删除的偶然代码；在单 owner、三请求 admission 与不可中止推理线程下，
+> 删除它会把故障改为队列堆积/429，不能称为恢复。P0 必须证明连续成功合成不会耗尽容量并保留取消/清理语义；
+> 本地验证与 P0 提交 `a790f47` 的 push/PR 双 workflow 8/8 均已通过；当前状态记录仍待自身 exact-head CI。
+> 完整 WAV 的首句延迟、流式 PCM 和卡死 gateway 的 restart/self-healing 需后续架构/安全设计。
+
+- **责任：AI-R；声音/角色资产和主观自然度 H。依赖：W28；风险：P1-03、P1-04、P1-05、P1-07、
+  P1-14、P2-04、P2-06。**
+- 真实 LLM 使用严格增量 JSON，只允许整轮 emotion、focused variant 和逐段 red-eye；完整对象校验后才
+  释放正文，控制字段、半成品或非法输入不显示、不朗读。
+- EmotionEngine 保留最终裁决；声音槽、速率、主体动作语义、transition 和爆裂/中二病最低红眼规则均由
+  本地派生。`excited` 固定映射 `excited_explosion@1.00`；LLM 不能输出权重、路径、槽位或 VTS 入口。
+- 五个 v2ProPlus 声音槽只在仓库外私有 manifest 中绑定权重、参考 WAV 和日语提示；
+  `prompt_lang=ja`、`text_lang=zh`。安全 ZIP 导入、SHA-256、CurrentUser ACL、固定官方提交/公共模型树
+  和 inference-only 锁共同约束可加载输入。
+- 私有 gateway 只暴露 DPAPI Bearer 认证后的 loopback health/TTS，request path-free；单 worker、一个活动
+  推理和两个等待请求。GPT/SoVITS pair 在同一锁内事务切换，失败完整回滚，回滚失败 quarantine。
+- 主程序不自动启动 gateway；桌面启动器使用 kill-on-close Windows Job Object。取消、失败和关闭清理
+  临时 WAV、口型、主体动作与子进程树，文字和安全视觉 fallback 继续。
+- **自动验收：** 任意 chunk/截断/重复/超限 JSON、控制字段不泄漏、本地路由与候选防重复、播放顺序红眼、
+  generation 取消；ZIP/hash/ACL/source tree、Host/Origin/auth/body/admission、切模/回滚/quarantine、
+  launcher cleanup、wheel/source quarantine 和私有 denylist。
+- **真实验收：** 五槽中文非静音 WAV、batch 20、20 次交替切模；14 个 VTS 外观语义 preflight；
+  production provider、MediaWorker、实际输出和 VTS 的口型/动作/红眼/取消/清理。
+- **人工 Gate：** 只保留五种音色差异、中文自然度、情绪表达和随机动作与台词协调的所有者试听。
+- **回滚：** 关闭 gateway 启动器并将 TTS 切回 Mock 或 silent；Avatar 与文字继续、嘴保持闭合。
+  不删除私有声音、runtime、VTS 配置或备份。
+- **交付：** 聚焦提交、push、stacked Draft PR 和最新 exact-head 双 OS CI 是完成定义；不得合并。
 
 ### Phase W5：Windows 感知与主动发话（10～15 工程日 + 至少两个自然日体验）
 
@@ -798,7 +922,7 @@ flowchart LR
 
 #### PR W24：PyInstaller onedir、原生依赖 manifest 与 SBOM
 
-- **责任：AI-R；许可 H。依赖：W19、W22、W23。风险：P2-06。**
+- **责任：AI-R；许可 H。依赖：W28、W22、W23。风险：P2-06。**
 - 生成 `windowed` 主 exe 和独立 helper exe；默认配置、Qt plugin、RapidOCR/ONNX、VC runtime 资源显式列入 manifest。
 - 不打包 Whisper/声音/Live2D/参考音频/角色素材/用户配置/secret/data/log。
 - 对每个二进制记录版本、来源、hash、许可证和目标架构；生成 SBOM。
@@ -866,6 +990,9 @@ flowchart LR
 | W17 | MediaWorker playback/device adapters、Gate A tool | media helper protocol、device identity config | fake device/hang tests + 多输出设备 H | `playback_mode=silent`，文字继续 | XL |
 | W18 | voice input、hotkey、whisper supervisor | STT helper protocol、device/hotkey config | callback/process tests + 多麦克风/热键/锁屏 H | `stt.enabled=false`，键盘继续 | XL |
 | W19 | VTS/TTS configuration wizard/preflight | preset/capability status schema | fake services + 真实 VTS/GPT-SoVITS/资产 H | text-only 或 silent 模式 | M |
+| W28 | AvatarRuntime、VTS parameter/event API、MediaWorker envelope | avatar config、受限 `job.progress`、turn plan/state contract | fake clock/VTS/worker stress + 真实 VTS/音频/自然度 H | avatar/lip-sync/auto-red-eye disabled；文字和原音频继续 | XL |
+| W29 | structured turn parser、五槽私有 TTS gateway、safe importer/launcher | avatar JSON v1、gateway protocol v1、私有 manifest、DPAPI token | parser/security/transaction tests + 五槽/真实播放/VTS/试听 H | gateway 关闭，TTS 切回 Mock/silent；Avatar/文字继续 | XL |
+| W30 | 专用 DeepSeek Flash Provider、secret store、bootstrap、prompt context、桌面设置 | 只切换 `llm.provider=deepseek`；独立 DPAPI 槽；不迁移/改写通用 LLM 配置或用户记忆 | MockTransport/DPAPI/UI/prompt gate + 全量质量门；用户显式、非敏感真实 Key 检查 | `llm.provider=none` 后 revoke 专用 key；保留通用配置 | M |
 | W20 | Windows session/focus/idle adapters、proactive counters | OS signal snapshot、counter DB migration | fake clock/state tests + Windows focus/lock/RDP H | vision/proactive actual disabled | L |
 | W21 | PerceptionWorker/capture adapter/WinRT binding | perception helper protocol v1；不迁移截图 | buffer/fault tests + 多显示器/权限/范围隐私 H | `vision=disabled`，移除 worker artifact | XL |
 | W22 | `app/main.py` perception composition、feature lifecycle | vision actual-state/generation DB migration | race/stale/sentinel tests + 敏感窗口 H | vision 强制 disabled，保留迁移后的状态 | XL |
@@ -917,7 +1044,10 @@ flowchart LR
 | Secure Core | W01～W05 | 10～16 日 | wheel/路径/secret/API 基线；仍无桌面。 |
 | Reliable Core | W06～W12 | 22～34 日 | 核心可长运行、可恢复；允许开始 GUI。 |
 | Beta A | W13～W16 | 30～46 日 | 可安装的安全文字桌面切片。 |
-| Beta B | W17～W19 | 38～58 日 | 增加真实语音、音频和 VTS。 |
+| Beta B | W17～W19 | 38～58 日 | 增加真实语音、音频和 VTS provider/preflight。 |
+| Avatar Runtime closure | W28 | 旧估算外；完成基线/调研后校准 | 增加程序微动作、实际播放音量口型和可靠 VTS 生命周期。 |
+| Five-emotion TTS/VTS closure | W29 | W28 后独立校准 | 增加结构化回合、五槽私有中文 TTS 和有序动作/红眼联动。 |
+| DeepSeek Flash（独立） | W30 | 不纳入原线性工期；以独立质量门校验 | 可选固定文本 Provider；不表示视觉、Pro 或长期记忆写入完成。 |
 | Local RC | W20～W27 | 56～85 日 + soak | 完成 Windows 感知、主动发话、安装升级和发布 Gate。 |
 
 说明：
@@ -934,7 +1064,7 @@ flowchart LR
 | W1 安全基座 | wheel/install/API 攻击测试 | 两账户 ACL、DPAPI、路径、只读安装 | 安全边界和迁移审计 |
 | W2 可靠核心 | 10k turn、慢消费者、故障/属性测试 | Job Object、hang/kill、文件占用 | 幂等、取消、资源 owner 审计 |
 | W3 Beta A | UI model、桥接、恢复、installer smoke | 标准用户、IME/DPI、单实例、退出 | 中文输入、托盘、设置/记忆理解 |
-| W4 Beta B | fake device/provider/hotplug | 多声卡/麦克风/蓝牙/RDP | 音质、延迟、打断、VTS/资产 |
+| W4 Beta B | fake device/provider/hotplug/avatar、worker progress/RMS | 多声卡/麦克风/蓝牙/RDP、真实 VTS/MediaWorker | 音质、延迟、打断、VTS/资产、口型和微动作自然度 |
 | W5 隐私/主动 | sentinel、race、stale、feature barrier | 多显示器/锁屏/UWP/管理员窗口 | 敏感窗口 false negative、两日打扰度 |
 | W6 RC | build/SBOM/dependency/soak telemetry | 安装升级回滚卸载/故障矩阵 | 许可、签名、隐私残留、发布放行 |
 
@@ -949,21 +1079,21 @@ flowchart LR
 | P0-01 控制面 | Confirmed | `app/api/routes.py:websocket_client` 无条件 accept、`subscribe("*")`；HTTP memory/feature 路由无 auth | W04、W14 | 生产零监听；dev auth/Origin/session 攻击测试 |
 | P0-02 安装产物 | Confirmed（已复现） | `app/config/settings.py:DEFAULT_CONFIG_PATH`、`app/main.py:app = create_app()`、`pyproject.toml` 无 scripts/resource | W01、W05、W24 | wheel/onedir 仓库外 smoke |
 | P0-03 Windows 数据/secret | Confirmed | `app/main.py` DB 相对 `PROJECT_ROOT`；`app/config/logging.py` 相对 CWD；`FileTokenStore` 只给 POSIX mode | W02、W03、W25 | 两账户 ACL、DPAPI、迁移/卸载 |
-| P0-04 产品闭环 | Confirmed（能力缺口） | `app/main.py` 未组装 perception/STT/UI；`desktop_client/` 仅有 `inputs`；无 installer/GUI | W13～W27 | Beta A/B、Local RC Gates |
+| P0-04 产品闭环 | Confirmed（能力缺口） | `app/main.py` 未组装 perception/STT/UI；`desktop_client/` 仅有 `inputs`；无 installer/GUI | W13～W29 | Beta A/B、Avatar Runtime、Five-emotion TTS/VTS、Local RC Gates |
 | P1-01 无界状态/事件 | Confirmed | `TurnService._states/_outcomes` 永久 dict；`subscribe()` 建无界 `asyncio.Queue` | W06、W07 | 10k turn/慢消费者/RSS 上界 |
 | P1-02 幂等/replay | Confirmed（已复现） | `TurnService.accept()` 无 message lookup；同 `message_id` 复现实验产生两个 turn | W06 | 重复消息单副作用、snapshot/replay |
-| P1-03 TTS/audio 背压 | Confirmed | `app/pipelines/dialogue.py` 的 TTS/audio queue 无 `maxsize` | W07、W17 | 慢 TTS/阻塞设备/临时文件上界 |
-| P1-04 TTS timeout | Confirmed | `TTSJob.timeout_ms` 默认 8000；pipeline 建 job 未注入 `settings.tts.timeout_seconds` | W08 | deadline 边界与真实冷启动 |
-| P1-05 LLM 截断成功 | Confirmed | `openai_compatible.py:stream` 自然 EOF 后无完成标记检查 | W08 | 半流/EOF/finish reason 矩阵 |
-| P1-06 VTS 热循环 | Confirmed（已复现） | `VTSConfig.reconnect_*` 允许 0；`VTSBridge` 零 delay retry | W09 | 零值拒绝、backoff+jitter 指标 |
-| P1-07 旧 VTS 动作 | Confirmed | `VTSBridge` action 虽带 turn id，但消费前不校验 current generation | W09 | generation/cancel/reconnect 交错 |
+| P1-03 TTS/audio 背压 | Confirmed | `app/pipelines/dialogue.py` 的 TTS/audio queue 无 `maxsize` | W07、W17、W28、W29 | 慢 TTS/阻塞设备/progress flood/gateway admission/临时文件上界 |
+| P1-04 TTS timeout | Confirmed | `TTSJob.timeout_ms` 默认 8000；pipeline 建 job 未注入 `settings.tts.timeout_seconds` | W08、W29 | deadline 边界、真实冷启动和长模型切换 |
+| P1-05 LLM 截断成功 | Confirmed | `openai_compatible.py:stream` 自然 EOF 后无完成标记检查 | W08、W29 | 半流/EOF/finish reason + 结构化截断/控制字段不泄漏矩阵 |
+| P1-06 VTS 热循环 | Confirmed（已复现） | `VTSConfig.reconnect_*` 允许 0；`VTSBridge` 零 delay retry | W09、W28 | 零值拒绝、backoff+jitter、参数 coalescing 指标 |
+| P1-07 旧 VTS 动作 | Confirmed | `VTSBridge` action 虽带 turn id，但消费前不校验 current generation | W09、W28、W29 | generation/cancel/reconnect/model-switch/迟到 TTS 与有序红眼交错 |
 | P1-08 历史关闭后不清理 | Confirmed | `HistoryService.cleanup()` 在 feature disabled 时直接返回 | W10 | 关闭后推进时钟仍清理 |
 | P1-09 maintenance 死亡 | Confirmed | `MemoryRuntime._maintenance_loop()` 只捕获 timeout；close 吞 task exception | W10、W11 | DB 故障恢复和健康状态 |
 | P1-10 删除语义 | Confirmed | memory service 先 repository commit，再 `database.secure_cleanup()`；失败语义未分层 | W10、W16 | logical/physical 状态分离 |
 | P1-11 日志无界/路径 | Confirmed | `configure_logging()` 用 CWD + 普通 `FileHandler`，无 rotation/retention | W11 | rotation/retention/LocalAppData |
 | P1-12 日志敏感键 | Confirmed | `Redactor.redact()` 对 mapping 只递归 value，不按 key policy | W11 | key-aware property/sentinel tests |
-| P1-13 native hang | Confirmed（静态） | `audio_player.py`、`perception/thread_jobs.py` 使用 `to_thread` 并等待 drain | W12、W17、W21 | Job kill、feature/exit deadline |
-| P1-14 Windows temp 残留 | Confirmed | `gpt_sovits.py` unlink 前从 `_paths` 移除；无统一启动 scavenger | W03、W12、W27 | 占用/崩溃/scavenger/残留扫描 |
+| P1-13 native hang | Confirmed（静态） | `audio_player.py`、`perception/thread_jobs.py` 使用 `to_thread` 并等待 drain | W12、W17、W21、W28 | Job kill、分块播放取消、feature/exit deadline |
+| P1-14 Windows temp 残留 | Confirmed | `gpt_sovits.py` unlink 前从 `_paths` 移除；无统一启动 scavenger | W03、W12、W29、W27 | 占用/崩溃/scavenger/gateway cancel/残留扫描 |
 | P1-15 whisper 进程树 | Confirmed | `whisper_cpp.py:create_subprocess_exec` 无 Job Object/`CREATE_NO_WINDOW` | W12、W18 | no-window + Job Object child tree |
 | P1-16 mic callback backlog | Confirmed | `voice_input.py` 每 frame `loop.call_soon_threadsafe` + bytes copy | W18 | bounded buffer/event-loop freeze |
 | P1-17 传输体积 | Confirmed | HTTP/WS 在 schema/JSON parse 后才限制；`receive_json()` 无 frame policy | W04、W07 | parse 前限制、metadata/WS flood |
@@ -977,9 +1107,9 @@ flowchart LR
 | P2-01 health/debug | Confirmed | `routes.py:health` 恒定 ok；`debug_state` 始终注册 | W04、W11 | liveness/readiness/capability + dev gate |
 | P2-02 Gate A 工具 | Confirmed | `gate_a_review.py` response factory 接 `ChatRequest` 却读 `input_mode` | W17 | dry-run CI + 真实人工复测 |
 | P2-03 Windows 音频设备 | Confirmed（能力缺口） | `SystemAudioPlayer` 固定 `latency="low"`，无设备/热插拔状态机 | W17 | 设备/hotplug/latency matrix |
-| P2-04 VTS/TTS preflight | Confirmed | config 接受 hotkey/ref path，启动前无 capability/path visibility probe | W09、W19 | capability/config wizard |
+| P2-04 VTS/TTS preflight | Confirmed | config 接受 hotkey/ref path，启动前无 capability/path visibility probe | W09、W19、W28、W29 | capability/config wizard + parameter/event/Expression + private manifest/gateway probe |
 | P2-05 SQLite 恢复 | Confirmed（能力缺口） | `storage/database.py` 有 migration/WAL，但无 backup/corruption recovery/downgrade | W10、W25 | backup/rollback/safe mode |
-| P2-06 依赖/原生包 | Confirmed | `pyproject.toml` 运行依赖为宽范围；无 bundle manifest/SBOM/arch policy | W24、W26 | lock/manifest/SBOM/license |
+| P2-06 依赖/原生包 | Confirmed | `pyproject.toml` 运行依赖为宽范围；无 bundle manifest/SBOM/arch policy | W29、W24、W26 | inference-only lock、manifest、SBOM/license |
 | P2-07 安装/Windows CI | Confirmed | `.github/workflows/ci.yml` 仅源码 sync/test/lint/type；无 installed artifact | W05、W26 | wheel/onedir/installer gates |
 | P2-08 CI 触发/Action | Confirmed | workflow push 只匹配 `codex/**`；Actions 用 major tag 非 SHA | W05、W26 | branch protection/SHA pin |
 | P2-09 覆盖率盲点 | Confirmed | aggregate 90%；真实 OCR/声卡/GUI/ACL/installer/soak 无独立 Gate | W26、W27 | 独立安全/设备/安装 Gate |
@@ -1036,13 +1166,15 @@ flowchart LR
 
 ## 11. 立即执行顺序
 
-下一步只做以下五件事：
+2026-07-30 起，下列顺序覆盖本节此前基于 W28 的历史停点：
 
-1. W00 已在 [`gates/gate_w0.md`](./gates/gate_w0.md) 有条件批准；保持非独立自审、云视觉、安装器和设备残余风险可见。
-2. W01～W04 已按顺序完成；PR #14 已合并，自动证据、人工边界与关闭记录以对应 implementation 文档为准。
-3. W05 实现、自动验证和人工审计均已完成；private Free 仓库无 branch protection 及仓库级 Action 策略差距已作为 RR-W05-01/02 写入关闭记录和 ADR，不得伪装成已配置保护。
-4. 当前会话只允许受控合并 PR #15 并随即结束，不得开始 W06；新会话必须先验证 W05 确已合并，再按 W06→W07 顺序继续。
-5. W12 通过后才开始 W13 PySide6 spike；窗口捕获和安装器仍分别等待其依赖 PR。任何跳过顺序都要在 ADR 中说明理由和新增风险。
+1. 完整读取 [`current/CURRENT_GOAL.md`](./current/CURRENT_GOAL.md)、
+   [`plans/w29_five_emotion_tts_vts_execution_plan.md`](./plans/w29_five_emotion_tts_vts_execution_plan.md) 与
+   [`plans/w30_deepseek_flash_execution_plan.md`](./plans/w30_deepseek_flash_execution_plan.md)，再以当前远端 PR/工作树核验事实。
+2. 将 W29 先合入 W28，再把更新后的 W28 合入 W30；重叠 gateway/bootstrap/UI/测试/文档必须保留两侧安全语义。
+3. 对 W29+W30 组合树运行聚焦回归、完整 pytest/coverage、Ruff、format、strict mypy、双 lock、wheel/source-quarantine 和敏感边界检查。
+4. 只在新 exact head 的 push/PR 检查全部成功后，才用 expected-head guard 合并 W30；随后等待 W28、W19 父分支新 head 各自 CI，再逆序合并 #33/#32。
+5. 合并授权不会把真实 DeepSeek Key、远端隐私/计费、真实 Windows DPI 或未完成的外部事实写成已验证。
 
 ## 12. 官方平台依据
 
@@ -1054,3 +1186,6 @@ flowchart LR
 - [Windows Known Folders / LocalAppData](https://learn.microsoft.com/en-us/windows/win32/shell/knownfolderid)
 - [Windows DACLs and ACEs](https://learn.microsoft.com/en-us/windows/win32/secauthz/dacls-and-aces)
 - [Windows.Graphics.Capture](https://learn.microsoft.com/en-us/uwp/api/windows.graphics.capture)
+- [DeepSeek Chat Completions](https://api-docs.deepseek.com/api/create-chat-completion/)
+- [DeepSeek 多轮对话](https://api-docs.deepseek.com/guides/multi_round_chat)
+- [DeepSeek 隐私政策](https://cdn.deepseek.com/policies/en-US/deepseek-privacy-policy.html)

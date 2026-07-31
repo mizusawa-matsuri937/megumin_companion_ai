@@ -56,6 +56,20 @@
   [W18 受管中文 STT runtime 决策](../decisions/w18_managed_chinese_stt_runtime.md)。不得把 57 MiB 模型文件当作
   native 峰值工作集证据。
 
+## W28 实际播放口型补充（2026-07-29，本地验证）
+
+- MediaWorker 按完整 PCM frame 分块写入 `RawOutputStream`，RMS/noise-floor/gain/attack-release 计算仍在 helper
+  内；父进程只收到 finite 0～1 的 `mouth_envelope`、job 关联和单调 sequence。
+- `job.progress` 使用独立 latest-wins sender。terminal 开始前关闭该 job 的 progress generation；已捕获但
+  迟到的 sample 也会丢弃，避免 terminal 后重新张嘴。heartbeat、cancel 和 terminal 不与 progress flood
+  共用无界队列。
+- 正常播放在 `stream.stop()` 完成 pending output drain 后才发送 terminal；取消仍使用 abort/drop。若 native
+  drain/write 卡死，最终终止边界仍是 W12 `WorkerSupervisor`/Job Object，不能把 coroutine timeout 写作声卡已停止。
+- 父侧在正常、取消、失败、timeout、worker crash 和 close 路径都独立发送 terminal zero；Avatar 故障不改变
+  音频 terminal。
+- 真实输出设备已覆盖 silence、固定幅度、ramp 和取消；该证据不等于所有设备、driver 或采样级音画同步通过。
+  详细证据和残余 Gate 见 [W28 实现记录](../implementation/w28_avatar_runtime.md)。
+
 ## 云视觉边界
 
 项目所有者允许云视觉，但仅能在指定窗口捕获、本地 Guard、全 OCR bbox 遮挡和最终隐私检查全部成功后，由用户显式启用的路径上传脱敏图像。任一检查未知、错误、超时或 worker 重启都必须跳过上传；不得回退到全屏截图。实际启用仍受 W21/W22 隐私 Gate 约束。

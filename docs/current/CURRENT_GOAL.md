@@ -1,154 +1,102 @@
 # 当前产品目标
 
-> 最后核验：2026-07-23（Asia/Shanghai）。当前唯一活跃任务仍为 W18「Push-to-talk、麦克风 ring buffer 与
-> whisper Job」，本轮补齐真实、受管的轻量本地中文 STT runtime。分支为 `codex/w18-ptt-whisper`，基线为 W17
-> merge commit [`351da92`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/351da92bfd0232ce03a90a97b75c13ba8ee6a51b)。
-> Draft PR [#31](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/31) 仍未合并。
->
-> 本轮受管 runtime 聚焦提交
-> [`224e06f`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/224e06f9cbb1d2ab0cc2260fb244b1f74cd7dfbc)
-> 已推送。其 exact head 的 [PR workflow](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29977299022)
-> 与 [push workflow](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29977296872) 均通过 macOS/Windows
-> `quality` 与 `installed-wheel`。该 push workflow 的第一次 Windows `quality` 仅在
-> `tests/unit/ui/test_chat_runtime.py` 显示失败标记，随后 job 在输出断言栈前结束；同一 SHA 的 PR workflow 和第 2 次尝试
-> 通过，因此这一个 `test_chat_runtime` 现象的根因仍**未验证**。
->
-> 这与后续仅文档 head [`28df5fd`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/28df5fde0fc726d65ffb4e1527a9795dd9efdf66)
-> 的 [PR Windows quality failure](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29978065326)
-> 不同：该日志明确记录 `test_successful_handshake_job_and_orderly_shutdown` 的 `ShutdownReport.exit_code=None`。
-> 当前已在 `WorkerSupervisor` 关闭报告前补读完成的 watcher 结果，并用受控回归测试覆盖该顺序。修复代码 head
-> [`30f265b`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/30f265b8820104b01f0cef5079a31d7f15157436)
-> 的 [PR workflow](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29979630456) 与
-> [push workflow](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29979628710) 均通过双 OS 的
-> `quality` / `installed-wheel`。Draft PR #31 未合并；真实设备 Gate 与每个后续 head 的独立核验仍不可省略。
->
-> 后续 status-record head [`b150110`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/b15011019c167062f1f6b3e887a7c9513fab78e6)
-> 的 [PR workflow](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29979958354) 首次 Windows
-> quality 在无关的 GPT-SoVITS fake-response 测试将预期 `tts_invalid_audio` 误报为 `tts_first_byte_timeout`；同一 head 的
-> [push workflow](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29979956583) 成功，失败 job 重跑也成功。
-> 本机该参数化测试连续 20 次通过；80 ms MockTransport first-byte fixture 在 Windows 满载时调度敏感是**合理推测**，不是已证明永久稳定。
->
-> 最终状态记录 head [`2b0b858`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/2b0b858bb01c684056d764bce460c6a213767091)
-> 的 [PR workflow](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29980501223) 与
-> [push workflow](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/29980499672) 均通过双 OS 的
-> `quality` / `installed-wheel`。在本机获得明确授权后，受管安装实际尝试未完成：第一次命令的外层终端在 64 秒超时，子进程随后
-> 退出而未激活资产，因输出管道已关闭不能取得原因码；第二次受控单实例重试返回稳定
-> `stt_download_failed`。随后状态为 `missing`、`stt.enabled=false`、零 staging 目录；没有访问麦克风、录音、转写或测量
-> `PeakWorkingSetSize`。这不是设备 Gate 通过，而是固定来源下载失败的已记录阻塞；CLI 有意不公开更细的网络原因，不能臆测其根因。
->
-> 随后所有者提供并明确授权使用与固定清单完全匹配的两个离线资产。一次性操作复用已有受管 staging、安全 ZIP 提取、CLI
-> version probe、原子切换与最终 SHA-256 校验（不是产品新增的任意本地文件入口）；运行时状态变为 `verified`，语言为 `zh`，
-> `stt.enabled` 仍为 `false`，项目根目录的重复源文件在验证后删除。真实 MediaWorker preflight 通过且未访问麦克风。
-> 第一次 PTT 返回 `stt_empty_recording`（stream 已启动但 ring 未收到 PCM callback；开始后立即停止只是合理推测），诊断工具已改为只输出有限错误 JSON、且在 stream 启动后明确提示说话；
-> 回归测试覆盖该路径。第二次由所有者操作的 microphone 诊断在工具明确提示“请说中文约 30 秒”后返回
-> `{"status":"transcribed","language":"zh","segment_count":22,"peak_working_set_bytes":236609536}`，即约 225.7 MiB，
-> 低于 512 MiB 上限。没有保存录音、转写正文或临时状态日志。该输出证明确实完成离线转写并获得了真实采集数据；Windows
-> 麦克风权限提示/录音指示器的目视确认仍须由所有者明确反馈，不能由本记录臆测为已通过。终端摘要也不含实际录音时长，
-> 因而不能独立证实录制已满约 30 秒。
->
-> 随后的诊断工具加固提交 [`63d6684`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/63d668479bf6462a73f90378b1bacd3123562b40)
-> 将 microphone-mode `VoiceCaptureError` / `EOFError` 收敛为有限 JSON reason code，并加入 `stt_empty_recording` 回归测试。
-> 本地完整测试为 **1225 passed, 3 skipped**，coverage **90.03%**；Ruff、格式、mypy、lock、相对 Markdown 链接和临时 wheel
-> 的隔离 smoke 均通过，wheel 未包含模型、原生 binary 或音频。该 SHA 的
-> [push workflow](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/30004642052) 首次通过全部 4 个
-> macOS/Windows checks；[PR workflow](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/30004645550)
-> 首次 Windows quality 仅失败于未改动的 GPT-SoVITS cache fixture（80 ms MockTransport first-byte deadline），同一 SHA 的
-> push Windows quality 已通过，PR 的失败 job 第 2 次重跑也通过。调度敏感是合理推测，不是已证明的永久稳定性；没有为此修改
-> 无关的 TTS product code。
+> **2026-07-31 组合合并更新（Asia/Shanghai）：** 所有者已反馈当前人工审核顺利，并明确授权合并全部开放 PR，包括 W30/DeepSeek。W29 PR #34 已以 exact-head guard 合入 W28；W30 PR #35 正在合并该最新 W28 基线并解析 sibling 重叠。这一授权表示所有者接受已记录的主观 Gate 与残余发布风险；它不会把真实 DeepSeek Key/账号/计费/远端保留、真实 Windows DPI，或无法从自动化证明的外部事实改写为已验证。组合代码必须通过新 exact-head CI 与完整本地门后才继续上游堆栈合并。
 
-## 本轮已确认的实现范围
+> **2026-07-31 设置页可达性跟进（优先于下方较早快照）：** 用户报告“连接与设备”页在较小可用高度不能向下滚动，
+> 因而无法操作 DeepSeek API 密钥卡。已确认该页原本把超过窗口高度的表单直接放入标签页：离屏紧凑视口中，DeepSeek
+> 输入框在页面纵坐标约 `934..955`，可见区域只有约 `558`。W30 现以 `QScrollArea` 承载该页，保留原有控件、状态栏和
+> 按钮语义，并允许鼠标滚轮、滚动条访问底部卡片；滚动后底部输入框仍可获焦点。新的 headless Qt 回归在固定 `820×650` 逻辑窗口中断言有
+> 垂直溢出、滚到最大值后 API 密钥和“保存并启用”按钮完整可见且输入框可获焦点；当前完整 `uv run pytest` 为
+> `1433 passed, 3 skipped, 90.45%`。Ruff、格式、strict mypy、lock、fresh wheel installed-smoke（`status=ok`、
+> `source_tree_imported=false`）、变更文档链接和候选敏感信息扫描均已通过。代码提交
+> [`19c7510`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/19c75105319ba630c5815de4a1265ae4010d6737)
+> 的 [push CI](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/30619684274) 与
+> [PR CI](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/30619687554) 均四项通过；PR #35 对应
+> base/head、差异、检查、评论、评审和 `0` 个 review thread 已复核。发布审计始终以 Draft PR 的实际 final head 及其
+> 对应 CI/PR 元数据为准，不能把本段文字自身当作证据。这证明受控逻辑视口，不替代实际 Windows DPI/桌面 shell 的视觉验收。
 
-- 沿用已存在的 `MediaWorker` / Job Object / `WhisperCppRunner` 调用链，而不是另建 STT 架构。
-- 内置受管 Whisper 配置档目录当前只含 CPU 本地离线的
-  [`whisper.cpp` v1.9.1](https://github.com/ggml-org/whisper.cpp/releases/tag/v1.9.1) `whisper-bin-x64.zip` 与
-  [`ggml-base-q5_1.bin` 的不可变 revision](https://huggingface.co/ggerganov/whisper.cpp/blob/87cd18b47b941d2f65d09981dad23bb7d0481c77/ggml-base-q5_1.bin)。
-  新增 `stt.managed_profile` 只允许已登记配置档；每一项锁定 URL、版本、archive/CLI/model SHA-256、下载上限、模型文件名
-  与受管目录。以后更大 Whisper 模型必须新增独立 profile 并重做真实性能核验，不能以任意路径、URL 或 hash 替代。详情见
-  [W18 runtime 决策](../decisions/w18_managed_chinese_stt_runtime.md)。
-- 产品层只支持中文：默认与旧 `auto` 配置均归一为 `zh`；显式其他语言由配置或 worker 返回稳定失败，实际 CLI 固定
-  `--language zh`。`threads=null` 时解析为 `min(max(os.cpu_count(), 1), 4)`。
-- 默认仍为 `stt.enabled=false`，无启动下载、无云端 STT、无模型常驻。仅确认后的设置操作或
-  `--install-chinese-stt` 下载；安装也不启用麦克风、设备或线程设置。
-- 当前 base 受管资产安装到 `%LOCALAPPDATA%\MeguminCompanion\models\stt\whispercpp\v1.9.1\`；未来 profile 使用独立
-  `profiles\<profile>\v<version>` 目录：HTTPS、有限重定向、超时/大小上限、SHA-256、ZIP Slip/link/reparse 拒绝、私有
-  staging 与原子切换。手工路径保持兼容并显示为非受管。
-- 每个 MediaWorker 首次使用 canonical 受管路径时完整校验 CLI 与模型 SHA-256；不匹配在启动 CLI 前返回
-  `stt_runtime_integrity_failed`。UI/CLI 只输出有限状态或 reason code，且不输出音频、转写、下载令牌或完整本地路径。
-- `tools/stt_smoke.py --mode microphone --measure-working-set` 是显式设备诊断：只输出状态、语言、段数和 Windows
-  `PeakWorkingSetSize`，不输出转写正文。
+> **2026-07-31 后续状态（优先于下方较早快照）：** Gateway compatibility 已由 `84c92bb` 推送。夹具修复提交
+> `a0ccfc6` 只调整测试夹具的事件同步和非 deadline 场景的时限余量；其 exact-code head 的 push workflow
+> `30615939286` 和 PR workflow `30615942372` 均通过 Windows/macOS quality 与 installed-wheel 四项检查。此前
+> `a0b5661` 的 PR workflow 发现的一项直连 GPT-SoVITS cancellation/settlement 与三项 Gateway MockTransport
+> 夹具时序失败，已在该精确代码 head 上复核通过。
 
-## 已完成的自动化证据（提交前本地树）
+> **最新状态更新：2026-07-31（Asia/Shanghai）。** 当前唯一活跃任务为 W30「DeepSeek V4 Flash
+> 独立接入」。工作树为 `codex/w30-deepseek-flash`，基线为
+> `b09841c13f1a733ec267027df62da6da7fc31fb6`。W30 核心实现已由
+> [`cd5cd43`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/cd5cd4333ac0ebd6ce0f97a9e5f63e0bdf4f1fb9)
+> 推送到 [Draft PR #35](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/35)，本地完整自动化质量门和
+> 审计 head `e35dbc7` 的 Windows/macOS quality、installed-wheel CI 均已通过。所有者现已授权一项最小的既有本地
+> GPT-SoVITS Gateway 兼容跟进；其本地门与 `a0ccfc6` exact-code CI 均已通过。真实 DeepSeek Key 连通性仍待完成；
+> Draft PR 仍须保持与其最终 base/head、差异、评审和 CI 证据一致。
 
-- `uv run pytest --no-cov tests/unit/test_stt_runtime.py tests/unit/test_stt_factory.py tests/unit/test_whisper_cpp.py
-  tests/unit/test_media_voice.py tests/unit/test_media_entrypoint.py tests/unit/test_cli.py tests/unit/test_user_settings.py
-  tests/unit/test_w05_ci.py tests/unit/ui/test_w16_management.py` → **192 passed in 10.79s**。测试只使用合成 bytes、fake ZIP、
-  fake CLI 和 fake device；没有下载
-  模型、录音或访问麦克风。
-- 覆盖的可自动化断言包括：无启动下载、legacy `auto`→`zh`、非中文拒绝、下载 hash/timeout 失败、Zip Slip、取消、同一
-  service 并发安装、HTTPS→HTTP 降级拒绝、Zip Slip/reparse 拒绝、原子修复、受管/手工路径差异、受管 hash 失败不启动 CLI、UI/CLI command bridge、
-  Windows `PeakWorkingSetSize` 读取、wheel 禁止 STT model/binary/archive 成员，以及安装流程不进入音频 worker。
-- 提交前本地树的 `uv run pytest` → **1223 passed, 3 skipped in 191.56s**，coverage **90.01%**。三个 skip 是
-  optional RapidOCR、optional Pillow 和当前账户没有 directory-symlink 权限；均不是 W18 断言失败。
-- 提交前本地树的 `uv run ruff check .`、`uv run ruff format --check .`（241 files）、`uv run mypy`（234 source）、
-  `uv lock --check`、`git diff --check` 与 docs 相对链接检查均通过。临时构建 wheel 的隔离 smoke 也通过，确认 source tree
-  没有被导入且 runtime/model/binary/archive 没有进入 wheel。
-- `224e06f` 的 PR/push workflows 均通过 macOS/Windows `quality` 与 `installed-wheel`。push 首次 Windows quality 的失败与
-  重跑通过均绑定同一 SHA，详情和未验证根因见本页开头；它不改变本地自动化结论。
-- 当前 `WorkerSupervisor` 关闭报告修复已在本地验证：`uv run pytest --no-cov tests/unit/test_worker_supervisor.py` →
-  **46 passed in 2.26s**；原有 orderly-shutdown 测试与新增受控 race 测试连续运行 20 次均通过；随后
-  `uv run pytest` → **1224 passed, 3 skipped in 182.81s**，coverage **90.03%**。这些测试仍只使用 fake worker/CLI，
-  不下载模型、不录音也不访问麦克风。
-- 本次受管 Whisper 配置档接口的提交前本地树：定向 profile/config/UI 回归为 **117 passed**；完整
-  `uv run pytest` → **1241 passed, 3 skipped in 175.67s**，coverage **90.09%**。`uv run ruff check .`、
-  `uv run ruff format --check .`（242 files）、`uv run mypy`（235 source）、`uv lock --check`、`git diff --check`、
-  docs 相对链接检查，以及临时 wheel 的隔离安装 smoke 均通过；wheel/evidence 已删除，且未加入或下载任何更大模型。
-  功能提交 [`7ca0067`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/7ca0067d42432a4ce8d68cd670309b6f3c08e7d4)
-  的 [PR workflow 30012917744](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/30012917744) 与
-  [push workflow 30012917469](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/30012917469) 均在
-  macOS/Windows `quality` / `installed-wheel` 通过；任何后续文档或代码 head 仍须单独核验，Draft PR 仍未合并。
+## W30 目标与已确认边界
 
-## 已知安全与隐私状态
+- 为桌面用户提供仅需输入 API Key 的专用 DeepSeek 路径：固定
+  `https://api.deepseek.com/chat/completions`、`deepseek-v4-flash` 和
+  `thinking: {"type":"disabled"}`。不新增 SDK，也不改变通用 OpenAI-compatible Provider 的配置语义。
+- DeepSeek 在 W30 中只作为文本 Provider。当前用户文字，以及用户已显式开启的近期历史、长期记忆**检索**和
+  合规视觉摘要文本，才可随该轮请求发送；客户端负责随请求携带多轮历史。
+  [DeepSeek Chat Completions](https://api-docs.deepseek.com/api/create-chat-completion/)
+  和[多轮对话](https://api-docs.deepseek.com/guides/multi_round_chat)是该协议边界的外部依据。
+- 视觉支持仅限由未来隐私生产器创建的 `ApprovedVisualSummary` 有限非敏感语义标签：本地将标签映射为固定文本，
+  不接受自由文本。视觉 feature 开启、单条 `UserMessage.screen_context_allowed=true`、摘要新鲜且 `sensitive=false`
+  必须同时成立。泛用 `PerceptionContext`、observation ID 和其他资产标识不是 prompt 入口；摘要是不可信、不可持久化的
+  参考上下文。
+- 严禁把原始/脱敏截图、图像 URL、窗口标题、OCR 原文、bbox、屏幕路径、observation ID 或未脱敏摘要发送到 DeepSeek；
+  出站摘要没有自由文本入口，并会额外拒绝 URL/路径。W30 不将 DeepSeek V4 表述为图像模型。
+- 使用独立、purpose-bound 的 current-user DPAPI 槽保存 DeepSeek Key；不写入 YAML、通用 LLM 密钥槽、事件、
+  日志、异常或测试输出。`DEEPSEEK_API_KEY` 仅是显式非桌面开发运行面的明确回退，桌面即使使用 `dev` 配置也不会读取，
+  更不能成为桌面持久化方案。
+- 不接入 `deepseek-v4-pro`，不做长期记忆候选提取或写入；若
+  `memory.candidate_analysis_enabled=true`，配置或启动 DeepSeek 必须拒绝该组合。
+- 为恢复既有本机配置，所有者已授权 W30 只兼容 `gpt-sovits-gateway` 及其两个既有别名。它是固定
+  `127.0.0.1:9880`、专用 DPAPI bearer token、无 cache/proxy/custom-CA 的本地协议 adapter；它不是直连
+  GPT-SoVITS 的改名、不会启动 Gateway、不会回退 Mock，也不改变 DeepSeek 的任何出站字段。
 
-- 受管 profile 不接受用户 URL、模型名或 hash；模型、原生 binary、真实录音和转写不进入仓库、wheel、安装包、CI artifact
-  或日志。MIT 许可证和来源已记录，但没有独立法律/安全审计结论。
-- [CVE-2026-10298](https://nvd.nist.gov/vuln/detail/CVE-2026-10298) 的 NVD 描述列出范围至 1.8.2，未把 v1.9.1
-  列为受影响版本；但 [上游 issue #3807](https://github.com/ggml-org/whisper.cpp/issues/3807) 本次复核仍为 open。不能据此
-  声称 v1.9.1 已修复。受管模型的不可变 hash 是输入完整性缓解，而不是上游漏洞修复或对非受管模型的保证。
-- 模型页面标示约 57 MiB（59.7 MB）文件；这不是峰值内存。当前 base 的一次真实 PTT 已记录
-  `PeakWorkingSetSize=236,609,536` bytes（约 225.7 MiB），但该测量不能外推给任何未来更大 profile；每个新增模型仍须
-  单独通过真实设备峰值验证。
+## 当前状态与隔离
 
-## 所有者授权的受保护合并记录（2026-07-23）
+| 项目 | 状态 | 可核验依据或限制 |
+| --- | --- | --- |
+| W30 范围、Flash 默认、Pro 延后与既有开关复用 | 已确认 | 所有者 2026-07-30 指令；[ADR-W30](../adr/ADR-W30-deepseek-flash.md)。 |
+| 固定 endpoint/model、文本输入和多轮协议边界 | 已确认 | 官方 [Chat Completions](https://api-docs.deepseek.com/api/create-chat-completion/) 与[多轮对话](https://api-docs.deepseek.com/guides/multi_round_chat)。 |
+| W30 代码、MockTransport/DPAPI/UI/prompt gate 的自动化结果 | 本地与 PR 自动化已验证 | `cd5cd43` 的聚焦测试为 `172 passed`；完整 `uv run pytest` 为 `1379 passed, 3 skipped, 90.39%`，且 lint/type/lock/build/smoke/link/sensitive 扫描通过。PR #35 的审计 head `e35dbc7` 四项跨平台 CI 都通过；没有评论或评审，后续 head 必须重审。 |
+| W30 既有本地 Gateway compatibility | 本地与 `a0ccfc6` exact-code CI 已验证 | 2026-07-31 所有者授权；固定 loopback/protocol、专用 token/bootstrap、emotion slot adapter 与 UI/preflight 均已实现。夹具修复后的完整 `1432 passed, 3 skipped, 90.45%`、Ruff/mypy/lock/wheel/smoke 通过；`a0ccfc6` 的 push `30615939286` 与 PR `30615942372` 各四项跨平台 CI 通过。不访问真实 Gateway。 |
+| 设置页滚动可达性后续修复 | 代码 head 的本地/远端质量门已验证；发布以 exact-head CI/PR 元数据核对 | `SettingsDialog` 的“连接与设备”页已改为可滚动；紧凑 `820×650` 回归验证底部 DeepSeek API 密钥卡可滚到、完整可见并可获焦点。`19c7510` 的完整 `1433 passed, 3 skipped, 90.45%`、Ruff/format/mypy/lock、fresh wheel smoke、链接和候选敏感信息扫描通过，且 push `30619684274` 与 PR `30619687554` 均四项成功；无评论/评审/行级 review thread。尚未声称实际 Windows DPI 视觉通过；任何后续仅文档 head 也必须按其精确 CI/PR 元数据交付。 |
+| 真实 API Key、账户权限、远端响应、计费/限流与服务可用性 | 未验证 | 本任务未持有或请求 Key；自动化不得发起真实网络请求。 |
+| DeepSeek 的远端处理、保留、地域和政策 | 外部服务边界 | 项目无法保证；以 [DeepSeek 隐私政策](https://cdn.deepseek.com/policies/en-US/deepseek-privacy-policy.html) 为准。 |
 
-所有者已明确要求合并 Draft PR #31。本记录将该指令视为对下列**已知残余发布风险**的接受；它不把任何未验证项写作通过：
+W30 是以 W28 基线建立的独立 sibling 任务。W29 为暂停的独立工作树；其 TTS/VTS 改动、测试、PR 和验收状态不在
+本任务范围内，也未被改写。2026-07-31 的 W30 adapter 是独立实现的最小协议兼容边界，不能借用 W29 的验收证据。
 
-- 真实 PTT 已自动验证离线转写、`zh`、22 segments 和 225.7 MiB 峰值工作集，但终端摘要不证明实际录音达到约 30 秒；
-  Windows 麦克风权限提示或录音指示器的目视确认也仍只能由所有者提供。
-- [上游 issue #3807](https://github.com/ggml-org/whisper.cpp/issues/3807) 仍 open；NVD 仅列至 1.8.2 不是 v1.9.1 已修复的证明。
-- 默认仍为 `stt.enabled=false`，没有新增模型、云端转写、后台下载或任意模型入口；如需回退，只须保持 STT 关闭。
+## 出站隐私提示与默认状态
 
-合并仍受保护：本 closure-record head 必须先通过其自身 macOS/Windows `quality` 与 `installed-wheel`，随后必须重读
-PR 的 base/head/diff/review/conversation/mergeability/draft 状态，并使用 expected-head guard 合并。合并后还须从远端确认
-merge commit、同步基线并重跑完整测试；未获新的明确授权不得把这次合并扩展为对上述真实设备 Gate 的通过结论。
+默认不启用视觉、长期记忆写入或 Pro；W30 也不会自动启用历史、记忆检索或视觉。用户启用 DeepSeek 后，选中的文本
+上下文会由 DeepSeek 远端处理。该远端保留、地域和模型改进风险不能由本项目消除，UI 与文档必须明确提示，且不得承诺
+“零保留”或“不用于训练”。
 
-## 未完成 Gate、范围外与下一步
+## 完成前的验证与交付条件
 
-1. `63d6684` 已完成 exact-head 的 push/PR 双 workflow 核验，macOS/Windows `quality` 与 `installed-wheel` 共 8 项均通过；
-   PR Windows quality 的首次失败及同 SHA 重跑通过已如实记录，不能把重跑结论写作已消除长期不稳定性。CI 证据仍只能用于其
-   对应 head，任何后续 head 都须独立完成相同核验。当前合并授权和 closure 条件见上节。
-2. 真实 PTT 的可自动验证部分已通过：离线转写成功、`zh`、22 segments、`236,609,536` bytes（约 225.7 MiB，≤512 MiB）。
-   仍待所有者反馈的是实际录音是否达到约 30 秒，以及 Windows 麦克风权限提示或录音指示器的目视确认；终端摘要不能替代
-   这两项真实桌面/设备事实，未获反馈不得把完整 Gate 写成通过。任何超限仍阻止交付并重新选型；不得保存真实录音或转写正文。
-
-真实 IME/高 DPI、锁屏和系统级 hotkey 没有通过结论，且不被 fake/headless 条件冒充；它们是后续桌面体验工作，不是本轮
-受管 runtime 的额外发布 Gate。RDP、快速切换用户、跨 session 和跨用户访问属于单机单用户私人范围外，不能写作通过或
-转为人工 Gate。
+1. 已完成：DeepSeek Provider、bootstrap、专用 secret store、视觉摘要和桌面设置的 Mock/fake 测试；覆盖固定请求、流式/
+   JSON、错误映射、图像/tool-call 本地拒绝、candidate-analysis 拒绝、撤销顺序、无密钥泄漏及预算/gate。
+2. 已完成（当前本地工作树）：夹具修复后的完整 pytest（`1432 passed, 3 skipped, 90.45%`）、Ruff、format、strict mypy、
+   lock、wheel 安装 smoke；三个可选环境 skip 已记录，未把任何客观失败转交人工。
+3. 已完成本轮交付审计：核心 W30 变更已作为 `cd5cd43` 推送至 Draft PR #35；审计 head `e35dbc7` 的四项跨平台 CI 通过，
+   PR base/head/diff 已复核且没有评论或评审；W29 或无关用户改动未混入。该 PR 仍为 Draft，任何后续 head 均需重新审计。
+4. Gateway 跟进的 MockTransport/secret/bootstrap/UI 回归、夹具修复后的完整质量门与 wheel smoke 已在本地通过；`a0ccfc6`
+   的 push `30615939286` 和 PR `30615942372` 均四项通过。发布审计必须比较最终 PR #35 的
+   base/head/diff/review/mergeability 与对应 CI 证据。自动化不调用真实 Gateway 或 DeepSeek。
+5. 设置页滚动可达性后续修复已完成紧凑逻辑视口、完整 pytest、Ruff/format/mypy/lock、fresh wheel smoke、文档链接和
+   候选敏感信息扫描；代码 head `19c7510` 的 push `30619684274` 和 PR `30619687554` 也均四项通过。任何后续仅文档
+   head 都按其最终 exact-head CI/PR 元数据复核。用户实际 Windows 缩放下的鼠标滚轮、滚动条和键盘访问属于无法由 headless
+   Qt 忠实替代的最小视觉/交互确认，不能把模拟结果写成已通过。
+6. 用户提供 Key 后，可由用户显式发起一次不带真实历史、长期记忆或视觉摘要的非敏感连通性验证。它只能证明当时的
+   账号/网络/服务组合，不证明远端隐私政策或长期可用性；Key、请求正文和响应正文不入仓库或证据。
 
 ## 相关资料
 
-- [W18 实现记录](../implementation/w18_push_to_talk_whisper.md)
-- [W18 受管 runtime 决策](../decisions/w18_managed_chinese_stt_runtime.md)
-- [ADR-W07：native worker 隔离](../adr/ADR-W07-native-worker-isolation.md)
-- [ADR-W08：包与升级边界](../adr/ADR-W08-packaging-upgrade.md)
+- [W30 执行计划](../plans/w30_deepseek_flash_execution_plan.md)
+- [W30 实现记录](../implementation/w30_deepseek_flash.md)
+- [ADR-W30](../adr/ADR-W30-deepseek-flash.md)
 - [Windows 数据流与保留清单](../architecture/windows_data_flow_inventory.md)
 - [Windows 威胁模型](../security/windows_threat_model.md)

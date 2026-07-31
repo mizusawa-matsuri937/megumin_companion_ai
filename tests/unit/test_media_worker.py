@@ -6,7 +6,7 @@ import asyncio
 import os
 import threading
 import wave
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -27,6 +27,7 @@ from app.media.client import (
 from app.media.types import (
     MAX_OUTPUT_DEVICES,
     AudioOutputDevice,
+    MouthEnvelopeSample,
     OutputDeviceList,
     clean_device_label,
     output_device_id,
@@ -38,13 +39,15 @@ from app.media.worker import (
     _close_unowned_stream,
     _default_output_index,
     _DiscoveredOutput,
+    _MouthEnvelopeFollower,
+    _pcm_rms,
     _selectable_outputs,
     _WaveFormat,
 )
 from app.paths import AppPaths
 from app.pipelines.audio_player import AudioPlaybackResult
 from app.schemas import AudioResult
-from app.workers import SupervisorConfig, WorkerError
+from app.workers import SupervisorConfig, WorkerError, WorkerJobProgress
 from app.workers.access import AuthorizedResource, ResourceReference
 
 
@@ -55,6 +58,7 @@ class _FakeStream:
         self.fails_write = fails_write
         self.start_count = 0
         self.write_count = 0
+        self.writes: list[bytes] = []
         self.stop_count = 0
         self.abort_count = 0
         self.close_count = 0
@@ -65,8 +69,9 @@ class _FakeStream:
         self.active = True
         self.start_count += 1
 
-    def write(self, _frames: bytes) -> None:
+    def write(self, frames: bytes | memoryview) -> None:
         self.write_count += 1
+        self.writes.append(bytes(frames))
         self.write_started.set()
         if self.blocks_write and not self.release_write.wait(timeout=2):
             raise RuntimeError("synthetic_media_write_blocked")
@@ -226,7 +231,9 @@ class _ResultSupervisor:
         job_kind: str,
         resources: Sequence[ResourceReference] = (),
         hard_deadline_seconds: float | None = None,
+        progress_callback: Callable[[WorkerJobProgress], None] | None = None,
     ) -> dict[str, Any]:
+        del progress_callback
         self.deadlines.append(hard_deadline_seconds)
         self.calls.append((job_id, job_kind, tuple(resources)))
         if self.error is not None:
@@ -257,8 +264,20 @@ class _HangingSupervisor:
         job_kind: str,
         resources: Sequence[ResourceReference] = (),
         hard_deadline_seconds: float | None = None,
+        progress_callback: Any = None,
     ) -> dict[str, Any]:
-        del job_id, job_kind, resources, hard_deadline_seconds
+        del resources, hard_deadline_seconds
+        if job_kind == "media.release":
+            return {"status": "released"}
+        if progress_callback is not None:
+            progress_callback(
+                WorkerJobProgress(
+                    job_id=job_id,
+                    kind="mouth_envelope",
+                    sequence=1,
+                    value=0.6,
+                )
+            )
         self.started.set()
         await self.release.wait()
         return {"status": "cancelled"}
@@ -270,6 +289,77 @@ class _HangingSupervisor:
 
     async def stop(self) -> None:
         self.stopped = True
+
+
+class _ProgressSupervisor(_ResultSupervisor):
+    async def run_job(
+        self,
+        *,
+        job_id: str,
+        job_kind: str,
+        resources: Sequence[ResourceReference] = (),
+        hard_deadline_seconds: float | None = None,
+        progress_callback: Any = None,
+    ) -> dict[str, Any]:
+        self.deadlines.append(hard_deadline_seconds)
+        self.calls.append((job_id, job_kind, tuple(resources)))
+        assert progress_callback is not None
+        progress_callback(
+            WorkerJobProgress(
+                job_id=job_id,
+                kind="mouth_envelope",
+                sequence=1,
+                value=0.25,
+            )
+        )
+        progress_callback(
+            WorkerJobProgress(
+                job_id=job_id,
+                kind="mouth_envelope",
+                sequence=999,
+                value=float("nan"),
+            )
+        )
+        progress_callback(
+            WorkerJobProgress(
+                job_id="stale-job",
+                kind="mouth_envelope",
+                sequence=1000,
+                value=1.0,
+            )
+        )
+        progress_callback(
+            WorkerJobProgress(
+                job_id=job_id,
+                kind="mouth_envelope",
+                sequence=2,
+                value=0.75,
+            )
+        )
+        return self.payload
+
+
+class _ProgressFailureSupervisor(_ProgressSupervisor):
+    async def run_job(
+        self,
+        *,
+        job_id: str,
+        job_kind: str,
+        resources: Sequence[ResourceReference] = (),
+        hard_deadline_seconds: float | None = None,
+        progress_callback: Any = None,
+    ) -> dict[str, Any]:
+        del job_kind, resources, hard_deadline_seconds
+        assert progress_callback is not None
+        progress_callback(
+            WorkerJobProgress(
+                job_id=job_id,
+                kind="mouth_envelope",
+                sequence=1,
+                value=0.8,
+            )
+        )
+        raise WorkerError("worker_heartbeat_lost")
 
 
 def _output(name: str, *, native_index: int, is_default: bool = False) -> _DiscoveredOutput:
@@ -374,6 +464,40 @@ def test_media_worker_falls_back_after_selected_device_disappears_and_low_latenc
     assert not path.exists()
 
 
+@pytest.mark.parametrize(
+    ("sample_width", "frames", "expected"),
+    [
+        (1, bytes((128, 128, 128)), 0.0),
+        (1, bytes((0, 255)), ((128**2 + 127**2) / 2) ** 0.5 / 128),
+        (2, (-32768).to_bytes(2, "little", signed=True), 1.0),
+        (3, (-8388608).to_bytes(3, "little", signed=True), 1.0),
+        (4, (-2147483648).to_bytes(4, "little", signed=True), 1.0),
+    ],
+)
+def test_pcm_rms_supports_all_playable_integer_widths(
+    sample_width: int,
+    frames: bytes,
+    expected: float,
+) -> None:
+    assert _pcm_rms(frames, sample_width) == pytest.approx(expected)
+
+
+def test_mouth_envelope_uses_duration_aware_attack_release_and_noise_floor() -> None:
+    follower = _MouthEnvelopeFollower(
+        noise_floor=0.02,
+        gain=4.0,
+        attack_seconds=0.02,
+        release_seconds=0.10,
+    )
+    assert follower.update(0.01, duration_seconds=0.02) == 0.0
+    attack = follower.update(0.5, duration_seconds=0.02)
+    release = follower.update(0.0, duration_seconds=0.02)
+    assert 0.0 < release < attack <= 1.0
+    for _ in range(50):
+        release = follower.update(0.0, duration_seconds=0.02)
+    assert release < 0.001
+
+
 def test_media_worker_releases_lost_or_cancelled_streams_without_holding_the_wave(
     tmp_path: Path,
 ) -> None:
@@ -415,6 +539,83 @@ def test_media_worker_releases_lost_or_cancelled_streams_without_holding_the_wav
     assert payloads["cancelled"] == {"status": "cancelled"}
     path.unlink()
     assert not path.exists()
+
+
+def test_media_worker_writes_frame_aligned_chunks_instead_of_one_whole_wave(
+    tmp_path: Path,
+) -> None:
+    default = _output("Default output", native_index=1, is_default=True)
+    path, resource = _open_wave_resource(tmp_path)
+    backend = _FakeBackend((default,))
+    handler = MediaWorkerHandler(backend=backend, playback_chunk_ms=2.0)
+
+    async def scenario() -> dict[str, Any]:
+        try:
+            return await handler.run_job("media.play", (resource,), asyncio.Event())
+        finally:
+            resource.close()
+            await handler.close()
+
+    assert asyncio.run(scenario()) == {"status": "played", "notice_code": ""}
+    # 160 frames at 16 kHz, split into 32-frame (2 ms) writes.
+    assert backend.streams[0].write_count == 5
+    path.unlink()
+
+
+def test_media_worker_drains_pending_output_before_reporting_playback_terminal(
+    tmp_path: Path,
+) -> None:
+    default = _output("Default output", native_index=1, is_default=True)
+    path, resource = _open_wave_resource(tmp_path)
+    backend = _FakeBackend((default,))
+    handler = MediaWorkerHandler(backend=backend, playback_chunk_ms=2.0)
+
+    async def scenario() -> dict[str, Any]:
+        try:
+            return await handler.run_job("media.play", (resource,), asyncio.Event())
+        finally:
+            resource.close()
+
+    assert asyncio.run(scenario()) == {"status": "played", "notice_code": ""}
+    stream = backend.streams[0]
+    # PortAudio blocking writes may return immediately while frames fit in the
+    # available device buffer.  A graceful stop is the portable drain barrier:
+    # it waits for all pending output before the worker can publish terminal.
+    assert stream.stop_count == 1
+    assert stream.active is False
+    asyncio.run(handler.close())
+    path.unlink()
+
+
+def test_media_worker_preserves_every_multichannel_24_bit_frame_and_tail_chunk(
+    tmp_path: Path,
+) -> None:
+    default = _output("Default output", native_index=1, is_default=True)
+    path = tmp_path / "stereo-24bit.wav"
+    frame_bytes = 2 * 3
+    frames = bytes((index * 17) % 256 for index in range(7 * frame_bytes))
+    with wave.open(str(path), "wb") as output:
+        output.setnchannels(2)
+        output.setsampwidth(3)
+        output.setframerate(1_000)
+        output.writeframes(frames)
+    flags = os.O_RDONLY | int(getattr(os, "O_BINARY", 0))
+    resource = AuthorizedResource("wave", os.open(path, flags), owns_descriptor=True)
+    backend = _FakeBackend((default,))
+    handler = MediaWorkerHandler(backend=backend, playback_chunk_ms=4.0)
+
+    async def scenario() -> dict[str, Any]:
+        try:
+            return await handler.run_job("media.play", (resource,), asyncio.Event())
+        finally:
+            resource.close()
+            await handler.close()
+
+    assert asyncio.run(scenario()) == {"status": "played", "notice_code": ""}
+    writes = backend.streams[0].writes
+    assert [len(chunk) for chunk in writes] == [4 * frame_bytes, 3 * frame_bytes]
+    assert all(len(chunk) % frame_bytes == 0 for chunk in writes)
+    assert b"".join(writes) == frames
 
 
 def test_media_worker_player_keeps_paths_out_of_jobs_and_maps_worker_failures(
@@ -483,6 +684,78 @@ def test_media_worker_player_stop_settles_a_hung_job_without_waiting_for_native_
         assert supervisor.stopped
 
     asyncio.run(scenario())
+
+
+def test_media_player_forwards_only_bounded_progress_and_forces_terminal_zero(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "approved"
+    root.mkdir()
+    path = root / "segment.wav"
+    path.write_bytes(b"synthetic lease")
+    supervisor = _ProgressSupervisor()
+    observed: list[MouthEnvelopeSample] = []
+    player = MediaWorkerAudioPlayer(
+        roots={"audio_temp": root},
+        selected_device_id=None,
+        supervisor=supervisor,
+        mouth_envelope_listener=observed.append,
+    )
+
+    async def scenario() -> AudioPlaybackResult:
+        token = CancellationToken("turn_progress")
+        return await player.play(_audio_result(path), token)
+
+    assert asyncio.run(scenario()).played
+    assert [sample.value for sample in observed] == [0.25, 0.75, 0.0]
+    assert [sample.sequence for sample in observed] == [1, 2, 3]
+    assert observed[-1].terminal
+    assert len({sample.playback_job_id for sample in observed}) == 1
+
+
+def test_media_player_forces_terminal_zero_on_worker_failure_and_cancellation(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "approved"
+    root.mkdir()
+    path = root / "segment.wav"
+    path.write_bytes(b"synthetic lease")
+
+    failed_samples: list[MouthEnvelopeSample] = []
+    failed_player = MediaWorkerAudioPlayer(
+        roots={"audio_temp": root},
+        selected_device_id=None,
+        supervisor=_ProgressFailureSupervisor(),
+        mouth_envelope_listener=failed_samples.append,
+    )
+    failed = asyncio.run(
+        failed_player.play(_audio_result(path), CancellationToken("turn_progress_failure"))
+    )
+    assert failed.error_code == "audio_worker_hung"
+    assert [sample.value for sample in failed_samples] == [0.8, 0.0]
+    assert failed_samples[-1].terminal
+
+    async def cancellation_scenario() -> list[MouthEnvelopeSample]:
+        supervisor = _HangingSupervisor()
+        samples: list[MouthEnvelopeSample] = []
+        player = MediaWorkerAudioPlayer(
+            roots={"audio_temp": root},
+            selected_device_id=None,
+            supervisor=supervisor,
+            mouth_envelope_listener=samples.append,
+        )
+        token = CancellationToken("turn_progress_cancel")
+        task = asyncio.create_task(player.play(_audio_result(path), token))
+        await asyncio.wait_for(supervisor.started.wait(), timeout=1)
+        token.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=1)
+        await player.close()
+        return samples
+
+    cancelled_samples = asyncio.run(cancellation_scenario())
+    assert [sample.value for sample in cancelled_samples] == [0.6, 0.0]
+    assert cancelled_samples[-1].terminal
 
 
 def test_parent_media_imports_do_not_load_the_native_audio_binding() -> None:

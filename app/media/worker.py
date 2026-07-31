@@ -9,11 +9,12 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import math
 import os
 import shutil
 import threading
 import wave
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Iterator, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -30,8 +31,10 @@ from app.media.types import (
 )
 from app.windows_security import ReparsePointError, assert_no_reparse_points
 from app.workers.access import AuthorizedResource
+from app.workers.helper import emit_job_progress
 
 _PCM_DTYPES = {1: "uint8", 2: "int16", 3: "int24", 4: "int32"}
+_PCM_WIDTHS = {value: key for key, value in _PCM_DTYPES.items()}
 _MEDIA_PLAY_RESOURCE_ID = "wave"
 _PCM_SAMPLE_RATE = 16_000
 _PCM_CHANNELS = 1
@@ -49,7 +52,7 @@ class _OutputStream(Protocol):
 
     def start(self) -> None: ...
 
-    def write(self, frames: bytes) -> None: ...
+    def write(self, frames: bytes | memoryview) -> None: ...
 
     def abort(self) -> None: ...
 
@@ -82,6 +85,72 @@ class _WaveFormat:
     sample_rate: int
     channels: int
     dtype: str
+
+    @property
+    def sample_width(self) -> int:
+        try:
+            return _PCM_WIDTHS[self.dtype]
+        except KeyError as exc:
+            raise _MediaWorkerFailure("audio_wave_invalid") from exc
+
+    @property
+    def frame_bytes(self) -> int:
+        return self.channels * self.sample_width
+
+
+class _MouthEnvelopeFollower:
+    """Duration-aware RMS envelope with a bounded soft compressor."""
+
+    def __init__(
+        self,
+        *,
+        noise_floor: float,
+        gain: float,
+        attack_seconds: float,
+        release_seconds: float,
+    ) -> None:
+        values = (noise_floor, gain, attack_seconds, release_seconds)
+        if any(
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+            for value in values
+        ):
+            raise ValueError("mouth envelope configuration invalid")
+        if not 0.0 <= noise_floor < 1.0 or not 0.0 < gain <= 100.0:
+            raise ValueError("mouth envelope configuration invalid")
+        if not 0.001 <= attack_seconds <= 2.0 or not 0.001 <= release_seconds <= 5.0:
+            raise ValueError("mouth envelope configuration invalid")
+        self._noise_floor = float(noise_floor)
+        self._gain = float(gain)
+        self._attack = float(attack_seconds)
+        self._release = float(release_seconds)
+        self._value = 0.0
+
+    def update(self, rms: float, *, duration_seconds: float) -> float:
+        if (
+            isinstance(rms, bool)
+            or not isinstance(rms, (int, float))
+            or not math.isfinite(rms)
+            or isinstance(duration_seconds, bool)
+            or not isinstance(duration_seconds, (int, float))
+            or not math.isfinite(duration_seconds)
+            or duration_seconds <= 0.0
+        ):
+            raise ValueError("mouth envelope sample invalid")
+        bounded_rms = min(1.0, max(0.0, float(rms)))
+        if bounded_rms <= self._noise_floor:
+            target = 0.0
+        else:
+            normalized = (bounded_rms - self._noise_floor) / (1.0 - self._noise_floor)
+            target = 1.0 - math.exp(-self._gain * normalized)
+        time_constant = self._attack if target > self._value else self._release
+        alpha = 1.0 - math.exp(-float(duration_seconds) / time_constant)
+        self._value += alpha * (target - self._value)
+        if self._value < 1e-12:
+            self._value = 0.0
+        self._value = min(1.0, max(0.0, self._value))
+        return self._value
 
 
 class _Backend(Protocol):
@@ -322,6 +391,11 @@ class MediaWorkerHandler:
         transcription_timeout_seconds: float = 60.0,
         language: str = "zh",
         recording_watchdog_wait: Callable[[float], Awaitable[None]] | None = None,
+        playback_chunk_ms: float = 30.0,
+        mouth_noise_floor: float = 0.02,
+        mouth_gain: float = 4.0,
+        mouth_attack_seconds: float = 0.04,
+        mouth_release_seconds: float = 0.12,
     ) -> None:
         if maximum_wave_bytes < 44:
             raise ValueError("media worker wave limit is invalid")
@@ -349,6 +423,21 @@ class MediaWorkerHandler:
             raise ValueError("voice language invalid")
         if recording_watchdog_wait is not None and not callable(recording_watchdog_wait):
             raise ValueError("voice recording watchdog wait invalid")
+        if (
+            isinstance(playback_chunk_ms, bool)
+            or not isinstance(playback_chunk_ms, (int, float))
+            or not math.isfinite(playback_chunk_ms)
+            or not 1.0 <= playback_chunk_ms <= 100.0
+        ):
+            raise ValueError("media playback chunk duration invalid")
+        # Construct once for validation; each playback gets a fresh stateful
+        # follower so an old job cannot influence the next voice envelope.
+        _MouthEnvelopeFollower(
+            noise_floor=mouth_noise_floor,
+            gain=mouth_gain,
+            attack_seconds=mouth_attack_seconds,
+            release_seconds=mouth_release_seconds,
+        )
         self._backend = backend or SoundDeviceBackend()
         self._selected_device_id = selected_device_id or None
         self._maximum_wave_bytes = maximum_wave_bytes
@@ -366,6 +455,11 @@ class MediaWorkerHandler:
         self._stt = WhisperCppRunner(stt_config) if stt_config is not None else None
         self._recording: _RecordingSession | None = None
         self._recording_lock = asyncio.Lock()
+        self._playback_chunk_ms = float(playback_chunk_ms)
+        self._mouth_noise_floor = float(mouth_noise_floor)
+        self._mouth_gain = float(mouth_gain)
+        self._mouth_attack_seconds = float(mouth_attack_seconds)
+        self._mouth_release_seconds = float(mouth_release_seconds)
 
     async def run_job(
         self,
@@ -640,34 +734,96 @@ class MediaWorkerHandler:
         except Exception:
             return {"status": "skipped", "error_code": "audio_device_unavailable"}
 
-        write_task = asyncio.create_task(asyncio.to_thread(stream.write, frames))
-        cancellation = asyncio.create_task(cancelled.wait())
+        follower = _MouthEnvelopeFollower(
+            noise_floor=self._mouth_noise_floor,
+            gain=self._mouth_gain,
+            attack_seconds=self._mouth_attack_seconds,
+            release_seconds=self._mouth_release_seconds,
+        )
+        lip_sync_available = True
+        active_write: asyncio.Task[None] | None = None
         try:
-            done, _pending = await asyncio.wait(
-                {write_task, cancellation},
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-            if cancellation in done:
-                await asyncio.to_thread(_abort_stream, stream)
-                await asyncio.gather(write_task, return_exceptions=True)
-                await asyncio.to_thread(self._drop_stream, stream, True)
-                return {"status": "cancelled"}
-            try:
-                await write_task
-            except Exception:
-                await asyncio.to_thread(self._drop_stream, stream, True)
-                return {"status": "skipped", "error_code": "audio_device_lost"}
+            for chunk in _pcm_chunks(
+                frames,
+                audio_format,
+                chunk_ms=self._playback_chunk_ms,
+            ):
+                if cancelled.is_set():
+                    await asyncio.to_thread(self._drop_stream, stream, True)
+                    return {"status": "cancelled"}
+                duration_seconds = len(chunk) / audio_format.frame_bytes / audio_format.sample_rate
+                if lip_sync_available:
+                    try:
+                        envelope = follower.update(
+                            _pcm_rms(chunk, audio_format.sample_width),
+                            duration_seconds=duration_seconds,
+                        )
+                    except (TypeError, ValueError, OverflowError):
+                        lip_sync_available = False
+                    else:
+                        emit_job_progress("mouth_envelope", envelope)
+                write_task = asyncio.create_task(asyncio.to_thread(stream.write, chunk))
+                active_write = write_task
+                cancellation = asyncio.create_task(cancelled.wait())
+                try:
+                    done, _pending = await asyncio.wait(
+                        {write_task, cancellation},
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    if cancellation in done:
+                        await asyncio.to_thread(_abort_stream, stream)
+                        await asyncio.gather(write_task, return_exceptions=True)
+                        await asyncio.to_thread(self._drop_stream, stream, True)
+                        return {"status": "cancelled"}
+                    try:
+                        await write_task
+                    except Exception:
+                        await asyncio.to_thread(self._drop_stream, stream, True)
+                        return {"status": "skipped", "error_code": "audio_device_lost"}
+                finally:
+                    cancellation.cancel()
+                    await asyncio.gather(cancellation, return_exceptions=True)
+                    if write_task.done():
+                        active_write = None
             if cancelled.is_set():
                 await asyncio.to_thread(self._drop_stream, stream, True)
                 return {"status": "cancelled"}
+            # A successful blocking write only guarantees that PortAudio has
+            # consumed the caller's buffer.  If the chunk fits in
+            # ``write_available``, samples can still be pending in the device
+            # buffer.  Graceful stop is the portable drain barrier and keeps
+            # MouthOpen active until the actual output tail has played.
+            drain_task = asyncio.create_task(asyncio.to_thread(stream.stop))
+            active_write = drain_task
+            cancellation = asyncio.create_task(cancelled.wait())
+            try:
+                done, _pending = await asyncio.wait(
+                    {drain_task, cancellation},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if cancellation in done:
+                    await asyncio.to_thread(_abort_stream, stream)
+                    await asyncio.gather(drain_task, return_exceptions=True)
+                    await asyncio.to_thread(self._drop_stream, stream, True)
+                    return {"status": "cancelled"}
+                try:
+                    await drain_task
+                except Exception:
+                    await asyncio.to_thread(self._drop_stream, stream, True)
+                    return {"status": "skipped", "error_code": "audio_device_lost"}
+            finally:
+                cancellation.cancel()
+                await asyncio.gather(cancellation, return_exceptions=True)
+                if drain_task.done():
+                    active_write = None
+            if lip_sync_available:
+                emit_job_progress("mouth_envelope", 0.0)
         except asyncio.CancelledError:
             await asyncio.to_thread(_abort_stream, stream)
-            await asyncio.gather(write_task, return_exceptions=True)
+            if active_write is not None:
+                await asyncio.gather(active_write, return_exceptions=True)
             await asyncio.to_thread(self._drop_stream, stream, True)
             raise
-        finally:
-            cancellation.cancel()
-            await asyncio.gather(cancellation, return_exceptions=True)
 
         notice_code = (
             "audio_device_fallback"
@@ -693,8 +849,16 @@ class MediaWorkerHandler:
         low_key = (audio_format, native_index, "low")
         high_key = (audio_format, native_index, "high")
         stream = self._stream
-        if stream is not None and self._stream_key in {low_key, high_key} and stream.active:
-            return stream, self._stream_key == high_key
+        if stream is not None and self._stream_key in {low_key, high_key}:
+            latency_fallback = self._stream_key == high_key
+            if stream.active:
+                return stream, latency_fallback
+            try:
+                stream.start()
+            except Exception:
+                self._close_stream(immediate=True)
+            else:
+                return stream, latency_fallback
         self._close_stream(immediate=False)
         low_latency_stream: _OutputStream | None = None
         try:
@@ -848,6 +1012,49 @@ def _choose_output(
             return selected, False
     default = next((item for item in selectable if item.device.is_default), None)
     return default or selectable[0], bool(selected_device_id)
+
+
+def _pcm_chunks(
+    frames: bytes,
+    audio_format: _WaveFormat,
+    *,
+    chunk_ms: float,
+) -> Iterator[memoryview]:
+    frame_bytes = audio_format.frame_bytes
+    if frame_bytes < 1 or len(frames) % frame_bytes:
+        raise _MediaWorkerFailure("audio_wave_invalid")
+    frames_per_chunk = max(1, round(audio_format.sample_rate * chunk_ms / 1000.0))
+    chunk_bytes = frames_per_chunk * frame_bytes
+    view = memoryview(frames)
+    for offset in range(0, len(view), chunk_bytes):
+        yield view[offset : offset + chunk_bytes]
+
+
+def _pcm_rms(frames: bytes | memoryview, sample_width: int) -> float:
+    """Return normalized integer-PCM RMS for 8/16/24/32-bit little endian data."""
+
+    if sample_width not in _PCM_DTYPES:
+        raise ValueError("unsupported PCM width")
+    view = memoryview(frames).cast("B")
+    if not view or len(view) % sample_width:
+        raise ValueError("unaligned PCM samples")
+    sample_count = len(view) // sample_width
+    square_sum = 0
+    if sample_width == 1:
+        for raw in view:
+            sample = int(raw) - 128
+            square_sum += sample * sample
+        maximum = 128
+    else:
+        maximum = 1 << (sample_width * 8 - 1)
+        for offset in range(0, len(view), sample_width):
+            sample = int.from_bytes(
+                view[offset : offset + sample_width],
+                byteorder="little",
+                signed=True,
+            )
+            square_sum += sample * sample
+    return min(1.0, math.sqrt(square_sum / sample_count) / maximum)
 
 
 def _read_pcm_wave(descriptor: int, maximum_bytes: int) -> tuple[_WaveFormat, bytes]:

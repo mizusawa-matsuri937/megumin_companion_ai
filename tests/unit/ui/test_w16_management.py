@@ -7,13 +7,21 @@ from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import desktop_client.ui.management as management_module
 import pytest
 from app import stt_runtime as stt_runtime_module
+from app.avatar import AvatarHealthSnapshot, AvatarRuntimeState
 from app.clients.vts import VTSToken
-from app.config import ConfigurationError, Settings, read_user_settings, write_user_settings
+from app.config import (
+    AvatarConfig,
+    ConfigurationError,
+    Settings,
+    patch_user_settings,
+    read_user_settings,
+    write_user_settings,
+)
 from app.config.settings import LLMConfig, LoggingConfig, StorageConfig
 from app.memory.models import (
     MemoryClaim,
@@ -45,6 +53,7 @@ from desktop_client.ui.backend import BackendThreadHost, SkeletonBackendRuntime
 from desktop_client.ui.bridge import ApplicationBridge
 from desktop_client.ui.contracts import (
     MAX_SECRET_CHARS,
+    AvatarLayerStatus,
     BackendCapabilities,
     BackendState,
     DesktopSettingsForm,
@@ -82,6 +91,7 @@ from desktop_client.ui.management import (
     _management_error_code,
     _ManagementFailure,
     _preview,
+    _settings_form,
     _settings_patch,
     _write_memory_export,
 )
@@ -94,6 +104,7 @@ from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox
 class _Secrets(DesktopSecretStore):
     def __init__(self) -> None:
         self.llm: str | None = None
+        self.deepseek_flash: str | None = None
         self.vts: str | None = None
 
     def status(self, _settings: Settings) -> tuple[bool, bool]:
@@ -102,12 +113,23 @@ class _Secrets(DesktopSecretStore):
     def store_llm(self, _settings: Settings, value: str) -> None:
         self.llm = value
 
+    def deepseek_flash_configured(self, _settings: Settings) -> bool:
+        return self.deepseek_flash is not None
+
+    def store_deepseek_flash(self, _settings: Settings, value: str) -> None:
+        self.deepseek_flash = value
+
     async def store_vts(self, _settings: Settings, value: str) -> None:
         self.vts = value
 
     def revoke_llm(self, _settings: Settings) -> bool:
         changed = self.llm is not None
         self.llm = None
+        return changed
+
+    def revoke_deepseek_flash(self, _settings: Settings) -> bool:
+        changed = self.deepseek_flash is not None
+        self.deepseek_flash = None
         return changed
 
     def revoke_vts(self, _settings: Settings) -> bool:
@@ -238,6 +260,154 @@ def _memory_item(memory_id: str = "mem_ui") -> MemoryItem:
 
 def _events(bridge: ApplicationBridge) -> list[object]:
     return list(bridge.drain_events())
+
+
+def test_w28_management_debug_exposes_four_content_free_avatar_layers(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> ManagementDebugEvent:
+        snapshot = AvatarHealthSnapshot(
+            state=AvatarRuntimeState.ready,
+            parameter_control_available=True,
+            lip_sync_available=False,
+            body_motion_available=True,
+            automatic_red_eye_available=False,
+            sent_frames=25,
+            coalesced_frames=4,
+            dropped_actions=0,
+            reconnect_count=1,
+            lip_sync_error_code="avatar_mouth_parameter_missing",
+            red_eye_error_code="avatar_event_overflow",
+        )
+        management = DesktopManagementRuntime(
+            _settings(tmp_path / "MeguminCompanion"),
+            None,
+            avatar_snapshot=lambda: snapshot,
+        )
+        bridge = ApplicationBridge()
+        await management.dispatch(
+            bridge,
+            ManagementDebugCommand(command_id="avatar-debug"),
+            capabilities=BackendCapabilities(text_chat=True, turn_cancel=True),
+        )
+        return next(event for event in _events(bridge) if isinstance(event, ManagementDebugEvent))
+
+    debug = asyncio.run(scenario())
+
+    assert tuple(layer.name for layer in debug.avatar_layers) == (
+        "parameter_control",
+        "lip_sync",
+        "body_motion",
+        "automatic_red_eye",
+    )
+    assert tuple(layer.available for layer in debug.avatar_layers) == (
+        True,
+        False,
+        True,
+        False,
+    )
+    assert tuple(layer.reason_code for layer in debug.avatar_layers) == (
+        None,
+        "avatar_mouth_parameter_missing",
+        None,
+        "avatar_event_overflow",
+    )
+    assert "model" not in repr(debug).casefold()
+    assert "hotkey" not in repr(debug).casefold()
+    assert "path" not in repr(debug).casefold()
+
+
+def test_w28_avatar_settings_round_trip_safe_controls_without_private_names(
+    tmp_path: Path,
+) -> None:
+    settings = _settings(tmp_path / "MeguminCompanion")
+    settings.avatar = AvatarConfig(
+        enabled=False,
+        parameter_control_enabled=False,
+        micro_motion_enabled=True,
+        lip_sync_enabled=False,
+        body_motion_enabled=True,
+        auto_red_eye_enabled=False,
+        mouth_noise_floor=0.05,
+        mouth_gain=6.5,
+        mouth_attack_seconds=0.08,
+        mouth_release_seconds=0.24,
+    )
+
+    form = _settings_form(settings)
+
+    assert form.avatar_enabled is False
+    assert form.avatar_parameter_control_enabled is False
+    assert form.avatar_micro_motion_enabled is True
+    assert form.avatar_lip_sync_enabled is False
+    assert form.avatar_body_motion_enabled is True
+    assert form.avatar_auto_red_eye_enabled is False
+    assert form.avatar_mouth_noise_floor == 0.05
+    assert form.avatar_mouth_gain == 6.5
+    assert form.avatar_mouth_attack_seconds == 0.08
+    assert form.avatar_mouth_release_seconds == 0.24
+
+    patch = _settings_patch(
+        replace(
+            form,
+            avatar_enabled=True,
+            avatar_parameter_control_enabled=True,
+            avatar_lip_sync_enabled=True,
+            avatar_mouth_gain=7.25,
+        )
+    )
+    avatar_patch = patch["avatar"]
+    assert avatar_patch == {
+        "enabled": True,
+        "parameter_control_enabled": True,
+        "micro_motion_enabled": True,
+        "lip_sync_enabled": True,
+        "body_motion_enabled": True,
+        "auto_red_eye_enabled": False,
+        "mouth_noise_floor": 0.05,
+        "mouth_gain": 7.25,
+        "mouth_attack_seconds": 0.08,
+        "mouth_release_seconds": 0.24,
+    }
+    assert "hotkey" not in repr(avatar_patch).casefold()
+    assert "expression" not in repr(avatar_patch).casefold()
+    assert "model" not in repr(avatar_patch).casefold()
+
+    write_user_settings(
+        {
+            "avatar": {
+                "release_hotkey_name": "SYNTHETIC_RELEASE",
+                "red_eye_hotkey_name": "SYNTHETIC_FX",
+                "red_eye_expression_file": "synthetic_fx.exp3.json",
+                "body_motion_hotkeys": {"happy": ["SYNTHETIC_HAPPY"]},
+            }
+        },
+        app_paths=settings.paths,
+    )
+    patch_user_settings(patch, app_paths=settings.paths)
+    layer = read_user_settings(app_paths=settings.paths)["avatar"]
+    assert layer["release_hotkey_name"] == "SYNTHETIC_RELEASE"
+    assert layer["red_eye_hotkey_name"] == "SYNTHETIC_FX"
+    assert layer["red_eye_expression_file"] == "synthetic_fx.exp3.json"
+    assert layer["body_motion_hotkeys"] == {"happy": ["SYNTHETIC_HAPPY"]}
+
+
+@pytest.mark.parametrize(
+    ("field_name", "value"),
+    (
+        ("avatar_enabled", 1),
+        ("avatar_mouth_noise_floor", 1.0),
+        ("avatar_mouth_gain", float("nan")),
+        ("avatar_mouth_attack_seconds", 0.0),
+        ("avatar_mouth_release_seconds", 5.1),
+    ),
+)
+def test_w28_avatar_settings_form_rejects_unbounded_values(
+    field_name: str,
+    value: object,
+) -> None:
+    with pytest.raises(ValueError, match=field_name):
+        replace(_form(), **cast(Any, {field_name: value}))
 
 
 def test_explicit_stt_install_updates_only_managed_paths_and_publishes_status(
@@ -393,12 +563,12 @@ def test_w16_settings_secret_and_feature_disable_wait_for_barrier(
                 SettingsSaveCommand(payload=replace(form, tts_provider="gpt-sovits")),
                 capabilities=BackendCapabilities(text_chat=True, turn_cancel=True),
             )
-            missing_preset = _events(bridge)
+            missing_reference = _events(bridge)
             assert any(
                 isinstance(event, ManagementResultEvent)
                 and event.operation == "settings_save"
-                and event.reason_code == "tts_preset_required"
-                for event in missing_preset
+                and event.reason_code == "tts_reference_required"
+                for event in missing_reference
             )
 
             entered = asyncio.Event()
@@ -444,6 +614,45 @@ def test_w16_settings_secret_and_feature_disable_wait_for_barrier(
 
     asyncio.run(scenario())
     qapp.processEvents()
+
+
+def test_gateway_tts_settings_save_accepts_legacy_aliases_without_reference_audio(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        for provider_name in (
+            "gpt-sovits-gateway",
+            "gpt_sovits_gateway",
+            "gateway",
+        ):
+            settings = _settings(tmp_path / provider_name)
+            management = DesktopManagementRuntime(settings, None, secrets=_Secrets())
+            bridge = ApplicationBridge()
+            form = replace(
+                _form(),
+                tts_provider=provider_name,
+                tts_ref_audio_path="",
+                tts_prompt_text="",
+            )
+
+            await management.dispatch(
+                bridge,
+                SettingsSaveCommand(payload=form),
+                capabilities=BackendCapabilities(text_chat=True, turn_cancel=True),
+            )
+
+            events = _events(bridge)
+            assert any(
+                isinstance(event, ManagementResultEvent)
+                and event.operation == "settings_saved"
+                and event.restart_required
+                for event in events
+            )
+            layer = read_user_settings(app_paths=settings.paths)
+            assert layer["tts"]["provider"] == provider_name
+            assert layer["tts"]["presets"] == {}
+
+    asyncio.run(scenario())
 
 
 def test_w16_memory_list_detail_update_delete_and_export_are_bounded(
@@ -723,8 +932,14 @@ def test_w16_secret_store_adapter_and_export_writer_are_bounded(
             self.saved.append(token)
 
     llm_file = _SecretFile()
+    deepseek_file = _SecretFile()
     vts_file = _SecretFile()
     monkeypatch.setattr(management_module, "llm_api_key_file", lambda _paths: llm_file)
+    monkeypatch.setattr(
+        management_module,
+        "deepseek_api_key_file",
+        lambda _paths: deepseek_file,
+    )
     monkeypatch.setattr(
         management_module,
         "vts_token_file",
@@ -736,9 +951,12 @@ def test_w16_secret_store_adapter_and_export_writer_are_bounded(
     assert store.status(settings) == (False, False)
 
     store.store_llm(settings, "synthetic-llm-key")
+    store.store_deepseek_flash(settings, "synthetic-deepseek-key")
     asyncio.run(store.store_vts(settings, "synthetic-vts-token"))
     assert store.status(settings) == (True, False)
+    assert store.deepseek_flash_configured(settings)
     assert llm_file.value == "synthetic-llm-key"
+    assert deepseek_file.value == "synthetic-deepseek-key"
     assert len(_TokenStore.saved) == 1
     token = _TokenStore.saved[0]
     assert token.plugin_name == settings.vts.plugin_name
@@ -746,6 +964,8 @@ def test_w16_secret_store_adapter_and_export_writer_are_bounded(
     assert token.authentication_token == "synthetic-vts-token"
     assert store.revoke_llm(settings)
     assert not store.revoke_llm(settings)
+    assert store.revoke_deepseek_flash(settings)
+    assert not store.revoke_deepseek_flash(settings)
     assert not store.revoke_vts(settings)
 
     payload = {"memories": [{"content": "synthetic export"}]}
@@ -860,10 +1080,19 @@ def test_w16_management_reports_stable_error_codes_for_backend_failures(
         def store_llm(self, _settings: Settings, _value: str) -> None:
             raise self._error()
 
+        def deepseek_flash_configured(self, _settings: Settings) -> bool:
+            raise self._error()
+
+        def store_deepseek_flash(self, _settings: Settings, _value: str) -> None:
+            raise self._error()
+
         async def store_vts(self, _settings: Settings, _value: str) -> None:
             raise self._error()
 
         def revoke_llm(self, _settings: Settings) -> bool:
+            raise self._error()
+
+        def revoke_deepseek_flash(self, _settings: Settings) -> bool:
             raise self._error()
 
         def revoke_vts(self, _settings: Settings) -> bool:
@@ -1073,7 +1302,10 @@ def test_w16_settings_dialog_has_accessible_surface_and_wipes_on_final_close(
     assert dialog is not None
     assert dialog.tabs.accessibleName() == "设置页面"
     assert dialog.llm_secret.echoMode() == dialog.llm_secret.EchoMode.Password
-    assert "功能与隐私" in [dialog.tabs.tabText(index) for index in range(dialog.tabs.count())]
+    tab_names = [dialog.tabs.tabText(index) for index in range(dialog.tabs.count())]
+    assert "功能与隐私" in tab_names
+    assert "Avatar" in tab_names
+    assert dialog.avatar_mouth_gain.accessibleName() == "Avatar 口型增益"
 
     window.management_model.apply_event(
         ManagementResultEvent(
@@ -1358,6 +1590,20 @@ def test_w16_settings_dialog_submits_bounded_management_actions(
             command_queue_capacity=64,
             event_queue_count=0,
             event_queue_capacity=512,
+            avatar_layers=(
+                AvatarLayerStatus("parameter_control", True),
+                AvatarLayerStatus(
+                    "lip_sync",
+                    False,
+                    "avatar_mouth_parameter_missing",
+                ),
+                AvatarLayerStatus("body_motion", True),
+                AvatarLayerStatus(
+                    "automatic_red_eye",
+                    False,
+                    "avatar_event_overflow",
+                ),
+            ),
         )
     )
     submitted: list[ManagementCommand] = []
@@ -1374,8 +1620,20 @@ def test_w16_settings_dialog_submits_bounded_management_actions(
     dialog.sync_from_model()
     assert dialog.memory_detail.toPlainText() == item.content
     assert dialog.debug_version.text() == "0.0-test"
+    assert "参数控制：可用" in dialog.debug_avatar.text()
+    assert "avatar_event_overflow" in dialog.debug_avatar.text()
 
     dialog._refresh()
+    dialog.avatar_enabled.setChecked(False)
+    dialog.avatar_parameter_control_enabled.setChecked(False)
+    dialog.avatar_micro_motion_enabled.setChecked(False)
+    dialog.avatar_lip_sync_enabled.setChecked(False)
+    dialog.avatar_body_motion_enabled.setChecked(False)
+    dialog.avatar_auto_red_eye_enabled.setChecked(False)
+    dialog.avatar_mouth_noise_floor.setValue(0.075)
+    dialog.avatar_mouth_gain.setValue(6.25)
+    dialog.avatar_mouth_attack_seconds.setValue(0.09)
+    dialog.avatar_mouth_release_seconds.setValue(0.3)
     dialog._save_settings()
     dialog._store_secret("llm")
     assert "非空" in dialog.status_label.text()
@@ -1420,6 +1678,19 @@ def test_w16_settings_dialog_submits_bounded_management_actions(
         MemoryConfirmCommand,
         MemoryExportCommand,
     }.issubset({type(command) for command in submitted})
+    settings_command = next(
+        command for command in submitted if isinstance(command, SettingsSaveCommand)
+    )
+    assert settings_command.payload.avatar_enabled is False
+    assert settings_command.payload.avatar_parameter_control_enabled is False
+    assert settings_command.payload.avatar_micro_motion_enabled is False
+    assert settings_command.payload.avatar_lip_sync_enabled is False
+    assert settings_command.payload.avatar_body_motion_enabled is False
+    assert settings_command.payload.avatar_auto_red_eye_enabled is False
+    assert settings_command.payload.avatar_mouth_noise_floor == 0.075
+    assert settings_command.payload.avatar_mouth_gain == 6.25
+    assert settings_command.payload.avatar_mouth_attack_seconds == 0.09
+    assert settings_command.payload.avatar_mouth_release_seconds == 0.3
     export = next(command for command in submitted if isinstance(command, MemoryExportCommand))
     assert export.overwrite
 

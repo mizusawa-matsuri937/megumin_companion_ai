@@ -39,6 +39,7 @@ from desktop_client.ui.contracts import (
     is_stable_reason_code,
 )
 from desktop_client.ui.management import DesktopManagementRuntime
+from desktop_client.ui.provider_preflight import ProviderPreflightRunner
 
 DESKTOP_CLIENT_ID = "desktop_client"
 FORCE_SNAPSHOT_LAST_SEQ = 9_223_372_036_854_775_807
@@ -467,6 +468,10 @@ class DesktopChatRuntime:
                     raise RuntimeError("desktop_runtime_unavailable")
                 memory_runtime = getattr(application.state, "memory_runtime", None)
                 temp_registry = getattr(application.state, "temp_asset_registry", None)
+                avatar_runtime = getattr(application.state, "avatar_runtime", None)
+                avatar_snapshot = getattr(avatar_runtime, "snapshot", None)
+                if not callable(avatar_snapshot):
+                    avatar_snapshot = None
                 try:
                     voice_input = build_voice_input(
                         settings,
@@ -485,6 +490,10 @@ class DesktopChatRuntime:
                         management=DesktopManagementRuntime(
                             settings,
                             memory_runtime if isinstance(memory_runtime, MemoryRuntime) else None,
+                            provider_preflight=ProviderPreflightRunner(
+                                temp_registry=temp_registry,
+                            ),
+                            avatar_snapshot=avatar_snapshot,
                         ),
                         client_id=self._client_id,
                     )
