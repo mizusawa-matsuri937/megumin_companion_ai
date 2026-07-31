@@ -1,6 +1,6 @@
 # Windows Gate W0 威胁模型
 
-> 版本：2026-07-29
+> 版本：2026-07-30
 > 状态：项目所有者自审通过；没有独立人工安全/隐私 reviewer
 > 范围：Windows 11 x64、标准用户、单交互会话、私人使用
 
@@ -8,6 +8,7 @@
 
 - 用户明确发送的对话、近期历史和长期记忆。
 - API key、VTS token、DPAPI 密文和 provider 身份。
+- W29 TTS gateway Bearer、私有 manifest、声音权重、参考音频、日语提示和生成 WAV。
 - 麦克风 PCM/WAV、指定窗口截图、OCR 文本和脱敏前图像。
 - SQLite/WAL、配置、日志、缓存、temp、迁移 backup。
 - turn 幂等、计费、播放/VTS generation 和 feature 实际状态。
@@ -20,6 +21,7 @@
 - 恶意网页、浏览器脚本或本机低权限进程。
 - 同机另一 Windows 用户。
 - 异常、恶意、过慢或返回超长内容的 LLM/TTS/VTS/vision provider。
+- 恶意或被替换的声音 ZIP、权重、公共模型、源码树，以及伪造的 loopback TTS 请求。
 - 被提示注入控制的屏幕内容或云视觉返回。
 - 卡死/崩溃的 OCR、PortAudio、whisper.cpp 和子进程树。
 - 文件锁、磁盘满、杀毒软件、崩溃、半迁移和旧版本程序。
@@ -47,8 +49,9 @@
 | TM-W00-14 | 安装包夹带资产、密钥或用户数据 | artifact allowlist、manifest、SBOM、sentinel 和许可证清单 | clean build + artifact scan | 当前无独立许可证 reviewer |
 | TM-W00-15 | 未签名私人包被误作公开发布 | 文档标记私人/未签名；公开发布重新 Gate | release checklist | 用户手工转发仍可能产生信任警告 |
 | TM-W00-16 | 受管 STT 下载被篡改、ZIP 越界或恶意模型导致 CLI 崩溃 | 固定 HTTPS URL/版本/大小/hash；有限重定向、staging、拒绝 Zip Slip/link/reparse point、原子切换；MediaWorker 首次使用前全量 CLI/model SHA-256，失败不启动 CLI；Job Object 约束子树 | 合成 archive/hash/timeout/cancel/repair、受管/手工路径、worker integrity-fail-before-CLI、wheel asset denylist；真实模型/内存另列设备 Gate | 当前用户完全受控、手工非受管模型和 upstream parser 缺陷不在此控制的保证内；不得宣称上游 issue 已修复 |
-| TM-W00-17 | 恶意/脆弱 GPT-SoVITS 服务或模型处理导致远端命令执行、数据泄露或错误响应；预检被误写成安全认证 | 应用不安装/打包/启动/升级服务，不调用有副作用的 `/set_refer_audio`；只连接用户显式配置且通过 W08 endpoint/TLS policy 的服务；预检只发送固定短语和已保存 preset/reference，响应受 deadline/bytes/WAV 校验且不播放并清理 | W19 fake API v2 route/synthesis、错误 body/path sentinel、deadline/cleanup 与设置/事件边界测试；真实服务仅做人类体验 Gate | [GHSL-2025-045～048](https://securitylab.github.com/advisories/GHSL-2025-045_GHSL-2025-048_RVC-Boss_GPT-SoVITS/) 披露命令注入，[GHSL-2025-049～053](https://securitylab.github.com/advisories/GHSL-2025-049_GHSL-2025-053_RVC-Boss_GPT-SoVITS/) 披露不安全反序列化/RCE；两组测试 `20250228v3`。服务及模型资产安全不由本应用证明，用户配置的 reference/prompt 会到达该服务 |
-| TM-W00-18 | 多个 VTS writer、迟到 mouth progress 或错误红眼所有权导致旧 turn 重放、取消后重新张嘴、姿态残留或关闭人工状态；progress 泄漏 PCM/路径 | 单写者 AvatarRuntime；urgent bounded queue + latest frame；turn/playback/VTS/model generation；strict finite scalar `job.progress`；全部 terminal path 归零；release/Neutral/cancel 生命周期；`off/manual/system` Expression 所有权；状态不可验证即禁用自动层 | W28 fake VTS/event malformed、slow writer、fake clock/seed、20k frame、10k coalescing、progress flood/stale/terminal、PCM RMS 与 Avatar failure isolation；真实 VTS lifecycle/reconnect/manual-system 以及真实输出 silence/ramp/cancel/drain | VTS/driver/display latency 和主观自然度仍需真实体验；真实中文 GPT-SoVITS 当前未配置；私有配置 exact-byte guard 有等价 metadata 差异，只能声明 semantic 未改写 |
+| TM-W00-17 | 恶意/脆弱 GPT-SoVITS 服务、声音 ZIP、权重或源码处理导致命令执行、数据泄露、混合权重、路径越界或不可清理进程；预检/hash 被误写成安全认证 | W19 legacy 路径仍不安装或管理用户服务，也不调用有副作用的 `/set_refer_audio`。W29 只导入用户明确确认可信的五包：安全 ZIP、固定扩展/数量、SHA-256、current-user ACL、固定官方提交/公共模型树；推理隔离在仓库外单 worker gateway。HTTP 仅认证 loopback health/TTS，拒绝 Origin/异常 Host/peer/body/JSON/path；单锁事务切换完整 GPT/SoVITS pair，失败回滚，回滚失败 quarantine；启动器 Job Object 收束子树 | W19 fake API v2 route/synthesis、错误 body/path sentinel、deadline/cleanup；W29 ZIP traversal/link/encryption/duplicate、manifest/hash/ACL/source-tree、auth/Host/Origin/body/admission、事务切模/取消/回滚/quarantine、launcher cleanup；真实五槽中文 WAV、20 次切换和 Job cleanup | [GHSL-2025-045～048](https://securitylab.github.com/advisories/GHSL-2025-045_GHSL-2025-048_RVC-Boss_GPT-SoVITS/) 披露命令注入，[GHSL-2025-049～053](https://securitylab.github.com/advisories/GHSL-2025-049_GHSL-2025-053_RVC-Boss_GPT-SoVITS/) 披露不安全反序列化/RCE。用户确认、hash、ACL 和进程隔离不能证明权重语义安全、上游无未知漏洞或当前用户账户受控时 token 仍保密 |
+| TM-W00-18 | 多个 VTS writer、迟到 mouth progress 或错误红眼所有权导致旧 turn 重放、取消后重新张嘴、姿态残留或关闭人工状态；progress 泄漏 PCM/路径 | 单写者 AvatarRuntime；urgent bounded queue + latest frame；turn/playback/VTS/model generation；strict finite scalar `job.progress`；全部 terminal path 归零；release/Neutral/cancel 生命周期；`off/manual/system` Expression 所有权；状态不可验证即禁用自动层 | W28 fake VTS/event malformed、slow writer、fake clock/seed、20k frame、10k coalescing、progress flood/stale/terminal、PCM RMS 与 Avatar failure isolation；W29 focused 变体、有序红眼和取消迟到矩阵；真实 VTS lifecycle/reconnect/manual-system、真实输出和 W29 中文播放/cancel | VTS/driver/display latency 和主观自然度仍需真实体验；私有配置 exact-byte guard 有等价 metadata 差异，只能声明 semantic 未改写 |
+| TM-W00-19 | 提示注入、截断/重复/超限 JSON 或并行合成乱序使控制字段泄漏，或让 LLM 越权选择声音/动作/路径；取消后迟到段重新播放/触发红眼 | 严格增量 JSON parser 只释放完整 schema 段；重复键、未知字段、非法枚举、空/超限/截断/尾随输入 fail closed；EmotionEngine 最终裁决，本地派生声音/速率/动作，LLM 只建议受限情绪/变体/红眼；红眼绑定有序实际播放，generation 失效拒绝迟到结果；每轮红眼硬上限 | 任意 chunk 边界、malformed/duplicate/unknown/truncated/oversize/control-field non-disclosure、deterministic resplit、TTS out-of-order、取消和已播放/未播放边界；真实播放确认动作/红眼晚于首个 progress | LLM 仍可能在合法正文中产生不合适内容；本地情绪裁决是有界策略而非语义正确性证明，随机动作与台词协调仍需所有者体验 |
 
 ## 反方审查清单
 
@@ -76,6 +79,10 @@
    的 NVD 记录列出范围至 1.8.2，未把受管的 v1.9.1 列为受影响版本；但
    [issue #3807](https://github.com/ggml-org/whisper.cpp/issues/3807) 在本次复核时仍为 open，不能据此声称 v1.9.1
    已修复。固定 hash 的受管模型减少意外/替换输入，不能替代上游修复、独立审计或对非受管模型的防护。
-7. **RR-W00-07 GPT-SoVITS 上游与服务边界：** 官方项目仍由用户在应用包外自行部署和管理。W19 的成功 preflight
-   只证明一次 API/preset/reference 组合返回了合规 WAV，不证明服务版本没有已知/未知漏洞、模型可信、远端不会保留输入，
-   也不提供独立许可证/安全审计。公开发布或改变服务管理边界前必须重新评估上游版本、advisory、依赖和资产许可。
+7. **RR-W00-07 GPT-SoVITS legacy 服务边界：** W19 兼容路径的外部服务仍由用户在应用包外自行部署和
+   管理。成功 preflight 只证明一次 API/preset/reference 组合返回了合规 WAV，不证明服务版本没有已知/未知
+   漏洞、模型可信、远端不会保留输入，也不提供独立许可证/安全审计。
+8. **RR-W00-08 W29 私有模型与固定上游：** W29 改变的是本机受管边界，不是上游安全证明。只有用户明确
+   确认可信、私有 manifest 中 SHA-256/ACL/源码树均匹配的五槽可加载；这仍无法排除恶意权重在允许的
+   `torch.load(..., weights_only=False)` 中执行代码、未知上游漏洞或受控当前用户修改运行时。任何公开发布、
+   新模型、上游提交或依赖升级都必须重新审查来源、许可、advisory、兼容性和资产权利。

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from app.avatar.models import AvatarTransitionClass, AvatarTurnPlan
-from app.emotion import EmotionLabel
+from app.emotion import EmotionLabel, FocusedVariant
 
 _VOICE_SLOTS: dict[EmotionLabel, str] = {
     EmotionLabel.neutral: "neutral",
@@ -13,7 +13,7 @@ _VOICE_SLOTS: dict[EmotionLabel, str] = {
     EmotionLabel.angry_cute: "tsundere",
     EmotionLabel.worried: "gentle",
     EmotionLabel.bored: "neutral",
-    EmotionLabel.excited: "gentle",
+    EmotionLabel.excited: "excited_explosion",
     EmotionLabel.explosion_mode: "excited_explosion",
     EmotionLabel.sleepy: "neutral",
     EmotionLabel.focused: "focused",
@@ -27,7 +27,7 @@ _BODY_MOTION_KEYS: dict[EmotionLabel, str | None] = {
     EmotionLabel.angry_cute: "angry_cute",
     EmotionLabel.worried: "worried",
     EmotionLabel.bored: "bored",
-    EmotionLabel.excited: "happy",
+    EmotionLabel.excited: "excited",
     EmotionLabel.explosion_mode: "explosion",
     EmotionLabel.sleepy: "sleepy",
     EmotionLabel.focused: "focused",
@@ -49,11 +49,21 @@ _GENTLE = frozenset(
 )
 
 
-def map_avatar_turn_plan(turn_id: str, emotion: EmotionLabel) -> AvatarTurnPlan:
+def map_avatar_turn_plan(
+    turn_id: str,
+    emotion: EmotionLabel,
+    *,
+    focused_variant: FocusedVariant = FocusedVariant.default,
+) -> AvatarTurnPlan:
     """Freeze one content-free plan without accepting arbitrary model controls."""
 
-    if not isinstance(emotion, EmotionLabel):
+    if not isinstance(emotion, EmotionLabel) or not isinstance(focused_variant, FocusedVariant):
         raise ValueError("Avatar emotion is invalid")
+    if emotion is not EmotionLabel.focused and focused_variant is not FocusedVariant.default:
+        raise ValueError("Focused variant is invalid for the selected emotion")
+    body_motion_key = _BODY_MOTION_KEYS[emotion]
+    if emotion is EmotionLabel.focused and focused_variant is FocusedVariant.chuunibyou:
+        body_motion_key = "focused_chuunibyou"
     transition = (
         AvatarTransitionClass.sudden
         if emotion in _SUDDEN
@@ -65,6 +75,7 @@ def map_avatar_turn_plan(turn_id: str, emotion: EmotionLabel) -> AvatarTurnPlan:
         turn_id=turn_id,
         emotion=emotion,
         voice_slot=_VOICE_SLOTS[emotion],
-        body_motion_key=_BODY_MOTION_KEYS[emotion],
+        body_motion_key=body_motion_key,
         transition=transition,
+        focused_variant=focused_variant,
     )

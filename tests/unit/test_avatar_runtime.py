@@ -13,6 +13,7 @@ from app.avatar import (
     AvatarRuntime,
     AvatarRuntimeState,
     AvatarTurnPlan,
+    FocusedVariant,
     RedEyeOwner,
     map_avatar_turn_plan,
 )
@@ -74,6 +75,7 @@ class _FakeClient:
             "happy_a": "happy-a-id",
             "happy_b": "happy-b-id",
             "focused_action": "focused-id",
+            "focused_chuunibyou_action": "focused-chuunibyou-id",
             "red_eye_toggle": "red-eye-id",
         }
 
@@ -181,6 +183,7 @@ def _config(**overrides: object) -> AvatarConfig:
         "body_motion_hotkeys": {
             "happy": ("happy_a", "happy_b"),
             "focused": ("focused_action",),
+            "focused_chuunibyou": ("focused_chuunibyou_action",),
         },
     }
     values.update(overrides)
@@ -301,6 +304,86 @@ def test_body_motion_lifecycle_is_once_release_neutral_and_cancel_replay() -> No
 
         await runtime.close()
         assert runtime.snapshot().state is AvatarRuntimeState.stopped
+
+    asyncio.run(scenario())
+
+
+def test_focused_variant_switch_releases_and_same_variant_does_not_restart() -> None:
+    async def scenario() -> None:
+        client = _FakeClient()
+        runtime = AvatarRuntime(
+            lambda: client,
+            _TokenStore(),
+            plugin_name="Companion",
+            plugin_developer="Local User",
+            config=_config(),
+        )
+        runtime.start()
+        await _wait_until(lambda: runtime.snapshot().state is AvatarRuntimeState.ready)
+        client.calls.clear()
+
+        default_generation = runtime.begin_turn("turn_focus_default")
+        assert default_generation is not None
+        assert runtime.set_turn_plan(
+            map_avatar_turn_plan("turn_focus_default", EmotionLabel.focused),
+            generation=default_generation,
+        )
+        assert runtime.visual_fallback(
+            "turn_focus_default",
+            generation=default_generation,
+        )
+        await _wait_until(lambda: _hotkeys(client) == ["focused-id"])
+        assert runtime.complete_turn(
+            "turn_focus_default",
+            generation=default_generation,
+        )
+
+        variant_generation = runtime.begin_turn("turn_focus_variant")
+        assert variant_generation is not None
+        assert runtime.set_turn_plan(
+            map_avatar_turn_plan(
+                "turn_focus_variant",
+                EmotionLabel.focused,
+                focused_variant=FocusedVariant.chuunibyou,
+            ),
+            generation=variant_generation,
+        )
+        assert runtime.visual_fallback(
+            "turn_focus_variant",
+            generation=variant_generation,
+        )
+        await _wait_until(lambda: _hotkeys(client)[-2:] == ["release-id", "focused-chuunibyou-id"])
+        variant_count = len(_hotkeys(client))
+        assert runtime.complete_turn(
+            "turn_focus_variant",
+            generation=variant_generation,
+        )
+
+        same_generation = runtime.begin_turn("turn_focus_same")
+        assert same_generation is not None
+        assert runtime.set_turn_plan(
+            map_avatar_turn_plan(
+                "turn_focus_same",
+                EmotionLabel.focused,
+                focused_variant=FocusedVariant.chuunibyou,
+            ),
+            generation=same_generation,
+        )
+        assert runtime.visual_fallback("turn_focus_same", generation=same_generation)
+        await asyncio.sleep(0.03)
+        assert len(_hotkeys(client)) == variant_count
+        assert runtime.complete_turn("turn_focus_same", generation=same_generation)
+
+        back_generation = runtime.begin_turn("turn_focus_back")
+        assert back_generation is not None
+        assert runtime.set_turn_plan(
+            map_avatar_turn_plan("turn_focus_back", EmotionLabel.focused),
+            generation=back_generation,
+        )
+        assert runtime.visual_fallback("turn_focus_back", generation=back_generation)
+        await _wait_until(lambda: _hotkeys(client)[-2:] == ["release-id", "focused-id"])
+
+        await runtime.close()
 
     asyncio.run(scenario())
 
@@ -1102,28 +1185,66 @@ def test_runtime_degrades_unconfigured_partial_and_unmapped_discrete_layers() ->
         await _wait_until(lambda: "focused-id" in _hotkeys(client))
         assert runtime.complete_turn("turn_focused", generation=focused_generation)
 
-        happy_generation = runtime.begin_turn("turn_unmapped")
+        happy_generation = runtime.begin_turn("turn_partial")
         assert happy_generation is not None
         assert runtime.set_turn_plan(
-            map_avatar_turn_plan("turn_unmapped", EmotionLabel.happy),
+            map_avatar_turn_plan("turn_partial", EmotionLabel.happy),
             generation=happy_generation,
         )
-        assert runtime.visual_fallback("turn_unmapped", generation=happy_generation)
-        await _wait_until(
-            lambda: runtime.snapshot().body_motion_error_code == "avatar_motion_unmapped"
-        )
-        await _wait_until(lambda: _hotkeys(client)[-1:] == ["release-id"])
+        assert runtime.visual_fallback("turn_partial", generation=happy_generation)
+        await _wait_until(lambda: "happy-b-id" in _hotkeys(client))
+        assert "happy-a-id" not in _hotkeys(client)
+        assert runtime.complete_turn("turn_partial", generation=happy_generation)
+        await runtime.close()
 
-        await client.events.put(VTSModelLoadedEvent(model_loaded=False))
+        unmapped_client = _FakeClient()
+        unmapped = AvatarRuntime(
+            lambda: unmapped_client,
+            _TokenStore(),
+            plugin_name="Companion",
+            plugin_developer="Local User",
+            config=_config(
+                body_motion_hotkeys={
+                    "focused": ("focused_action",),
+                }
+            ),
+        )
+        unmapped.start()
+        await _wait_until(lambda: unmapped.snapshot().state is AvatarRuntimeState.ready)
+
+        mapped_generation = unmapped.begin_turn("turn_mapped")
+        assert mapped_generation is not None
+        assert unmapped.set_turn_plan(
+            map_avatar_turn_plan("turn_mapped", EmotionLabel.focused),
+            generation=mapped_generation,
+        )
+        assert unmapped.visual_fallback("turn_mapped", generation=mapped_generation)
+        await _wait_until(lambda: "focused-id" in _hotkeys(unmapped_client))
+        assert unmapped.complete_turn("turn_mapped", generation=mapped_generation)
+        unmapped_client.calls.clear()
+
+        unmapped_generation = unmapped.begin_turn("turn_unmapped")
+        assert unmapped_generation is not None
+        assert unmapped.set_turn_plan(
+            map_avatar_turn_plan("turn_unmapped", EmotionLabel.happy),
+            generation=unmapped_generation,
+        )
+        assert unmapped.visual_fallback("turn_unmapped", generation=unmapped_generation)
+        await _wait_until(
+            lambda: unmapped.snapshot().body_motion_error_code == "avatar_motion_unmapped"
+        )
+        await _wait_until(lambda: _hotkeys(unmapped_client)[-1:] == ["release-id"])
+
+        await unmapped_client.events.put(VTSModelLoadedEvent(model_loaded=False))
         await _wait_until(
             lambda: (
-                runtime.snapshot().state is AvatarRuntimeState.preparing
-                and runtime.snapshot().error_code == "vts_model_missing"
+                unmapped.snapshot().state is AvatarRuntimeState.preparing
+                and unmapped.snapshot().error_code == "vts_model_missing"
             )
         )
-        assert not runtime.snapshot().parameter_control_available
-        assert not runtime.snapshot().body_motion_available
-        await runtime.close()
+        assert not unmapped.snapshot().parameter_control_available
+        assert not unmapped.snapshot().body_motion_available
+        await unmapped.close()
 
     asyncio.run(scenario())
 

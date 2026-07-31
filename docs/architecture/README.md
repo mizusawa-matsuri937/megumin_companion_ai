@@ -6,6 +6,8 @@
 - [`chat_appearance_presentation_layer.md`](chat_appearance_presentation_layer.md)：聊天窗口的纯表现层主题与可替换消息渲染接口。
 - [`../adr/ADR-W28-avatar-runtime.md`](../adr/ADR-W28-avatar-runtime.md)：单写者 Avatar Runtime、实际播放
   标量包络、generation、红眼所有权和关闭/降级决策。
+- [`../adr/ADR-W29-private-tts-gateway-and-structured-turns.md`](../adr/ADR-W29-private-tts-gateway-and-structured-turns.md)：
+  流式结构化回合、五声音槽、私有 path-free TTS 网关和有序 Avatar 播放决策。
 
 ## 目标/历史架构背景
 

@@ -101,7 +101,7 @@ _FEATURE_ENABLE_CONFIRMATIONS = {
 _MANAGEMENT_REASON_TEXT = {
     "secret_required": "真实 LLM 需要先保存 DPAPI 密钥。",
     "llm_model_required": "真实 LLM 需要填写模型名。",
-    "tts_provider_unsupported": "当前仅支持 mock 或已配置的 GPT-SoVITS。",
+    "tts_provider_unsupported": "当前仅支持 mock、私有网关或兼容 GPT-SoVITS。",
     "tts_preset_required": "GPT-SoVITS 需要先配置默认 preset；请在 W19 配置向导完成预检。",
     "tts_reference_required": "GPT-SoVITS 需要填写 reference 资源。",
     "tts_reference_unavailable": "GPT-SoVITS 无法使用当前 reference 资源。",

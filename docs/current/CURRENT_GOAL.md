@@ -1,5 +1,74 @@
 # 当前产品目标
 
+> **最新状态更新（2026-07-30，Asia/Shanghai）：** W29/#34 的 P0 稳定性修复代码已通过 CI，**不得合并**。当前
+> `codex/w29-five-emotion-tts` head 为
+> [`a790f47`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/a790f478426c876d366965afe9404d3d69af906b)；
+> #32、#33、#34 仍为 stacked、open Draft。当前代码审计已确认一个确定性的合并阻断缺陷，并复核到一项
+> 需后续设计的取消恢复风险：
+>
+> 1. `app/clients/tts/gateway.py` 在取得 synthesis permit 并创建 worker 后把释放责任交给 done callback，
+>    但 callback 没有归还 permit；连续成功合成会耗尽有界信号量并最终造成 `tts_total_timeout`。
+> 2. provider 将任一未完成的已取消 worker 视为全局 circuit breaker，直接向所有新 turn 返回
+>    `tts_cancel_timeout`。这会放大旧推理未退出时的用户可感知失败，但它是 W08 明确的 fail-closed
+>    语义，不是可以安全删除的一行偶然代码。
+>
+> 当前 P0 的可自动验收是：每个已创建 worker 恰好归还一个 permit；容量为 1 时连续成功合成至少三次；
+> 原有 cancellation circuit、临时 WAV 清理、generation 迟到事件拒绝和关闭语义不回归。下一阶段才为
+> stuck inference 设计有界恢复：它必须有明确的 gateway 生命周期 owner、restart/readiness/close 竞争和
+> 一次性重试边界，不能仅删除 circuit 而把旧 GPU 工作堆进网关 admission 队列。
+> P0 提交 [`a790f47`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/a790f478426c876d366965afe9404d3d69af906b)
+> 已推送：done callback 以 membership guard 唯一归还 permit，连续成功与取消后恢复回归均已加入。完整本地
+> 自动化为 `1468 passed, 3 skipped`、coverage `90.52%`，Ruff、format、strict mypy 与两个 lock check 均通过；
+> 该代码 head 的 [push workflow](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/30516799937)
+> 与 [PR workflow](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/30516802283) 均为
+> macOS/Windows `quality` 与 `installed-wheel` 8/8 成功。此状态记录形成的新 exact head 仍须独立 CI 复核。
+> 已确认的边界：legacy Mock 文本先显示是既有产品行为，不等同于故障；网关完整 WAV 后才播放造成的首句延迟
+> 也尚未修复。流式 PCM、首段优先、独立 provider 并发度、gateway restart/self-healing 属于后续阶段，
+> 其中 restart/streaming 会改变现有 launcher/私有网关边界，必须先单独设计并更新 ADR、数据流与威胁模型。
+> 详情与阶段顺序见 [W29 执行计划](../plans/w29_five_emotion_tts_vts_execution_plan.md)。
+
+> **最新状态更新（2026-07-30，Asia/Shanghai）：** 当前唯一活跃任务为 W29「五情绪 GPT-SoVITS 与
+> VTS 动作联动」。工作分支 `codex/w29-five-emotion-tts` 基于未合并的 W28 exact head
+> `b09841c13f1a733ec267027df62da6da7fc31fb6`；功能提交
+> [`3de8bc5`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/3de8bc599b2dde2db42460f39dd231739c9422ec)
+> 已推送，stacked Draft PR [#34](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/34)
+> 已创建。PR base/head 已核对为 `codex/w28-avatar-runtime@b09841c...` →
+> `codex/w29-five-emotion-tts@3de8bc5...`。随后状态提交
+> [`4404460`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/4404460c6b9fb4cd6140c070ab3831c491d0ca1b)
+> 的 [push workflow](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/30491796135)
+> 与 [PR workflow](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/30491797289)
+> 均 completed/success；各自 macOS/Windows `quality` 与 `installed-wheel` 共 8 项全部通过。
+>
+> 当前工作树已实现严格流式结构化主情绪/focused 变体/分段红眼协议、本地 EmotionEngine 最终裁决、
+> 五声音槽和速率映射（`excited → excited_explosion@1.00`）、确定性重切、有序播放红眼、TTS 失败视觉
+> fallback、focused 变体切换和 generation-scoped 取消。LLM 不拥有模型路径、声音槽、VTS 入口或动作名；
+> 控制字段、无效 JSON 和半成品结构不会显示或朗读。
+>
+> 新的私有 TTS 网关只暴露受 CurrentUser DPAPI Bearer 保护的 loopback health/TTS 端点；请求 path-free，
+> 固定五槽 manifest、文件/树 SHA-256、Windows ACL、官方源码提交、单 owner 事务切模、pair 指针核对、
+> 回滚/quarantine、一个活动推理和两个等待请求。WebUI、原始 API、上传、任意路径和运行时切模入口均不暴露；
+> 主程序不自动启动网关，桌面启动器使用 kill-on-close Windows Job Object。
+>
+> 仓库外真实安装已完成五包安全导入、Python 3.11.15、Torch/Torchaudio 2.5.1+cu124、CUDA 12.4、
+> 公共模型与日语前端离线运行；日语参考提示固定 `prompt_lang=ja`，中文正文固定 `text_lang=zh`。
+> 五槽 batch 20 均稳定，固定中文样本有效且非静音，20 次交替切模没有 OOM、混合 pair、quarantine 或
+> 持续显存增长。
+>
+> 当前 14 个 VTS 外观均能唯一解析 release、红眼和必需候选；一个外观的第二兴奋候选仅在仓库外配置。
+> production gateway provider、MediaWorkerAudioPlayer、真实输出和 VTS 已验证中文播放、非零口型、动作、
+> 有序红眼、取消、迟到事件拒绝和 launcher/子进程/WAV 清理。完整 pytest 收集 1,470 项，
+> `1467 passed, 3 skipped`，aggregate branch coverage `90.55%`；Ruff、279 文件格式、strict mypy
+> 272 source 与根/网关两个 lock check 均通过。
+>
+> 正式文档终审、wheel/source-quarantine、installed-artifact、候选与 staged 私有 denylist、最终私有
+> runtime wheel 刷新/网关 smoke、聚焦提交、push 和 stacked Draft PR 均已完成。当前只剩本状态提交、
+> 最终 PR 审计与所有者主观 Gate；本 CI 关闭记录本身不预写检查结果，最终报告仍须重新绑定 PR 当时的
+> live latest head 和 checks。不得合并。
+> 唯一保留的人工 Gate 是所有者试听五种音色、情绪差异、中文自然度与整体动作观感。详情见
+> [W29 实现记录](../implementation/w29_five_emotion_tts_vts.md)、
+> [ADR-W29](../adr/ADR-W29-private-tts-gateway-and-structured-turns.md) 和
+> [W29 执行计划](../plans/w29_five_emotion_tts_vts_execution_plan.md)。
+
 > **最新状态更新（2026-07-29，Asia/Shanghai）：** 当前唯一活跃任务为 W28「Avatar Runtime、程序微动作与
 > 音量口型」。工作分支 `codex/w28-avatar-runtime` 从未合并的 W19 exact head
 > `a64f5ac12a4b14175ecbfd2ac0d76168ac01f589` 建立；W19 Draft PR #32 仍 open/draft/mergeable，

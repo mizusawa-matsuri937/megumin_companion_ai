@@ -54,6 +54,7 @@ class OpenAICompatibleLLMProvider:
         max_stream_event_bytes: int = LimitsConfig().llm_output_bytes,
         stream_completion_mode: StreamCompletionMode
         | str = StreamCompletionMode.done_and_finish_reason,
+        structured_turns: bool = True,
         proxy_url: str | None = None,
         ca_bundle_path: Path | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
@@ -80,6 +81,7 @@ class OpenAICompatibleLLMProvider:
         self._default_max_tokens = default_max_tokens
         self._max_stream_event_bytes = max_stream_event_bytes
         self._stream_completion_mode = StreamCompletionMode(stream_completion_mode)
+        self._structured_turns = structured_turns
         if client is not None:
             transport = client._transport
         self._client = httpx.AsyncClient(
@@ -93,6 +95,10 @@ class OpenAICompatibleLLMProvider:
             trust_env=False,
         )
         self._closed = False
+
+    @property
+    def turn_stream_format(self) -> str:
+        return "avatar_json" if self._structured_turns else "text"
 
     async def stream(self, request: ChatRequest, token: CancellationToken) -> AsyncIterator[str]:
         self._ensure_open()

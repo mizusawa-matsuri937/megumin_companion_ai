@@ -12,6 +12,7 @@ from app.emotion.models import (
     EmotionStimulus,
     EmotionSuggestion,
     EmotionTransition,
+    FocusedVariant,
     StimulusKind,
 )
 
@@ -28,6 +29,7 @@ __all__ = [
     "EmotionTransition",
     "ExpressionCooldown",
     "FakeClock",
+    "FocusedVariant",
     "StimulusKind",
     "SystemClock",
     "map_presentation",

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -10,6 +12,19 @@ import app.media_entrypoint as media_entrypoint
 import pytest
 from app.media.stt import WhisperCppConfig
 from app.workers.access import ResourceAccessError
+
+
+def test_media_entrypoint_cold_import_avoids_package_cycles() -> None:
+    result = subprocess.run(
+        [sys.executable, "-B", "-c", "import app.media_entrypoint"],
+        cwd=Path(__file__).resolve().parents[2],
+        capture_output=True,
+        check=False,
+        timeout=15,
+    )
+
+    assert result.returncode == 0
+    assert result.stdout == b""
 
 
 def test_root_argument_accepts_absolute_roots_and_rejects_invalid_values(tmp_path: Path) -> None:

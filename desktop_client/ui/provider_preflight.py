@@ -12,7 +12,12 @@ from collections.abc import Callable, Mapping
 from contextlib import suppress
 from typing import Protocol
 
-from app.clients.tts import GPTSoVITSPreset, GPTSoVITSProbe, GPTSoVITSProvider
+from app.clients.tts import (
+    GPTSoVITSGatewayProvider,
+    GPTSoVITSPreset,
+    GPTSoVITSProbe,
+    GPTSoVITSProvider,
+)
 from app.clients.vts import (
     DPAPITokenStore,
     ExpressionMapper,
@@ -24,7 +29,7 @@ from app.clients.vts import (
 from app.config import Settings
 from app.core.cancellation import CancellationToken
 from app.schemas import AudioResult, TTSJob
-from app.secret_store import vts_token_file
+from app.secret_store import tts_gateway_token_file, vts_token_file
 from app.temp_assets import TempAssetRegistry
 
 from desktop_client.ui.contracts import (
@@ -54,6 +59,13 @@ _VTS_CHECKS: tuple[ProviderPreflightName, ...] = (
     "vts_hotkeys",
 )
 _TTS_TEST_TEXT = "连接测试"
+_GATEWAY_PROVIDERS = frozenset(
+    {
+        "gpt-sovits-gateway",
+        "gpt_sovits_gateway",
+        "gateway",
+    }
+)
 
 
 class TTSPreflightProvider(Protocol):
@@ -148,7 +160,7 @@ class ProviderPreflightRunner:
                 )
             )
             return
-        if provider_name not in {"gpt-sovits", "gpt_sovits"}:
+        if provider_name not in {"gpt-sovits", "gpt_sovits"} | _GATEWAY_PROVIDERS:
             update(
                 ProviderPreflightCheck(
                     name="tts_service",
@@ -167,7 +179,8 @@ class ProviderPreflightRunner:
                 ),
             )
             return
-        if settings.tts.default_preset not in settings.tts.presets:
+        gateway_mode = provider_name in _GATEWAY_PROVIDERS
+        if not gateway_mode and settings.tts.default_preset not in settings.tts.presets:
             update(
                 ProviderPreflightCheck(
                     name="tts_service",
@@ -255,7 +268,7 @@ class ProviderPreflightRunner:
                     turn_id="provider_preflight",
                     segment_id="provider_preflight",
                     text=_TTS_TEST_TEXT,
-                    style=settings.tts.default_preset,
+                    style="neutral" if gateway_mode else settings.tts.default_preset,
                     connect_timeout_ms=max(1, round(settings.tts.connect_timeout_seconds * 1_000)),
                     first_byte_timeout_ms=max(
                         1, round(settings.tts.first_byte_timeout_seconds * 1_000)
@@ -410,7 +423,19 @@ class ProviderPreflightRunner:
                 with suppress(Exception):
                     await bridge.close()
 
-    def _build_tts(self, settings: Settings) -> GPTSoVITSProvider:
+    def _build_tts(self, settings: Settings) -> TTSPreflightProvider:
+        if settings.tts.provider.strip().casefold() in _GATEWAY_PROVIDERS:
+            token = tts_gateway_token_file(settings.paths).read_text()
+            if token is None:
+                raise RuntimeError("tts_gateway_secret_missing")
+            return GPTSoVITSGatewayProvider(
+                settings.tts.base_url,
+                settings.tts_output_directory(),
+                token,
+                max_audio_bytes=settings.tts.max_audio_bytes,
+                max_owned_synthesis_tasks=1,
+                temp_registry=self._temp_registry,
+            )
         presets: Mapping[str, GPTSoVITSPreset] = {
             name: GPTSoVITSPreset(**preset.model_dump())
             for name, preset in settings.tts.presets.items()
