@@ -13,7 +13,7 @@
 > 推送到 [Draft PR #35](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/35)，本地完整自动化质量门和
 > 审计 head `e35dbc7` 的 Windows/macOS quality、installed-wheel CI 均已通过。所有者现已授权一项最小的既有本地
 > GPT-SoVITS Gateway 兼容跟进；其本地门与 `a0ccfc6` exact-code CI 均已通过。真实 DeepSeek Key 连通性仍待完成；
-> Draft PR 的最终文档审计 head 仍必须重新核验 CI。
+> Draft PR 仍须保持与其最终 base/head、差异、评审和 CI 证据一致。
 
 ## W30 目标与已确认边界
 
@@ -68,8 +68,8 @@ W30 是以 W28 基线建立的独立 sibling 任务。W29 为暂停的独立工�
 3. 已完成本轮交付审计：核心 W30 变更已作为 `cd5cd43` 推送至 Draft PR #35；审计 head `e35dbc7` 的四项跨平台 CI 通过，
    PR base/head/diff 已复核且没有评论或评审；W29 或无关用户改动未混入。该 PR 仍为 Draft，任何后续 head 均需重新审计。
 4. Gateway 跟进的 MockTransport/secret/bootstrap/UI 回归、夹具修复后的完整质量门与 wheel smoke 已在本地通过；`a0ccfc6`
-   的 push `30615939286` 和 PR `30615942372` 均四项通过。仍须针对本次文档审计 head 完成 CI、PR #35 的
-   base/head/diff/review/mergeability 复核。自动化不调用真实 Gateway 或 DeepSeek。
+   的 push `30615939286` 和 PR `30615942372` 均四项通过。发布审计必须比较最终 PR #35 的
+   base/head/diff/review/mergeability 与对应 CI 证据。自动化不调用真实 Gateway 或 DeepSeek。
 5. 用户提供 Key 后，可由用户显式发起一次不带真实历史、长期记忆或视觉摘要的非敏感连通性验证。它只能证明当时的
    账号/网络/服务组合，不证明远端隐私政策或长期可用性；Key、请求正文和响应正文不入仓库或证据。
 

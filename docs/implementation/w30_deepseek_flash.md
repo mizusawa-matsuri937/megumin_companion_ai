@@ -13,7 +13,7 @@
 > 跟进已完成原始本地自动化、静态检查、wheel/smoke 与敏感信息扫描；夹具修复 `a0ccfc6` 的 exact-code CI 也已通过。
 > 真实 DeepSeek Key 连通性仍未验证，后续 head 变更必须重新核验 CI。
 >
-> **最后核验：** 2026-07-31（Asia/Shanghai，`a0ccfc6` exact-code CI 已通过，最终文档审计 head 尚待复核）；本文创建时的基线为
+> **最后核验：** 2026-07-31（Asia/Shanghai，`a0ccfc6` exact-code CI 已通过；最终 PR 审计证据以 Draft PR 元数据为准）；本文创建时的基线为
 > `codex/w30-deepseek-flash@b09841c13f1a733ec267027df62da6da7fc31fb6`。
 >
 > **隔离：** W29 为单独、暂停的用户工作树；其 TTS/VTS 改动、测试、PR 与验收不属于 W30，未被本任务改写。
