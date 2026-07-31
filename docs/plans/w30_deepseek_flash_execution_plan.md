@@ -1,9 +1,9 @@
 # W30：DeepSeek V4 Flash 独立接入执行计划
 
 > **状态：** 核心实现 `cd5cd43` 已推送至 Draft PR #35，且本地完整自动化质量门和审计 head `e35dbc7` CI 已通过。
-> 2026-07-31 所有者授权一项既有本地 Gateway 的最小兼容跟进；`a0b5661` 的 push workflow `30614458801` 通过，
-> 但相同 head 的 PR workflow `30614461677` 在 Windows quality 发现四项 TTS 测试夹具时序失败。当前只修正夹具的
-> 事件同步和非 deadline 场景时限余量；完整本地质量门已重跑通过，最终 exact-head CI 仍是交付条件。
+> 2026-07-31 所有者授权一项既有本地 Gateway 的最小兼容跟进；此前 `a0b5661` 的 PR workflow `30614461677`
+> 在 Windows quality 发现四项 TTS 测试夹具时序失败。`a0ccfc6` 只修正夹具的事件同步和非 deadline 场景时限余量；
+> 完整本地质量门重跑通过，其 push `30615939286` 与 PR `30615942372` 均四项通过。
 > 本文仍是范围与验收契约，不以此替代真实 API 或真实 Gateway 验证。
 >
 > **基线：** `codex/w30-deepseek-flash@b09841c13f1a733ec267027df62da6da7fc31fb6`
