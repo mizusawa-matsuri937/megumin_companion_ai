@@ -21,6 +21,9 @@ from app.schemas import AudioResult, TTSJob
 from app.temp_assets import TempAssetKind, TempAssetRegistry, TempRegistryError
 
 _TOKEN = "A" * 43
+_FIXTURE_CONNECT_TIMEOUT_MS = 1_000
+_FIXTURE_FIRST_BYTE_TIMEOUT_MS = 1_000
+_FIXTURE_TOTAL_TIMEOUT_MS = 3_000
 
 
 def _wave_bytes(*, sample_rate: int = 32_000, frame_count: int = 320) -> bytes:
@@ -44,9 +47,12 @@ def _job(token: CancellationToken, **changes: object) -> TTSJob:
         "style": "default",
         "emotion": "worried",
         "speed_factor": 1.05,
-        "connect_timeout_ms": 80,
-        "first_byte_timeout_ms": 80,
-        "timeout_ms": 300,
+        # A synchronous MockTransport still crosses async streaming, token and
+        # filesystem task boundaries. These defaults are fixture headroom, not
+        # timeout behavior under test; deadline-specific cases override them.
+        "connect_timeout_ms": _FIXTURE_CONNECT_TIMEOUT_MS,
+        "first_byte_timeout_ms": _FIXTURE_FIRST_BYTE_TIMEOUT_MS,
+        "timeout_ms": _FIXTURE_TOTAL_TIMEOUT_MS,
         "cancellation_timeout_ms": 80,
         "cancellation_token_id": token.token_id,
     }
@@ -425,7 +431,12 @@ def test_gateway_provider_maps_bounded_transport_failures(
         )
         token = CancellationToken("turn")
         result = await provider.synthesize(
-            _job(token, first_byte_timeout_ms=20 if kind == "first_byte" else 200),
+            _job(
+                token,
+                first_byte_timeout_ms=(
+                    20 if kind == "first_byte" else _FIXTURE_FIRST_BYTE_TIMEOUT_MS
+                ),
+            ),
             segment_index=0,
             token=token,
         )

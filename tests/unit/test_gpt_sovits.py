@@ -670,18 +670,20 @@ def test_cancel_settlement_failure_opens_bounded_circuit_until_owned_worker_sett
     tmp_path: Path,
 ) -> None:
     async def scenario() -> None:
-        request_started = asyncio.Event()
+        cancellation_seen = asyncio.Event()
         release_request = asyncio.Event()
+        request_released = asyncio.Event()
         started = 0
 
         async def handler(request: httpx.Request) -> httpx.Response:
             nonlocal started
             started += 1
-            request_started.set()
             try:
                 await asyncio.Event().wait()
             except asyncio.CancelledError:
+                cancellation_seen.set()
                 await release_request.wait()
+                request_released.set()
                 return httpx.Response(
                     200,
                     headers={"content-type": "audio/wav"},
@@ -725,7 +727,7 @@ def test_cancel_settlement_failure_opens_bounded_circuit_until_owned_worker_sett
                 )
             )
             if index == 0:
-                await asyncio.wait_for(request_started.wait(), timeout=1)
+                await asyncio.wait_for(cancellation_seen.wait(), timeout=3)
 
         assert [result.error_code for result in results] == ["tts_cancel_timeout"] * 3
         assert started == 1
@@ -734,9 +736,14 @@ def test_cancel_settlement_failure_opens_bounded_circuit_until_owned_worker_sett
 
         closing = asyncio.create_task(provider.close())
         await asyncio.sleep(0)
-        assert not closing.done()
-        release_request.set()
-        await asyncio.wait_for(closing, timeout=1)
+        try:
+            assert not closing.done()
+        finally:
+            release_request.set()
+            try:
+                await asyncio.wait_for(request_released.wait(), timeout=3)
+            finally:
+                await asyncio.wait_for(asyncio.shield(closing), timeout=3)
 
         assert provider._synthesis_tasks == set()
         assert provider._synthesis_cancellations == set()

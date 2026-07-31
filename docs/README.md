@@ -70,7 +70,7 @@
 
 ## 当前 Wxx 实现记录
 
-- [W30：DeepSeek V4 Flash 独立接入（Draft PR #35；本地与审计 head CI 通过，真实 Key 验证仍待进行）](implementation/w30_deepseek_flash.md)
+- [W30：DeepSeek V4 Flash 独立接入（Draft PR #35；Gateway exact-head CI 修复验证中，真实 Key 验证仍待进行）](implementation/w30_deepseek_flash.md)
 - [W14：文字对话、streaming、取消与恢复](implementation/w14_text_chat_streaming.md)
 - [W15：单实例、托盘和统一生命周期（已合并）](implementation/w15_single_instance_lifecycle.md)
 - [W16：设置、feature 与记忆管理最小 UI（已合并）](implementation/w16_settings_feature_memory_ui.md)

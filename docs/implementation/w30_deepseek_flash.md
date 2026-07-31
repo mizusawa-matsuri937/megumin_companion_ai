@@ -1,19 +1,19 @@
 # W30：DeepSeek V4 Flash 独立接入
 
-> **2026-07-31 后续状态（优先于下方较早快照）：** Gateway compatibility 已作为 `84c92bb` 推送。相同 head 的
-> push workflow `30612675642` 四项均通过；PR workflow `30612678482` 唯一失败为未被 Gateway 改动触及的 W08
-> Mock TTS fixture：其 controller 在一秒内未观察到 writer，属于 runner 调度竞态而非 Gateway client 缺陷。该 fixture
-> 已改用 `asyncio.Event`、受控 `loop.time` 和 finally 释放，仍覆盖“超时后 drain owned thread，再清理 registry/WAV”。
-> 修复后的本地完整门为 `1432 passed, 3 skipped, 90.46%`；修复提交与其 exact-head CI 尚待形成证据。
+> **2026-07-31 后续状态（优先于下方较早快照）：** Gateway compatibility 已由 `84c92bb` 推送；其 push workflow
+> `30612675642` 四项通过。随后夹具修复提交 `a0b5661` 的 push workflow `30614458801` 四项通过，但同一 head 的
+> PR workflow `30614461677` 在 Windows quality 发现四项 TTS 测试夹具时序失败：一项直连 GPT-SoVITS
+> cancellation/settlement，三项 Gateway MockTransport 响应。本轮只调整测试夹具的事件同步和非 deadline 场景的时限余量；
+> 当前本地完整质量门已通过，修复提交与其 exact-head CI 尚待形成证据。
 
 > **状态：** 核心实现已作为 [`cd5cd43`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/cd5cd4333ac0ebd6ce0f97a9e5f63e0bdf4f1fb9)
 > 推送至 [Draft PR #35](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/35)。本地完整自动化质量门及
 > [审计 head `e35dbc7`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/e35dbc70a87588531c3134a56bf1c960fe6d2ebc)
 > 的 Windows/macOS quality 与 installed-wheel CI 均已通过。2026-07-31 所有者授权的既有本地 Gateway compatibility
-> 跟进已完成本地自动化、静态检查、wheel/smoke 与敏感信息扫描，但尚未形成新的已推送 head/CI 证据；真实 DeepSeek Key
-> 连通性仍未验证，后续 head 变更必须重新核验 CI。
+> 跟进已完成原始本地自动化、静态检查、wheel/smoke 与敏感信息扫描；但 `a0b5661` 的最新 PR exact-head CI 未通过，
+> 当前夹具修复正在验证。真实 DeepSeek Key 连通性仍未验证，后续 head 变更必须重新核验 CI。
 >
-> **最后核验：** 2026-07-31（Asia/Shanghai，Gateway 跟进尚未完成最终发布审计）；本文创建时的基线为
+> **最后核验：** 2026-07-31（Asia/Shanghai，Gateway 跟进的最终发布审计尚未完成）；本文创建时的基线为
 > `codex/w30-deepseek-flash@b09841c13f1a733ec267027df62da6da7fc31fb6`。
 >
 > **隔离：** W29 为单独、暂停的用户工作树；其 TTS/VTS 改动、测试、PR 与验收不属于 W30，未被本任务改写。
@@ -84,16 +84,16 @@
   `local-unrecorded`，不是发布 artifact。
 - 初始 W30 交付时，涉及文档的仓库内相对链接检查通过；对当时 39 个已改/未跟踪文件运行候选 secret/header
   正则扫描未发现匹配。
-- **Gateway compatibility 本地跟进（2026-07-31，尚未推送）：** Gateway core、bootstrap/secret、设置保存、
-  preflight 以及直连 GPT-SoVITS 回归的聚焦命令为 `196 passed in 8.97s`；对修正后的最终工作树重跑
-  `uv run pytest` 得到 `1432 passed, 3 skipped in 199.72s`，总覆盖率 `90.45%`。三个 skip 仍是既有可选
-  RapidOCR、Pillow 和本地目录 symlink 权限条件。
+- **Gateway compatibility 本地跟进（2026-07-31）：** `84c92bb` 已推送，Gateway core、bootstrap/secret、设置保存、
+  preflight 以及直连 GPT-SoVITS 回归的聚焦命令为 `196 passed in 8.97s`。`a0b5661` 的 push workflow `30614458801`
+  通过，但同一 head 的 PR workflow `30614461677` 在 Windows quality 发现一项直连 GPT-SoVITS
+  cancellation/settlement 和三项 Gateway MockTransport 夹具时序失败。当前只修正夹具同步与非 deadline 场景的时限余量；
+  对当前工作树重跑 `uv run pytest` 得到 `1432 passed, 3 skipped in 210.13s`，总覆盖率 `90.45%`。三个 skip 仍是既有
+  可选 RapidOCR、Pillow 和本地目录 symlink 权限条件。
 - Gateway 跟进的最终静态门：`uv run ruff check .`、`uv run ruff format --check .`（`266 files already formatted`）、
   `uv run mypy`（`259 source files`）、`uv lock --check`（`65 packages`）与 `git diff --check` 均通过。
-- `uv build --wheel --out-dir dist/w30-gateway-final` 成功；该 wheel 明确包含
-  `app/clients/tts/gateway.py` 和 `app/tts_gateway/{__init__,contracts}.py`。随后 `w05_ci_smoke.py` 的 installed-wheel
-  `status` 为 `ok`，且 `source_tree_imported=false`。变更 Markdown 相对链接检查通过（9 个文件）；22 个改动/未跟踪文件的
-  候选 secret-value 扫描没有匹配。
+- `uv build --wheel --out-dir dist/w30-fixture-ci-stabilization` 成功；随后 `w05_ci_smoke.py` 的 installed-wheel `status`
+  为 `ok`，且 `source_tree_imported=false`。该本地 provenance 为 `local-unrecorded`，不是发布 artifact。
 
 以上为本地自动化证据，不替代真实 API、远端隐私政策或最终 PR head 的 CI。
 
@@ -105,7 +105,7 @@
 | DeepSeek API 的 chat-completion 形状与多轮请求方式 | 已确认 | 官方 [Chat Completions](https://api-docs.deepseek.com/api/create-chat-completion/) 与 [多轮对话](https://api-docs.deepseek.com/guides/multi_round_chat)。 |
 | V4 仅作为本任务文本 Provider | 已确认 | 官方集成说明；不把图像支持写入 W30。 |
 | 当前实现、MockTransport、DPAPI、UI 和 prompt gate 的自动化结果 | 本地与 PR 自动化已验证 | 核心实现为 `cd5cd43`；聚焦 `172 passed`；完整 `1379 passed, 3 skipped, 90.39%`，并通过 lint/type/lock/build/smoke/link/sensitive 扫描。PR #35 的审计 head `e35dbc7` 四项跨平台 CI 都通过；后续 head 需重审。 |
-| W30 既有本地 Gateway compatibility | 本地自动化已验证，远端 CI 待形成证据 | 40 项 Gateway MockTransport 测试，fake-DPAPI/bootstrap/secret，headless settings/preflight 及直连 GPT-SoVITS 回归均通过；最终完整 `1432 passed, 3 skipped, 90.45%`、静态/lock/wheel/smoke/link/sensitive 检查通过。未访问真实 Gateway；新 commit/PR head 的 CI 仍待重审。 |
+| W30 既有本地 Gateway compatibility | 本地自动化已验证；最新 PR exact-head CI 失败，修复验证中 | 40 项 Gateway MockTransport 测试，fake-DPAPI/bootstrap/secret，headless settings/preflight 及直连 GPT-SoVITS 回归均通过。`a0b5661` 的 push workflow `30614458801` 通过，但同 head 的 PR workflow `30614461677` 在 Windows quality 发现四项夹具时序失败；当前只修改测试夹具。当前完整 `1432 passed, 3 skipped, 90.45%`、静态/lock/wheel/smoke 检查通过，未访问真实 Gateway。 |
 | 真实 Key、账户权限、服务可用性、计费和真实远端响应 | 未验证 | 本任务未持有或请求真实 Key，自动化不得联网。 |
 | DeepSeek 远端处理/保留/地域政策 | 外部服务边界 | 以 [隐私政策](https://cdn.deepseek.com/policies/en-US/deepseek-privacy-policy.html) 为准；本项目不能替代该政策或作零保留承诺。 |
 
@@ -130,9 +130,9 @@ uv run pytest --no-cov \
 ```
 
 原 DeepSeek 聚焦命令得到 `172 passed in 8.01s`；加入 Gateway compatibility 的扩展聚焦集合得到 `196 passed in
-8.97s`，最终完整质量门结果见上一节。核心变更已按 `cd5cd43` 推送到 Draft PR #35，审计 head `e35dbc7` 的远端检查
-已通过；本次本地跟进仍须建立新 commit、推送并重新核验当前 head。不得用 MockTransport 绿灯替代真实 API、真实 Gateway
-或隐私验收。
+8.97s`，当前夹具修复后的完整质量门结果见上一节。核心变更已按 `cd5cd43` 推送到 Draft PR #35，审计 head `e35dbc7`
+的远端检查已通过；当前跟进仍须建立新 commit、推送并重新核验其 exact-head CI。不得用 MockTransport 绿灯替代真实 API、
+真实 Gateway 或隐私验收。
 
 ## 剩余风险与人工项
 

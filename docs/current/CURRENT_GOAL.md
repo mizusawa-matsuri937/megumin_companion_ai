@@ -1,10 +1,10 @@
 # 当前产品目标
 
-> **2026-07-31 后续状态（优先于下方较早快照）：** Gateway compatibility 已作为 `84c92bb` 推送。相同 head 的
-> push workflow `30612675642` 四项均通过；PR workflow `30612678482` 唯一失败为未被 Gateway 改动触及的 W08
-> Mock TTS fixture：其 controller 在一秒内未观察到 writer，属于 runner 调度竞态而非 Gateway client 缺陷。该 fixture
-> 已改用 `asyncio.Event`、受控 `loop.time` 和 finally 释放，仍覆盖“超时后 drain owned thread，再清理 registry/WAV”。
-> 修复后的本地完整门为 `1432 passed, 3 skipped, 90.46%`；修复提交与其 exact-head CI 尚待形成证据。
+> **2026-07-31 后续状态（优先于下方较早快照）：** Gateway compatibility 已由 `84c92bb` 推送；其 push workflow
+> `30612675642` 四项通过。随后夹具修复提交 `a0b5661` 的 push workflow `30614458801` 也四项通过，但同一 head 的
+> PR workflow `30614461677` 在 Windows quality 发现四项 TTS 测试夹具时序失败：一项直连 GPT-SoVITS
+> cancellation/settlement，三项 Gateway MockTransport 响应。当前工作树只调整这些测试夹具的事件同步和非 deadline
+> 场景的时限余量；完整本地质量门已重新通过，但修复提交及其 exact-head CI 尚待形成证据。
 
 > **最新状态更新：2026-07-31（Asia/Shanghai）。** 当前唯一活跃任务为 W30「DeepSeek V4 Flash
 > 独立接入」。工作树为 `codex/w30-deepseek-flash`，基线为
@@ -12,8 +12,8 @@
 > [`cd5cd43`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/cd5cd4333ac0ebd6ce0f97a9e5f63e0bdf4f1fb9)
 > 推送到 [Draft PR #35](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/35)，本地完整自动化质量门和
 > 审计 head `e35dbc7` 的 Windows/macOS quality、installed-wheel CI 均已通过。所有者现已授权一项最小的既有本地
-> GPT-SoVITS Gateway 兼容跟进；它已通过本地自动化、静态检查、wheel/smoke 与敏感扫描，但尚未形成新已推送 head 的
-> CI 证据。真实 DeepSeek Key 连通性仍待完成，任何新 head 必须重新核验其 CI。
+> GPT-SoVITS Gateway 兼容跟进；其原始本地门和当前夹具修复后的完整本地门均通过，但最新 PR exact-head CI 尚未通过，
+> 正在复核修复。真实 DeepSeek Key 连通性仍待完成，任何新 head 必须重新核验其 CI。
 
 ## W30 目标与已确认边界
 
@@ -46,7 +46,7 @@
 | W30 范围、Flash 默认、Pro 延后与既有开关复用 | 已确认 | 所有者 2026-07-30 指令；[ADR-W30](../adr/ADR-W30-deepseek-flash.md)。 |
 | 固定 endpoint/model、文本输入和多轮协议边界 | 已确认 | 官方 [Chat Completions](https://api-docs.deepseek.com/api/create-chat-completion/) 与[多轮对话](https://api-docs.deepseek.com/guides/multi_round_chat)。 |
 | W30 代码、MockTransport/DPAPI/UI/prompt gate 的自动化结果 | 本地与 PR 自动化已验证 | `cd5cd43` 的聚焦测试为 `172 passed`；完整 `uv run pytest` 为 `1379 passed, 3 skipped, 90.39%`，且 lint/type/lock/build/smoke/link/sensitive 扫描通过。PR #35 的审计 head `e35dbc7` 四项跨平台 CI 都通过；没有评论或评审，后续 head 必须重审。 |
-| W30 既有本地 Gateway compatibility | 本地自动化已验证；exact-head CI 待形成证据 | 2026-07-31 所有者授权；固定 loopback/protocol、专用 token/bootstrap、emotion slot adapter 与 UI/preflight 均已实现。Gateway 40 项 MockTransport、扩展聚焦 `196 passed`、最终完整 `1432 passed, 3 skipped, 90.45%`、Ruff/mypy/lock/wheel/smoke/link/sensitive 扫描通过；不访问真实 Gateway。新 commit/CI 尚待核验。 |
+| W30 既有本地 Gateway compatibility | 本地自动化已验证；最新 PR exact-head CI 失败，修复验证中 | 2026-07-31 所有者授权；固定 loopback/protocol、专用 token/bootstrap、emotion slot adapter 与 UI/preflight 均已实现。`a0b5661` 的 push workflow `30614458801` 通过，但同 head 的 PR workflow `30614461677` 在 Windows quality 发现一项直连 GPT-SoVITS cancellation/settlement 与三项 Gateway MockTransport 夹具时序失败。当前仅修改测试夹具；完整 `1432 passed, 3 skipped, 90.45%`、Ruff/mypy/lock/wheel/smoke 通过，不访问真实 Gateway。 |
 | 真实 API Key、账户权限、远端响应、计费/限流与服务可用性 | 未验证 | 本任务未持有或请求 Key；自动化不得发起真实网络请求。 |
 | DeepSeek 的远端处理、保留、地域和政策 | 外部服务边界 | 项目无法保证；以 [DeepSeek 隐私政策](https://cdn.deepseek.com/policies/en-US/deepseek-privacy-policy.html) 为准。 |
 
@@ -63,13 +63,13 @@ W30 是以 W28 基线建立的独立 sibling 任务。W29 为暂停的独立工�
 
 1. 已完成：DeepSeek Provider、bootstrap、专用 secret store、视觉摘要和桌面设置的 Mock/fake 测试；覆盖固定请求、流式/
    JSON、错误映射、图像/tool-call 本地拒绝、candidate-analysis 拒绝、撤销顺序、无密钥泄漏及预算/gate。
-2. 已完成（本地未提交工作树）：完整 pytest、Ruff、format、strict mypy、lock、文档链接、wheel 安装 smoke 与敏感信息扫描；
-   三个可选环境 skip 已记录，未把任何客观失败转交人工。
+2. 已完成（当前本地工作树）：夹具修复后的完整 pytest（`1432 passed, 3 skipped, 90.45%`）、Ruff、format、strict mypy、
+   lock、wheel 安装 smoke；三个可选环境 skip 已记录，未把任何客观失败转交人工。
 3. 已完成本轮交付审计：核心 W30 变更已作为 `cd5cd43` 推送至 Draft PR #35；审计 head `e35dbc7` 的四项跨平台 CI 通过，
    PR base/head/diff 已复核且没有评论或评审；W29 或无关用户改动未混入。该 PR 仍为 Draft，任何后续 head 均需重新审计。
-4. Gateway 跟进的 MockTransport/secret/bootstrap/UI 回归、完整质量门、wheel/sensitive 扫描已经在本地通过；仍须创建并推送
-   聚焦 commit，随后重新审核 Draft PR #35 的最终 head CI、base/head/diff/review/mergeability。自动化不调用真实 Gateway
-   或 DeepSeek。
+4. Gateway 跟进的 MockTransport/secret/bootstrap/UI 回归、夹具修复后的完整质量门与 wheel smoke 已在本地通过；`a0b5661`
+   的 PR CI 仍有四项时序失败。仍须创建并推送当前聚焦修复 commit，随后审核其双工作流 exact-head CI，以及 Draft PR #35
+   的 base/head/diff/review/mergeability。自动化不调用真实 Gateway 或 DeepSeek。
 5. 用户提供 Key 后，可由用户显式发起一次不带真实历史、长期记忆或视觉摘要的非敏感连通性验证。它只能证明当时的
    账号/网络/服务组合，不证明远端隐私政策或长期可用性；Key、请求正文和响应正文不入仓库或证据。
 
