@@ -1,5 +1,9 @@
 # Gate W0 Architecture Decision Records
 
+> **2026-07-31 后续状态：** ADR-W30 的 Gateway compatibility 已作为 `84c92bb` 推送；其 push workflow
+> `30612675642` 全绿。相同 head 的 PR workflow `30612678482` 仅因既有 W08 Mock TTS fixture 的一秒调度竞态失败。
+> 该 fixture 已以受控 `loop.time` 和事件同步重写，保持超时 drain/清理断言；修复提交及其 exact-head CI 待审核。
+
 > 决策日期：2026-07-17
 > 范围：Windows 私人开发基线
 > 决策者：项目所有者兼任架构、安全/隐私和许可证 reviewer

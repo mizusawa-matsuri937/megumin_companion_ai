@@ -1,5 +1,11 @@
 # 当前产品目标
 
+> **2026-07-31 后续状态（优先于下方较早快照）：** Gateway compatibility 已作为 `84c92bb` 推送。相同 head 的
+> push workflow `30612675642` 四项均通过；PR workflow `30612678482` 唯一失败为未被 Gateway 改动触及的 W08
+> Mock TTS fixture：其 controller 在一秒内未观察到 writer，属于 runner 调度竞态而非 Gateway client 缺陷。该 fixture
+> 已改用 `asyncio.Event`、受控 `loop.time` 和 finally 释放，仍覆盖“超时后 drain owned thread，再清理 registry/WAV”。
+> 修复后的本地完整门为 `1432 passed, 3 skipped, 90.46%`；修复提交与其 exact-head CI 尚待形成证据。
+
 > **最新状态更新：2026-07-31（Asia/Shanghai）。** 当前唯一活跃任务为 W30「DeepSeek V4 Flash
 > 独立接入」。工作树为 `codex/w30-deepseek-flash`，基线为
 > `b09841c13f1a733ec267027df62da6da7fc31fb6`。W30 核心实现已由

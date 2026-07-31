@@ -1,5 +1,11 @@
 # W30：DeepSeek V4 Flash 独立接入
 
+> **2026-07-31 后续状态（优先于下方较早快照）：** Gateway compatibility 已作为 `84c92bb` 推送。相同 head 的
+> push workflow `30612675642` 四项均通过；PR workflow `30612678482` 唯一失败为未被 Gateway 改动触及的 W08
+> Mock TTS fixture：其 controller 在一秒内未观察到 writer，属于 runner 调度竞态而非 Gateway client 缺陷。该 fixture
+> 已改用 `asyncio.Event`、受控 `loop.time` 和 finally 释放，仍覆盖“超时后 drain owned thread，再清理 registry/WAV”。
+> 修复后的本地完整门为 `1432 passed, 3 skipped, 90.46%`；修复提交与其 exact-head CI 尚待形成证据。
+
 > **状态：** 核心实现已作为 [`cd5cd43`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/cd5cd4333ac0ebd6ce0f97a9e5f63e0bdf4f1fb9)
 > 推送至 [Draft PR #35](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/35)。本地完整自动化质量门及
 > [审计 head `e35dbc7`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/e35dbc70a87588531c3134a56bf1c960fe6d2ebc)
