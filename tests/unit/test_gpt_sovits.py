@@ -537,11 +537,25 @@ def test_cancellation_interrupts_blocked_stream_and_cleans_partial(tmp_path: Pat
         client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
         provider = GPTSoVITSProvider("http://127.0.0.1:9880", tmp_path, _presets(), client=client)
         token = CancellationToken("turn_test")
-        task = asyncio.create_task(provider.synthesize(_job(token), segment_index=0, token=token))
-        await asyncio.wait_for(started.wait(), timeout=1)
+        # This test exercises cancellation and partial-file cleanup, not request
+        # deadlines. Leave scheduler headroom for a loaded Windows CI runner;
+        # dedicated timeout tests retain short request budgets.
+        task = asyncio.create_task(
+            provider.synthesize(
+                _job(
+                    token,
+                    connect_timeout_ms=1_000,
+                    first_byte_timeout_ms=1_000,
+                    timeout_ms=3_000,
+                ),
+                segment_index=0,
+                token=token,
+            )
+        )
+        await asyncio.wait_for(started.wait(), timeout=3)
         token.cancel()
         with pytest.raises(asyncio.CancelledError):
-            await asyncio.wait_for(task, timeout=1)
+            await asyncio.wait_for(task, timeout=3)
 
         assert list(tmp_path.rglob("*")) == []
         await provider.close()
