@@ -69,6 +69,8 @@ class DialogueSegment(ContractModel):
     tts_speed_factor: float = Field(default=1.0, gt=0.0, le=3.0)
     live2d_expression: str = "neutral"
     expression_update: bool = True
+    focused_variant: Literal["default", "chuunibyou"] = "default"
+    red_eye: bool = False
     interruptible: bool = True
     created_at: datetime = Field(default_factory=utc_now)
 

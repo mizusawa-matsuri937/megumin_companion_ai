@@ -24,6 +24,7 @@ from app.workers.supervisor import (
     SupervisorSnapshot,
     WorkerActualState,
     WorkerError,
+    WorkerJobProgress,
     WorkerSupervisor,
 )
 
@@ -43,6 +44,7 @@ __all__ = [
     "WindowsJobProcessAdapter",
     "WorkerActualState",
     "WorkerError",
+    "WorkerJobProgress",
     "WorkerSupervisor",
     "encode_message",
     "process_adapter_for_current_platform",

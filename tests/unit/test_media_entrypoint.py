@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -10,6 +12,19 @@ import app.media_entrypoint as media_entrypoint
 import pytest
 from app.media.stt import WhisperCppConfig
 from app.workers.access import ResourceAccessError
+
+
+def test_media_entrypoint_cold_import_avoids_package_cycles() -> None:
+    result = subprocess.run(
+        [sys.executable, "-B", "-c", "import app.media_entrypoint"],
+        cwd=Path(__file__).resolve().parents[2],
+        capture_output=True,
+        check=False,
+        timeout=15,
+    )
+
+    assert result.returncode == 0
+    assert result.stdout == b""
 
 
 def test_root_argument_accepts_absolute_roots_and_rejects_invalid_values(tmp_path: Path) -> None:
@@ -32,9 +47,24 @@ def test_media_entrypoint_builds_private_runtime_from_validated_options(
             captured["roots"] = roots
 
     class FakeHandler:
-        def __init__(self, *, selected_device_id: str | None, maximum_wave_bytes: int) -> None:
+        def __init__(
+            self,
+            *,
+            selected_device_id: str | None,
+            maximum_wave_bytes: int,
+            playback_chunk_ms: float,
+            mouth_noise_floor: float,
+            mouth_gain: float,
+            mouth_attack_seconds: float,
+            mouth_release_seconds: float,
+        ) -> None:
             captured["selected_device_id"] = selected_device_id
             captured["maximum_wave_bytes"] = maximum_wave_bytes
+            captured["playback_chunk_ms"] = playback_chunk_ms
+            captured["mouth_noise_floor"] = mouth_noise_floor
+            captured["mouth_gain"] = mouth_gain
+            captured["mouth_attack_seconds"] = mouth_attack_seconds
+            captured["mouth_release_seconds"] = mouth_release_seconds
 
     class FakeRuntime:
         def __init__(
@@ -70,6 +100,11 @@ def test_media_entrypoint_builds_private_runtime_from_validated_options(
     assert captured["roots"] == {"audio_temp": tmp_path}
     assert captured["selected_device_id"] == output_device_id
     assert captured["maximum_wave_bytes"] == 2048
+    assert captured["playback_chunk_ms"] == 30.0
+    assert captured["mouth_noise_floor"] == 0.02
+    assert captured["mouth_gain"] == 4.0
+    assert captured["mouth_attack_seconds"] == 0.04
+    assert captured["mouth_release_seconds"] == 0.12
     assert captured["role"] == "media"
     assert captured["maximum_active_jobs"] == 1
 

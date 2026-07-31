@@ -8,6 +8,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import cast
 
+import desktop_client.ui.provider_preflight as provider_preflight_module
 import httpx
 import pytest
 from app.clients.tts import GPTSoVITSPreset, GPTSoVITSProbe, GPTSoVITSProvider
@@ -269,6 +270,159 @@ class _ProbeProvider:
 
     async def close(self) -> None:
         self.closed = True
+
+
+class _GatewayPreflightProvider:
+    def __init__(self, *, synthesis_error: str | None = None) -> None:
+        self._synthesis_error = synthesis_error
+        self.jobs: list[TTSJob] = []
+        self.discarded: list[AudioResult] = []
+        self.closed = False
+
+    async def probe(self, *, timeout_ms: int) -> GPTSoVITSProbe:
+        assert timeout_ms > 0
+        return GPTSoVITSProbe(True, "gateway_v1", status_code=200)
+
+    async def synthesize(
+        self,
+        job: TTSJob,
+        *,
+        segment_index: int,
+        token: CancellationToken,
+    ) -> AudioResult:
+        assert segment_index == 0
+        assert token.token_id == job.cancellation_token_id
+        self.jobs.append(job)
+        if self._synthesis_error is not None:
+            return AudioResult(
+                job_id=job.job_id,
+                turn_id=job.turn_id,
+                segment_id=job.segment_id,
+                success=False,
+                error_code=self._synthesis_error,
+            )
+        return AudioResult(
+            job_id=job.job_id,
+            turn_id=job.turn_id,
+            segment_id=job.segment_id,
+            success=True,
+            audio_path=Path("private-gateway-preflight.wav"),
+            sample_rate=16_000,
+            duration_ms=10,
+        )
+
+    async def discard(self, result: AudioResult) -> None:
+        self.discarded.append(result)
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+def _gateway_factory(
+    provider: _GatewayPreflightProvider,
+) -> Callable[[Settings], _GatewayPreflightProvider]:
+    def factory(_settings: Settings) -> _GatewayPreflightProvider:
+        return provider
+
+    return factory
+
+
+def test_gateway_preflight_uses_service_semantics_without_direct_preset_requirements(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        for provider_name in (
+            "gpt-sovits-gateway",
+            "gpt_sovits_gateway",
+            "gateway",
+        ):
+            provider = _GatewayPreflightProvider()
+            updates: list[tuple[ProviderPreflightCheck, ...]] = []
+            result = await ProviderPreflightRunner(tts_factory=_gateway_factory(provider)).run(
+                _settings(tmp_path / provider_name, tts_provider=provider_name),
+                publish=updates.append,
+            )
+
+            checks = {check.name: check for check in result}
+            assert checks["tts_service"].state is ProviderPreflightState.ready
+            for check_name in ("tts_preset", "tts_reference"):
+                assert checks[check_name].state is ProviderPreflightState.skipped
+                assert checks[check_name].reason_code == "tts_gateway_active"
+            assert [job.style for job in provider.jobs] == ["neutral"]
+            assert len(provider.discarded) == 1
+            assert provider.closed
+
+    asyncio.run(scenario())
+
+
+def test_gateway_preflight_fails_the_service_when_fixed_synthesis_fails(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        provider = _GatewayPreflightProvider(synthesis_error="tts_invalid_audio")
+        updates: list[tuple[ProviderPreflightCheck, ...]] = []
+        result = await ProviderPreflightRunner(tts_factory=lambda _settings: provider).run(
+            _settings(tmp_path, tts_provider="gpt-sovits-gateway"),
+            publish=updates.append,
+        )
+
+        checks = {check.name: check for check in result}
+        assert checks["tts_service"].state is ProviderPreflightState.failed
+        assert checks["tts_service"].reason_code == "tts_invalid_audio"
+        for check_name in ("tts_preset", "tts_reference"):
+            assert checks[check_name].state is ProviderPreflightState.skipped
+            assert checks[check_name].reason_code == "tts_gateway_active"
+        assert len(provider.jobs) == 1
+        assert provider.discarded == []
+        assert provider.closed
+
+    asyncio.run(scenario())
+
+
+def test_gateway_preflight_rejects_forbidden_overrides_before_secret_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret_read = False
+
+    def unexpected_secret(*_args: object, **_kwargs: object) -> object:
+        nonlocal secret_read
+        secret_read = True
+        raise AssertionError("gateway token must not be read for forbidden transport")
+
+    monkeypatch.setattr(
+        provider_preflight_module,
+        "tts_gateway_token_file",
+        unexpected_secret,
+    )
+
+    async def scenario() -> None:
+        for override in ("cache", "proxy", "ca"):
+            settings = _settings(
+                tmp_path / override,
+                tts_provider="gpt-sovits-gateway",
+            )
+            if override == "cache":
+                settings.tts.cache_enabled = True
+            elif override == "proxy":
+                settings.tts.transport.proxy_url = "http://127.0.0.1:8080"
+            else:
+                settings.tts.transport.ca_bundle_path = Path("synthetic-ca.pem")
+            updates: list[tuple[ProviderPreflightCheck, ...]] = []
+            result = await ProviderPreflightRunner().run(
+                settings,
+                publish=updates.append,
+            )
+
+            checks = {check.name: check for check in result}
+            assert checks["tts_service"].state is ProviderPreflightState.failed
+            assert checks["tts_service"].reason_code == "tts_unavailable"
+            for check_name in ("tts_preset", "tts_reference"):
+                assert checks[check_name].state is ProviderPreflightState.skipped
+                assert checks[check_name].reason_code == "tts_gateway_active"
+
+    asyncio.run(scenario())
+    assert not secret_read
 
 
 def test_tts_preflight_classifies_unsupported_constructor_probe_and_synthesis_failures(

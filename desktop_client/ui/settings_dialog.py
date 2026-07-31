@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
+    QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
     QGridLayout,
@@ -29,6 +30,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QScrollArea,
     QTabWidget,
     QTreeWidget,
     QTreeWidgetItem,
@@ -38,6 +40,8 @@ from PySide6.QtWidgets import (
 
 from desktop_client.ui.contracts import (
     AudioOutputDevicesCommand,
+    DeepSeekFlashConfigureCommand,
+    DeepSeekFlashDisableCommand,
     DesktopSettingsForm,
     FeatureSetCommand,
     ManagementCommand,
@@ -100,7 +104,13 @@ _FEATURE_ENABLE_CONFIRMATIONS = {
 _MANAGEMENT_REASON_TEXT = {
     "secret_required": "真实 LLM 需要先保存 DPAPI 密钥。",
     "llm_model_required": "真实 LLM 需要填写模型名。",
-    "tts_provider_unsupported": "当前仅支持 mock 或已配置的 GPT-SoVITS。",
+    "deepseek_flash_configure_required": "请使用 DeepSeek V4 Flash 专用卡片保存并启用。",
+    "deepseek_flash_key_required": "DeepSeek V4 Flash 需要单独保存 API 密钥。",
+    "deepseek_flash_disable_required": "请先使用 DeepSeek V4 Flash 专用卡片停用该配置。",
+    "deepseek_memory_pro_required": "长期记忆候选写入需要尚未接入的 DeepSeek Pro；请先关闭该功能。",
+    "deepseek_flash_rollback_failed": "DeepSeek 配置未能安全回滚；请重启后检查设置状态。",
+    "deepseek_flash_key_revoke_failed": "DeepSeek 已停用，但加密密钥暂时无法移除；可稍后重试。",
+    "tts_provider_unsupported": "当前仅支持 mock、私有网关或兼容 GPT-SoVITS。",
     "tts_preset_required": "GPT-SoVITS 需要先配置默认 preset；请在 W19 配置向导完成预检。",
     "tts_reference_required": "GPT-SoVITS 需要填写 reference 资源。",
     "tts_reference_unavailable": "GPT-SoVITS 无法使用当前 reference 资源。",
@@ -161,6 +171,8 @@ _MANAGEMENT_OPERATION_TEXT = {
     "memory_exported": "长期记忆已导出",
     "stt_runtime_installed": "中文离线 STT 已安装",
     "provider_preflight_completed": "TTS/VTS 联合预检已完成",
+    "deepseek_flash_configured": "DeepSeek V4 Flash 已保存并启用",
+    "deepseek_flash_disabled": "DeepSeek V4 Flash 已停用，密钥已移除",
 }
 _PREFLIGHT_NAMES: dict[ProviderPreflightName, str] = {
     "tts_service": "GPT-SoVITS 服务",
@@ -196,6 +208,7 @@ class SettingsDialog(QDialog):
         self._submit_command = submit_command
         self._populating_form = False
         self._form_dirty = False
+        self._pending_deepseek_flash_command_id: str | None = None
         self._clearing_sensitive = False
         self._feature_buttons: dict[FeatureName, QPushButton] = {}
         self.setWindowTitle("设置与隐私")
@@ -206,6 +219,7 @@ class SettingsDialog(QDialog):
         self.tabs = QTabWidget(self)
         self.tabs.setAccessibleName("设置页面")
         self.tabs.addTab(self._build_connection_tab(), "连接与设备")
+        self.tabs.addTab(self._build_avatar_tab(), "Avatar")
         self.tabs.addTab(self._build_preflight_tab(), "服务预检")
         self.tabs.addTab(self._build_features_tab(), "功能与隐私")
         self.tabs.addTab(self._build_memory_tab(), "历史与记忆")
@@ -225,7 +239,9 @@ class SettingsDialog(QDialog):
         """Discard a hidden dialog's drafts and plaintext secret widgets."""
 
         self.llm_secret.clear()
+        self.deepseek_flash_secret.clear()
         self.vts_secret.clear()
+        self._pending_deepseek_flash_command_id = None
         self._form_dirty = False
         if not self._clearing_sensitive:
             self.sync_from_model()
@@ -331,13 +347,13 @@ class SettingsDialog(QDialog):
         secrets_layout.addWidget(guidance, 0, 0, 1, 3)
         self.llm_secret = self._secret_edit("LLM API 密钥")
         self.llm_secret_state = QLabel("LLM 密钥：未知", secrets)
-        save_llm = QPushButton("保存 LLM 密钥", secrets)
-        save_llm.clicked.connect(lambda: self._store_secret("llm"))
-        revoke_llm = QPushButton("移除 LLM 密钥", secrets)
-        revoke_llm.clicked.connect(lambda: self._revoke_secret("llm"))
+        self.save_llm_secret = QPushButton("保存 LLM 密钥", secrets)
+        self.save_llm_secret.clicked.connect(lambda: self._store_secret("llm"))
+        self.revoke_llm_secret = QPushButton("移除 LLM 密钥", secrets)
+        self.revoke_llm_secret.clicked.connect(lambda: self._revoke_secret("llm"))
         secrets_layout.addWidget(self.llm_secret, 1, 0)
-        secrets_layout.addWidget(save_llm, 1, 1)
-        secrets_layout.addWidget(revoke_llm, 1, 2)
+        secrets_layout.addWidget(self.save_llm_secret, 1, 1)
+        secrets_layout.addWidget(self.revoke_llm_secret, 1, 2)
         secrets_layout.addWidget(self.llm_secret_state, 2, 0, 1, 3)
         self.vts_secret = self._secret_edit("VTS 认证令牌")
         self.vts_secret_state = QLabel("VTS 令牌：未知", secrets)
@@ -350,6 +366,132 @@ class SettingsDialog(QDialog):
         secrets_layout.addWidget(revoke_vts, 3, 2)
         secrets_layout.addWidget(self.vts_secret_state, 4, 0, 1, 3)
         layout.addWidget(secrets)
+
+        deepseek = QGroupBox("DeepSeek V4 Flash（固定配置）", page)
+        deepseek_layout = QGridLayout(deepseek)
+        self.deepseek_flash_guidance = QLabel(
+            "仅使用固定的 DeepSeek V4 Flash 文本接口，关闭 thinking，不上传截图原图。"
+            "启用后，当前已开启且允许发送的历史、长期记忆检索和有限语义标签生成的视觉摘要文本可能"
+            "发送至 DeepSeek；"
+            "其远端处理、保留与地域风险不能由本项目消除；"
+            "该 API 密钥与通用 LLM 密钥分开以当前 Windows 用户 DPAPI 加密保存。",
+            deepseek,
+        )
+        self.deepseek_flash_guidance.setWordWrap(True)
+        deepseek_layout.addWidget(self.deepseek_flash_guidance, 0, 0, 1, 3)
+        self.deepseek_flash_secret = self._secret_edit("DeepSeek API 密钥")
+        self.deepseek_flash_state = QLabel("DeepSeek V4 Flash：未知", deepseek)
+        self.enable_deepseek_flash = QPushButton("保存并启用 DeepSeek V4 Flash", deepseek)
+        self.enable_deepseek_flash.setAccessibleName("保存并启用 DeepSeek V4 Flash")
+        self.enable_deepseek_flash.clicked.connect(self._configure_deepseek_flash)
+        self.disable_deepseek_flash = QPushButton("停用并移除 DeepSeek 密钥", deepseek)
+        self.disable_deepseek_flash.setAccessibleName("停用并移除 DeepSeek 密钥")
+        self.disable_deepseek_flash.clicked.connect(self._disable_deepseek_flash)
+        deepseek_layout.addWidget(self.deepseek_flash_secret, 1, 0)
+        deepseek_layout.addWidget(self.enable_deepseek_flash, 1, 1)
+        deepseek_layout.addWidget(self.disable_deepseek_flash, 1, 2)
+        deepseek_layout.addWidget(self.deepseek_flash_state, 2, 0, 1, 3)
+        layout.addWidget(deepseek)
+        layout.addStretch(1)
+        self.connection_settings_scroll = QScrollArea(self)
+        self.connection_settings_scroll.setObjectName("connection_settings_scroll")
+        self.connection_settings_scroll.setAccessibleName("连接与设备设置（可滚动）")
+        self.connection_settings_scroll.setAccessibleDescription(
+            "可使用鼠标滚轮、滚动条或键盘访问所有连接与设备设置。"
+        )
+        self.connection_settings_scroll.setWidgetResizable(True)
+        self.connection_settings_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        self.connection_settings_scroll.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        self.connection_settings_scroll.setWidget(page)
+        return self.connection_settings_scroll
+
+    def _build_avatar_tab(self) -> QWidget:
+        page = QWidget(self)
+        layout = QVBoxLayout(page)
+        guidance = QLabel(
+            "这里只保存 Avatar Runtime 的安全开关和音量口型校准值；"
+            "不显示或修改私人模型、动作、Expression、Hotkey ID 或资产路径。"
+            "所有更改均在重启应用后生效。",
+            page,
+        )
+        guidance.setWordWrap(True)
+        layout.addWidget(guidance)
+
+        controls = QGroupBox("Avatar Runtime 安全开关", page)
+        controls_form = QFormLayout(controls)
+        self.avatar_enabled = QCheckBox("启用 Avatar Runtime", controls)
+        self.avatar_parameter_control_enabled = QCheckBox("启用 VTS 参数控制", controls)
+        self.avatar_micro_motion_enabled = QCheckBox("启用程序微动作", controls)
+        self.avatar_lip_sync_enabled = QCheckBox("启用音量口型", controls)
+        self.avatar_body_motion_enabled = QCheckBox("启用主体动作", controls)
+        self.avatar_auto_red_eye_enabled = QCheckBox("启用系统自动红眼", controls)
+        for checkbox in (
+            self.avatar_enabled,
+            self.avatar_parameter_control_enabled,
+            self.avatar_micro_motion_enabled,
+            self.avatar_lip_sync_enabled,
+            self.avatar_body_motion_enabled,
+            self.avatar_auto_red_eye_enabled,
+        ):
+            checkbox.toggled.connect(self._mark_form_dirty_bool)
+        controls_form.addRow("总开关", self.avatar_enabled)
+        controls_form.addRow("参数控制", self.avatar_parameter_control_enabled)
+        controls_form.addRow("程序微动作", self.avatar_micro_motion_enabled)
+        controls_form.addRow("音量口型", self.avatar_lip_sync_enabled)
+        controls_form.addRow("主体动作", self.avatar_body_motion_enabled)
+        controls_form.addRow("自动红眼", self.avatar_auto_red_eye_enabled)
+        layout.addWidget(controls)
+
+        calibration = QGroupBox("音量口型校准", page)
+        calibration_form = QFormLayout(calibration)
+        self.avatar_mouth_noise_floor = self._avatar_spin_box(
+            calibration,
+            accessible_name="Avatar 口型噪声门限",
+            minimum=0.0,
+            maximum=0.999,
+            decimals=3,
+            step=0.005,
+        )
+        self.avatar_mouth_gain = self._avatar_spin_box(
+            calibration,
+            accessible_name="Avatar 口型增益",
+            minimum=0.01,
+            maximum=100.0,
+            decimals=2,
+            step=0.25,
+        )
+        self.avatar_mouth_attack_seconds = self._avatar_spin_box(
+            calibration,
+            accessible_name="Avatar 口型开启平滑时间",
+            minimum=0.001,
+            maximum=2.0,
+            decimals=3,
+            step=0.01,
+            suffix=" 秒",
+        )
+        self.avatar_mouth_release_seconds = self._avatar_spin_box(
+            calibration,
+            accessible_name="Avatar 口型闭合平滑时间",
+            minimum=0.001,
+            maximum=5.0,
+            decimals=3,
+            step=0.01,
+            suffix=" 秒",
+        )
+        calibration_form.addRow("噪声门限（0–1）", self.avatar_mouth_noise_floor)
+        calibration_form.addRow("增益", self.avatar_mouth_gain)
+        calibration_form.addRow("开启平滑", self.avatar_mouth_attack_seconds)
+        calibration_form.addRow("闭合平滑", self.avatar_mouth_release_seconds)
+        layout.addWidget(calibration)
+
+        save = QPushButton("保存 Avatar 设置（重启后生效）", page)
+        save.setAccessibleName("保存 Avatar 设置")
+        save.clicked.connect(self._save_settings)
+        layout.addWidget(save)
         layout.addStretch(1)
         return page
 
@@ -507,6 +649,8 @@ class SettingsDialog(QDialog):
         layout = QFormLayout(page)
         self.debug_version = QLabel("—", page)
         self.debug_capabilities = QLabel("—", page)
+        self.debug_avatar = QLabel("—", page)
+        self.debug_avatar.setWordWrap(True)
         self.debug_queues = QLabel("—", page)
         self.debug_error_code = QLabel("—", page)
         self.debug_note = QLabel(
@@ -518,6 +662,7 @@ class SettingsDialog(QDialog):
         refresh.clicked.connect(lambda: self._submit(ManagementDebugCommand()))
         layout.addRow("版本", self.debug_version)
         layout.addRow("能力", self.debug_capabilities)
+        layout.addRow("Avatar", self.debug_avatar)
         layout.addRow("桥队列", self.debug_queues)
         layout.addRow("最近错误码", self.debug_error_code)
         layout.addRow("说明", self.debug_note)
@@ -529,6 +674,27 @@ class SettingsDialog(QDialog):
         edit.setAccessibleName(accessible_name)
         edit.textEdited.connect(self._mark_form_dirty)
         return edit
+
+    def _avatar_spin_box(
+        self,
+        parent: QWidget,
+        *,
+        accessible_name: str,
+        minimum: float,
+        maximum: float,
+        decimals: int,
+        step: float,
+        suffix: str = "",
+    ) -> QDoubleSpinBox:
+        control = QDoubleSpinBox(parent)
+        control.setAccessibleName(accessible_name)
+        control.setRange(minimum, maximum)
+        control.setDecimals(decimals)
+        control.setSingleStep(step)
+        control.setKeyboardTracking(False)
+        control.setSuffix(suffix)
+        control.valueChanged.connect(self._mark_form_dirty_float)
+        return control
 
     def _secret_edit(self, accessible_name: str) -> QLineEdit:
         # A credential must not mark unrelated settings as a persistent draft.
@@ -549,6 +715,10 @@ class SettingsDialog(QDialog):
             self._form_dirty = True
 
     def _mark_form_dirty_index(self, _index: int) -> None:
+        if not self._populating_form:
+            self._form_dirty = True
+
+    def _mark_form_dirty_float(self, _value: float) -> None:
         if not self._populating_form:
             self._form_dirty = True
 
@@ -666,6 +836,18 @@ class SettingsDialog(QDialog):
                         startup_enabled=self.startup_enabled.isChecked(),
                         output_device_id=self._selected_output_device_id(),
                         system_playback_enabled=self.system_playback_enabled.isChecked(),
+                        avatar_enabled=self.avatar_enabled.isChecked(),
+                        avatar_parameter_control_enabled=(
+                            self.avatar_parameter_control_enabled.isChecked()
+                        ),
+                        avatar_micro_motion_enabled=self.avatar_micro_motion_enabled.isChecked(),
+                        avatar_lip_sync_enabled=self.avatar_lip_sync_enabled.isChecked(),
+                        avatar_body_motion_enabled=self.avatar_body_motion_enabled.isChecked(),
+                        avatar_auto_red_eye_enabled=self.avatar_auto_red_eye_enabled.isChecked(),
+                        avatar_mouth_noise_floor=self.avatar_mouth_noise_floor.value(),
+                        avatar_mouth_gain=self.avatar_mouth_gain.value(),
+                        avatar_mouth_attack_seconds=self.avatar_mouth_attack_seconds.value(),
+                        avatar_mouth_release_seconds=self.avatar_mouth_release_seconds.value(),
                     )
                 )
             )
@@ -697,6 +879,53 @@ class SettingsDialog(QDialog):
         label = "LLM 密钥" if secret_id == "llm" else "VTS 令牌"
         if self._confirm("移除密钥", f"确定移除保存的{label}吗？此操作无法恢复。"):
             self._submit(SecretRevokeCommand(secret_id="llm" if secret_id == "llm" else "vts"))
+
+    def _configure_deepseek_flash(self) -> None:
+        if self._model.settings is None:
+            self.status_label.setText("设置尚未加载。")
+            return
+        if self._form_dirty:
+            self.status_label.setText("请先保存或放弃通用设置草稿，再启用 DeepSeek V4 Flash。")
+            return
+        value = self.deepseek_flash_secret.text()
+        if not value.strip():
+            self.status_label.setText("请输入非空 DeepSeek API 密钥。")
+            return
+        if not self._confirm(
+            "启用 DeepSeek V4 Flash",
+            "将保存 API 密钥并在重启后使用固定的 DeepSeek V4 Flash 文本接口。"
+            "当前已开启且本消息明确允许的历史、长期记忆检索和有限语义标签生成的视觉摘要文本可能发送至"
+            "DeepSeek；不会上传截图原图。远端处理、保留与地域风险不能由本项目消除。是否继续？",
+        ):
+            return
+        try:
+            command = DeepSeekFlashConfigureCommand(value=value)
+            accepted = self._submit(command)
+        except ValueError:
+            self.status_label.setText("DeepSeek API 密钥无效。")
+            return
+        if accepted:
+            # Retain the input for a retry if BackendThread rejects the write;
+            # erase it only after the matching successful terminal result.
+            self._pending_deepseek_flash_command_id = command.command_id
+            self.setEnabled(False)
+
+    def _disable_deepseek_flash(self) -> None:
+        if self._model.settings is None:
+            self.status_label.setText("设置尚未加载。")
+            return
+        if self._form_dirty:
+            self.status_label.setText("请先保存或放弃通用设置草稿，再停用 DeepSeek V4 Flash。")
+            return
+        if self._confirm(
+            "停用 DeepSeek V4 Flash",
+            "将先切换到离线 LLM，再移除当前 Windows 用户保存的 DeepSeek API 密钥。"
+            "此操作无法恢复，之后重新启用时需要再次输入密钥。是否继续？",
+        ):
+            command = DeepSeekFlashDisableCommand()
+            if self._submit(command):
+                self._pending_deepseek_flash_command_id = command.command_id
+                self.setEnabled(False)
 
     def _toggle_feature(self, feature: FeatureName) -> None:
         state = self._model.feature_states.get(feature)
@@ -841,6 +1070,16 @@ class SettingsDialog(QDialog):
             self.stt_enabled.setChecked(form.stt_enabled)
             self.startup_enabled.setChecked(form.startup_enabled)
             self.system_playback_enabled.setChecked(form.system_playback_enabled)
+            self.avatar_enabled.setChecked(form.avatar_enabled)
+            self.avatar_parameter_control_enabled.setChecked(form.avatar_parameter_control_enabled)
+            self.avatar_micro_motion_enabled.setChecked(form.avatar_micro_motion_enabled)
+            self.avatar_lip_sync_enabled.setChecked(form.avatar_lip_sync_enabled)
+            self.avatar_body_motion_enabled.setChecked(form.avatar_body_motion_enabled)
+            self.avatar_auto_red_eye_enabled.setChecked(form.avatar_auto_red_eye_enabled)
+            self.avatar_mouth_noise_floor.setValue(form.avatar_mouth_noise_floor)
+            self.avatar_mouth_gain.setValue(form.avatar_mouth_gain)
+            self.avatar_mouth_attack_seconds.setValue(form.avatar_mouth_attack_seconds)
+            self.avatar_mouth_release_seconds.setValue(form.avatar_mouth_release_seconds)
             scope_index = self.tts_ref_audio_scope.findData(form.tts_ref_audio_scope)
             self.tts_ref_audio_scope.setCurrentIndex(max(0, scope_index))
             self._populating_form = False
@@ -850,6 +1089,32 @@ class SettingsDialog(QDialog):
         self._sync_audio_output_devices(selected_device_id)
         self.llm_secret_state.setText(
             "LLM 密钥：已配置" if snapshot.llm_secret_configured else "LLM 密钥：未配置"
+        )
+        deepseek_active = form.llm_provider.strip().casefold() == "deepseek"
+        generic_llm_widgets = (
+            self.llm_provider,
+            self.llm_base_url,
+            self.llm_model,
+            self.llm_secret,
+        )
+        for widget in generic_llm_widgets:
+            widget.setReadOnly(deepseek_active)
+        self.save_llm_secret.setEnabled(not deepseek_active)
+        self.revoke_llm_secret.setEnabled(not deepseek_active)
+        if deepseek_active and snapshot.deepseek_flash_configured:
+            self.deepseek_flash_state.setText(
+                "DeepSeek V4 Flash：已启用；固定 Flash 文本配置将在重启后应用。"
+            )
+        elif deepseek_active:
+            self.deepseek_flash_state.setText(
+                "DeepSeek V4 Flash：配置不完整；请重新输入专用 API 密钥。"
+            )
+        elif snapshot.deepseek_flash_configured:
+            self.deepseek_flash_state.setText("DeepSeek V4 Flash：密钥已保存，当前未启用。")
+        else:
+            self.deepseek_flash_state.setText("DeepSeek V4 Flash：未配置。")
+        self.disable_deepseek_flash.setEnabled(
+            deepseek_active or snapshot.deepseek_flash_configured
         )
         self.vts_secret_state.setText(
             "VTS 令牌：已配置" if snapshot.vts_secret_configured else "VTS 令牌：未配置"
@@ -1018,6 +1283,22 @@ class SettingsDialog(QDialog):
                 f"文字聊天：{'可用' if debug.capabilities.text_chat else '不可用'}；"
                 f"停止：{'可用' if debug.capabilities.turn_cancel else '不可用'}"
             )
+            layer_labels = {
+                "parameter_control": "参数控制",
+                "lip_sync": "音量口型",
+                "body_motion": "主体动作",
+                "automatic_red_eye": "自动红眼",
+            }
+            self.debug_avatar.setText(
+                "；".join(
+                    (
+                        f"{layer_labels[layer.name]}："
+                        f"{'可用' if layer.available else '不可用'}"
+                        f"{f'（{layer.reason_code}）' if layer.reason_code else ''}"
+                    )
+                    for layer in debug.avatar_layers
+                )
+            )
             self.debug_queues.setText(
                 f"命令 {debug.command_queue_count}/{debug.command_queue_capacity}；"
                 f"事件 {debug.event_queue_count}/{debug.event_queue_capacity}"
@@ -1031,6 +1312,16 @@ class SettingsDialog(QDialog):
         result = self._model.last_result
         if result is None:
             return
+        if result.command_id == self._pending_deepseek_flash_command_id and result.operation in {
+            "deepseek_flash_configured",
+            "deepseek_flash_configure",
+            "deepseek_flash_disabled",
+            "deepseek_flash_disable",
+        }:
+            if result.operation == "deepseek_flash_configured" and result.reason_code is None:
+                self.deepseek_flash_secret.clear()
+            self._pending_deepseek_flash_command_id = None
+            self.setEnabled(True)
         if result.reason_code is not None:
             if result.operation == "stt_runtime_install":
                 self.install_stt_runtime.setEnabled(True)
@@ -1047,7 +1338,11 @@ class SettingsDialog(QDialog):
             suffix += "；底层清理待处理"
         operation = _MANAGEMENT_OPERATION_TEXT.get(result.operation, result.operation)
         self.status_label.setText(f"操作完成：{operation}{suffix}")
-        if result.operation == "settings_saved":
+        if result.operation in {
+            "settings_saved",
+            "deepseek_flash_configured",
+            "deepseek_flash_disabled",
+        }:
             self._form_dirty = False
         if result.operation == "provider_preflight_completed":
             self.run_provider_preflight.setEnabled(True)
@@ -1056,6 +1351,8 @@ class SettingsDialog(QDialog):
         """Erase dialog-held credentials, paths and memory bodies before final exit."""
 
         self._clearing_sensitive = True
+        self._pending_deepseek_flash_command_id = None
+        self.setEnabled(True)
         for edit in (
             self.llm_provider,
             self.llm_base_url,
@@ -1073,6 +1370,7 @@ class SettingsDialog(QDialog):
             self.stt_model_path,
             self.stt_device,
             self.llm_secret,
+            self.deepseek_flash_secret,
             self.vts_secret,
         ):
             edit.clear()

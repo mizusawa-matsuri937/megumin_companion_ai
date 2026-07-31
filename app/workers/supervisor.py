@@ -120,6 +120,26 @@ class SupervisorEvent:
 
 
 @dataclass(frozen=True, slots=True)
+class WorkerJobProgress:
+    """Strict content-free worker progress delivered to one job owner."""
+
+    job_id: str
+    kind: str
+    sequence: int
+    value: float
+
+
+ProgressCallback = Callable[[WorkerJobProgress], None]
+
+
+@dataclass(slots=True)
+class _JobState:
+    future: asyncio.Future[dict[str, Any]]
+    progress_callback: ProgressCallback | None
+    last_progress_sequence: int = 0
+
+
+@dataclass(frozen=True, slots=True)
 class SupervisorSnapshot:
     actual_state: WorkerActualState
     desired_enabled: bool
@@ -185,7 +205,7 @@ class WorkerSupervisor:
         self._hello = asyncio.Event()
         self._last_heartbeat = 0.0
         self._heartbeat_sequence = 0
-        self._jobs: dict[str, asyncio.Future[dict[str, Any]]] = {}
+        self._jobs: dict[str, _JobState] = {}
         self._tasks: set[asyncio.Task[Any]] = set()
         self._process_wait_task: asyncio.Task[int] | None = None
         # A worker exit may spend a short, bounded interval in crash cleanup
@@ -445,6 +465,40 @@ class WorkerSupervisor:
             self._heartbeat_sequence = sequence
             self._last_heartbeat = self._clock()
             return
+        if message.message_type == "job.progress":
+            request_id = message.request_id
+            kind = message.payload.get("kind")
+            sequence = message.payload.get("sequence")
+            value = message.payload.get("value")
+            if (
+                request_id is None
+                or set(message.payload) != {"kind", "sequence", "value"}
+                or kind != "mouth_envelope"
+                or isinstance(sequence, bool)
+                or not isinstance(sequence, int)
+                or sequence < 1
+                or isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(value)
+                or not 0.0 <= float(value) <= 1.0
+            ):
+                raise ProtocolError("helper_protocol_job_progress_invalid")
+            state = self._jobs.get(request_id)
+            if state is None or sequence <= state.last_progress_sequence:
+                return
+            state.last_progress_sequence = sequence
+            callback = state.progress_callback
+            if callback is not None:
+                with suppress(Exception):
+                    callback(
+                        WorkerJobProgress(
+                            job_id=request_id,
+                            kind=kind,
+                            sequence=sequence,
+                            value=float(value),
+                        )
+                    )
+            return
         if message.message_type in {"job.completed", "job.cancelled", "job.failed"}:
             request_id = message.request_id
             if request_id is None:
@@ -459,9 +513,10 @@ class WorkerSupervisor:
                     or not _SAFE_CODE.fullmatch(error_code)
                 ):
                     raise ProtocolError("helper_protocol_job_result_invalid")
-            future = self._jobs.pop(request_id, None)
-            if future is None:
+            state = self._jobs.pop(request_id, None)
+            if state is None:
                 return
+            future = state.future
             if future.done():
                 return
             if message.message_type == "job.completed":
@@ -498,9 +553,12 @@ class WorkerSupervisor:
         job_kind: str,
         resources: Sequence[ResourceReference] = (),
         hard_deadline_seconds: float | None = None,
+        progress_callback: ProgressCallback | None = None,
     ) -> dict[str, Any]:
         if not _SAFE_ID.fullmatch(job_id) or not _SAFE_CODE.fullmatch(job_kind):
             raise WorkerError("worker_job_identity_invalid")
+        if progress_callback is not None and not callable(progress_callback):
+            raise WorkerError("worker_job_progress_callback_invalid")
         if not self._accepting_jobs or self._state is not WorkerActualState.enabled:
             raise WorkerError("worker_not_accepting_jobs")
         if job_id in self._jobs or len(self._jobs) >= self._config.maximum_active_jobs:
@@ -536,7 +594,10 @@ class WorkerSupervisor:
         termination_reserve = min(self._config.terminate_wait_seconds, deadline / 2)
         work_deadline = deadline_at - termination_reserve
         future: asyncio.Future[dict[str, Any]] = loop.create_future()
-        self._jobs[job_id] = future
+        self._jobs[job_id] = _JobState(
+            future=future,
+            progress_callback=progress_callback,
+        )
         try:
             try:
                 async with asyncio.timeout_at(work_deadline):
@@ -557,8 +618,8 @@ class WorkerSupervisor:
             raise
 
     async def cancel_job(self, job_id: str, *, deadline_at: float | None = None) -> None:
-        future = self._jobs.get(job_id)
-        if future is None or future.done():
+        state = self._jobs.get(job_id)
+        if state is None or state.future.done():
             return
         if deadline_at is None:
             deadline_at = asyncio.get_running_loop().time() + self._config.soft_cancel_grace_seconds
@@ -667,7 +728,8 @@ class WorkerSupervisor:
                 while True:
                     active = await process.active_process_count()
                     if active == 0:
-                        for future in tuple(self._jobs.values()):
+                        for state in tuple(self._jobs.values()):
+                            future = state.future
                             if not future.done():
                                 future.set_exception(WorkerError(code))
                                 future.exception()
@@ -680,7 +742,8 @@ class WorkerSupervisor:
             # a later start() to race; close it and settle abandoned jobs.
             if self._process is process:
                 await self._close_current_process(expected=process)
-                for future in tuple(self._jobs.values()):
+                for state in tuple(self._jobs.values()):
+                    future = state.future
                     if not future.done():
                         future.set_exception(WorkerError(code))
                         future.exception()
@@ -695,7 +758,8 @@ class WorkerSupervisor:
         while self._crashes and self._crashes[0] < cutoff:
             self._crashes.popleft()
         self._crashes.append(now)
-        for future in tuple(self._jobs.values()):
+        for state in tuple(self._jobs.values()):
+            future = state.future
             if not future.done():
                 future.set_exception(WorkerError(code))
         self._jobs.clear()
@@ -833,7 +897,8 @@ class WorkerSupervisor:
             # get one safety close after the timed phase has expired.
             process_close_succeeded = await self._close_current_process()
         scavenge_succeeded = await self._scavenge(deadline_at)
-        for future in tuple(self._jobs.values()):
+        for state in tuple(self._jobs.values()):
+            future = state.future
             if not future.done():
                 future.set_exception(WorkerError("worker_stopped"))
         self._jobs.clear()

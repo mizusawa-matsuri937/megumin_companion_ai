@@ -28,6 +28,22 @@ class EmptyPromptContextSource:
         return PromptContextSnapshot()
 
 
+class CompositePromptContextSource:
+    """Combine independent, policy-scoped prompt sources without reordering them."""
+
+    def __init__(self, *sources: PromptContextSource) -> None:
+        self._sources = sources
+
+    async def snapshot_for(self, message: UserMessage) -> PromptContextSnapshot:
+        history: list[HistoryMessage] = []
+        blocks: list[ExternalContextBlock] = []
+        for source in self._sources:
+            snapshot = await source.snapshot_for(message)
+            history.extend(snapshot.history)
+            blocks.extend(snapshot.blocks)
+        return PromptContextSnapshot(history=tuple(history), blocks=tuple(blocks))
+
+
 class EmotionPromptContextBuilder:
     def __init__(
         self,

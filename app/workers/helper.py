@@ -7,6 +7,7 @@ Concrete audio/STT/perception job handlers are intentionally absent in W12.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import math
 import os
 import re
@@ -19,6 +20,21 @@ from app.workers.access import ApprovedResourcePolicy, AuthorizedResource, Resou
 from app.workers.protocol import FrameDecoder, HelperMessage, ProtocolError, encode_message
 
 _SAFE_CODE = re.compile(r"^[a-z][a-z0-9_.-]{0,63}$")
+_PROGRESS_KINDS = frozenset({"mouth_envelope"})
+_ProgressPublisher = Callable[[str, float], bool]
+_CURRENT_PROGRESS: contextvars.ContextVar[_ProgressPublisher | None] = contextvars.ContextVar(
+    "helper_job_progress",
+    default=None,
+)
+
+
+def emit_job_progress(kind: str, value: float) -> bool:
+    """Publish one content-free progress scalar without blocking the job."""
+
+    publisher = _CURRENT_PROGRESS.get()
+    if publisher is None:
+        return False
+    return publisher(kind, value)
 
 
 class HelperJobHandler(Protocol):
@@ -69,6 +85,9 @@ class HelperRuntime:
         self._write = write or self._write_stdout
         self._write_lock = asyncio.Lock()
         self._jobs: dict[str, tuple[asyncio.Task[None], asyncio.Event]] = {}
+        self._progress_latest: dict[str, HelperMessage] = {}
+        self._progress_open_jobs: set[str] = set()
+        self._progress_wakeup = asyncio.Event()
         self._stopping = False
         self._handshake = asyncio.Event()
 
@@ -82,6 +101,10 @@ class HelperRuntime:
                 return 3
             return 2
         heartbeat = asyncio.create_task(self._heartbeat(), name="helper-heartbeat")
+        progress_sender = asyncio.create_task(
+            self._progress_sender(),
+            name="helper-progress-sender",
+        )
         decoder = FrameDecoder()
         exit_code = 0
         try:
@@ -101,7 +124,10 @@ class HelperRuntime:
                 task.cancel()
             await asyncio.gather(*(item[0] for item in self._jobs.values()), return_exceptions=True)
             heartbeat.cancel()
-            await asyncio.gather(heartbeat, return_exceptions=True)
+            progress_sender.cancel()
+            await asyncio.gather(heartbeat, progress_sender, return_exceptions=True)
+            self._progress_latest.clear()
+            self._progress_open_jobs.clear()
             try:
                 await self._handler.close()
             except Exception:
@@ -187,6 +213,41 @@ class HelperRuntime:
         cancelled: asyncio.Event,
     ) -> None:
         authorized_items: list[AuthorizedResource] = []
+        progress_sequence = 0
+        self._progress_open_jobs.add(job_id)
+
+        def publish_progress(kind: str, value: float) -> bool:
+            nonlocal progress_sequence
+            if (
+                self._stopping
+                or cancelled.is_set()
+                or job_id not in self._jobs
+                or job_id not in self._progress_open_jobs
+                or kind not in _PROGRESS_KINDS
+                or isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(value)
+                or not 0.0 <= float(value) <= 1.0
+            ):
+                return False
+            progress_sequence += 1
+            try:
+                message = HelperMessage(
+                    message_type="job.progress",
+                    request_id=job_id,
+                    payload={
+                        "kind": kind,
+                        "sequence": progress_sequence,
+                        "value": float(value),
+                    },
+                )
+            except ProtocolError:
+                return False
+            self._progress_latest[job_id] = message
+            self._progress_wakeup.set()
+            return True
+
+        progress_token = _CURRENT_PROGRESS.set(publish_progress)
         try:
             try:
                 for resource in resources:
@@ -202,6 +263,7 @@ class HelperRuntime:
             )
             if not isinstance(result, dict):
                 raise ProtocolError("helper_protocol_job_result_invalid")
+            self._drop_progress(job_id)
             await self._send(
                 HelperMessage(
                     message_type="job.cancelled" if cancelled.is_set() else "job.completed",
@@ -210,12 +272,14 @@ class HelperRuntime:
                 )
             )
         except asyncio.CancelledError:
+            self._drop_progress(job_id)
             with suppress(OSError):
                 await self._send(
                     HelperMessage(message_type="job.cancelled", request_id=job_id, payload={})
                 )
             raise
         except Exception:
+            self._drop_progress(job_id)
             with suppress(OSError):
                 await self._send(
                     HelperMessage(
@@ -225,6 +289,8 @@ class HelperRuntime:
                     )
                 )
         finally:
+            _CURRENT_PROGRESS.reset(progress_token)
+            self._drop_progress(job_id)
             for authorized_resource in authorized_items:
                 with suppress(OSError):
                     authorized_resource.close()
@@ -246,6 +312,32 @@ class HelperRuntime:
             await self._send(
                 HelperMessage(message_type="heartbeat", payload={"sequence": sequence})
             )
+
+    async def _progress_sender(self) -> None:
+        try:
+            while not self._stopping:
+                await self._progress_wakeup.wait()
+                self._progress_wakeup.clear()
+                pending = tuple(self._progress_latest.items())
+                self._progress_latest.clear()
+                for job_id, message in pending:
+                    if (
+                        job_id in self._jobs
+                        and job_id in self._progress_open_jobs
+                        and not self._stopping
+                    ):
+                        await self._send(message)
+                # Give heartbeat, terminal, cancel, and stdin dispatch a chance
+                # before another high-rate progress batch.
+                await asyncio.sleep(0)
+                if self._progress_latest:
+                    self._progress_wakeup.set()
+        except OSError:
+            self._stopping = True
+
+    def _drop_progress(self, job_id: str) -> None:
+        self._progress_open_jobs.discard(job_id)
+        self._progress_latest.pop(job_id, None)
 
     async def _send(self, message: HelperMessage) -> None:
         frame = encode_message(message)
