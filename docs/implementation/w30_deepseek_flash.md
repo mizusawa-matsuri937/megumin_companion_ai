@@ -5,8 +5,12 @@
 > 而密钥输入框位于页面纵坐标约 `934..955`；原实现没有滚动容器。现将该页包装为可调整大小的 `QScrollArea`，不移动、
 > 隐藏或改写任何设置字段、密钥处理、出站数据或状态栏。回归在同一紧凑视口中验证垂直滚动条、滚动到底后的完整可见性和
 > 输入焦点；完整 `uv run pytest` 已得到 `1433 passed, 3 skipped, 90.45%`，Ruff/format/mypy/lock、fresh wheel
-> installed-smoke、链接和候选敏感信息扫描也已通过。这是 headless Qt 逻辑视口证据，不能替代真实 Windows 缩放/桌面
-> shell 体验；本次新 head 的 CI 仍待完成。
+> installed-smoke、链接和候选敏感信息扫描也已通过。代码提交
+> [`19c7510`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/19c75105319ba630c5815de4a1265ae4010d6737)
+> 的 [push CI](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/30619684274) 与
+> [PR CI](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/30619687554) 均四项通过，PR #35 为
+> Draft/open、`CLEAN`、无评论/评审、`0` 个 review thread。这个审计记录自身将形成仅文档 head，仍需最终 CI/PR 复核。
+> 这是 headless Qt 逻辑视口证据，不能替代真实 Windows 缩放/桌面 shell 体验。
 
 > **2026-07-31 后续状态（优先于下方较早快照）：** Gateway compatibility 已由 `84c92bb` 推送。夹具修复提交
 > `a0ccfc6` 只调整测试夹具的事件同步和非 deadline 场景的时限余量；其 exact-code head 的 push workflow
@@ -124,7 +128,9 @@
   RapidOCR、Pillow 与当前用户无法创建目录 symlink 的既有可选环境条件。`uv run ruff check .`、`uv run ruff format --check .`
   （`266 files already formatted`）、`uv run mypy`（`259 source files`）、`uv lock --check`、`git diff --check` 均通过。
   新鲜 wheel `dist/w30-settings-scroll` 的 installed-smoke 为 `status=ok`、`source_tree_imported=false`；4 个变更 Markdown
-  文件的相对链接和变更 diff 的候选敏感信息扫描均无失败。新 head CI 在本文更新时尚待完成。
+  文件的相对链接和变更 diff 的候选敏感信息扫描均无失败。代码提交 `19c7510` 的 push workflow `30619684274` 和
+  PR workflow `30619687554` 各含 Windows/macOS quality、Windows/macOS installed-wheel 四项，均已成功；两者都绑定
+  精确 code head `19c75105319ba630c5815de4a1265ae4010d6737`。本次审计记录形成的仅文档 head 仍须完成自己的最终 CI。
 
 以上为本地自动化证据，不替代真实 API、远端隐私政策或最终 PR head 的 CI。
 
@@ -137,7 +143,7 @@
 | V4 仅作为本任务文本 Provider | 已确认 | 官方集成说明；不把图像支持写入 W30。 |
 | 当前实现、MockTransport、DPAPI、UI 和 prompt gate 的自动化结果 | 本地与 PR 自动化已验证 | 核心实现为 `cd5cd43`；聚焦 `172 passed`；完整 `1379 passed, 3 skipped, 90.39%`，并通过 lint/type/lock/build/smoke/link/sensitive 扫描。PR #35 的审计 head `e35dbc7` 四项跨平台 CI 都通过；后续 head 需重审。 |
 | W30 既有本地 Gateway compatibility | 本地与 `a0ccfc6` exact-code CI 已验证 | 40 项 Gateway MockTransport 测试，fake-DPAPI/bootstrap/secret，headless settings/preflight 及直连 GPT-SoVITS 回归均通过。`a0ccfc6` 只修改测试夹具；完整 `1432 passed, 3 skipped, 90.45%`、静态/lock/wheel/smoke 检查通过，其 push `30615939286` 与 PR `30615942372` 均四项通过。未访问真实 Gateway。 |
-| 设置页滚动可达性后续修复 | 本地质量门已验证；本次新 head 的 CI/交付审计待完成 | 紧凑 `820×650` Qt 回归证明滚动条能使底部 DeepSeek API 密钥卡完整可见且可获焦点；完整 `1433 passed, 3 skipped, 90.45%`，静态/lock/wheel/smoke/链接/候选敏感信息扫描通过。这不替代真实 Windows DPI/桌面 shell 验证，新 head CI 尚待重审。 |
+| 设置页滚动可达性后续修复 | 代码 head 的本地/远端质量门已验证；审计文档 head 待最终 CI 闭环 | 紧凑 `820×650` Qt 回归证明滚动条能使底部 DeepSeek API 密钥卡完整可见且可获焦点；`19c7510` 的完整 `1433 passed, 3 skipped, 90.45%`、静态/lock/wheel/smoke/链接/候选敏感信息扫描通过，push `30619684274` 与 PR `30619687554` 均四项成功、PR `CLEAN`、无评论/评审/行级线程。这不替代真实 Windows DPI/桌面 shell 验证；本审计文档 head 尚待重审。 |
 | 真实 Key、账户权限、服务可用性、计费和真实远端响应 | 未验证 | 本任务未持有或请求真实 Key，自动化不得联网。 |
 | DeepSeek 远端处理/保留/地域政策 | 外部服务边界 | 以 [隐私政策](https://cdn.deepseek.com/policies/en-US/deepseek-privacy-policy.html) 为准；本项目不能替代该政策或作零保留承诺。 |
 
