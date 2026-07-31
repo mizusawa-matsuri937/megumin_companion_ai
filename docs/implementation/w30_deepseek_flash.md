@@ -1,5 +1,13 @@
 # W30：DeepSeek V4 Flash 独立接入
 
+> **2026-07-31 设置页可达性跟进（等待本次新 head 审计）：** 用户实际运行中报告“连接与设备”页无法向下滚动，使位于
+> 页面底部的 DeepSeek API 密钥卡不可操作。离屏几何复现确认，原页面在 `820×650` 逻辑窗口中有约 `558` 高的可见区域，
+> 而密钥输入框位于页面纵坐标约 `934..955`；原实现没有滚动容器。现将该页包装为可调整大小的 `QScrollArea`，不移动、
+> 隐藏或改写任何设置字段、密钥处理、出站数据或状态栏。回归在同一紧凑视口中验证垂直滚动条、滚动到底后的完整可见性和
+> 输入焦点；完整 `uv run pytest` 已得到 `1433 passed, 3 skipped, 90.45%`，Ruff/format/mypy/lock、fresh wheel
+> installed-smoke、链接和候选敏感信息扫描也已通过。这是 headless Qt 逻辑视口证据，不能替代真实 Windows 缩放/桌面
+> shell 体验；本次新 head 的 CI 仍待完成。
+
 > **2026-07-31 后续状态（优先于下方较早快照）：** Gateway compatibility 已由 `84c92bb` 推送。夹具修复提交
 > `a0ccfc6` 只调整测试夹具的事件同步和非 deadline 场景的时限余量；其 exact-code head 的 push workflow
 > `30615939286` 和 PR workflow `30615942372` 均通过 Windows/macOS quality 与 installed-wheel 四项检查。此前
@@ -56,6 +64,23 @@
 - 该 client 禁用 `trust_env`、redirect、proxy、custom CA 和持久音频 cache；不安装、启动、升级、认证或证明 Gateway
   进程及其下游服务安全。
 
+## 2026-07-31 设置页滚动可达性后续修复
+
+用户报告的是已确认的 UI 缺陷，不是 API Key 填写步骤或 DeepSeek 配置本身的问题：`SettingsDialog` 的“连接与设备”标签页
+把通用 LLM、TTS、STT、播放设备、通用密钥和 DeepSeek 卡片连续放入普通 `QWidget`。该页的最小高度约为 `1060`，而对话框
+默认逻辑高度是 `650`；在较小可用桌面高度下，底部卡片会越过窗口下沿且无法访问。
+
+- 只将该标签页换为 `QScrollArea`，使用 `setWidget(page)`、`setWidgetResizable(True)` 和按需滚动条；对话框的状态提示和
+  “关闭”按钮保持在滚动区外，始终可见。滚动区有稳定 object name 和中文无障碍名称/说明，不改变其他标签页布局。
+- 新增 `test_deepseek_flash_settings_card_is_reachable_in_scrollable_connection_tab`：固定 `820×650` 逻辑窗口，先断言顶端时
+  密钥框不可见，再把垂直条置于最大值，断言 DeepSeek 密钥框及“保存并启用”完整可见且输入框能获焦点。它没有读取、生成或
+  回显真实密钥。
+- 复用现有 Qt Widgets 依赖，不新增依赖，也没有复制第三方代码。官方 [QScrollArea 文档](https://doc.qt.io/qt-6/qscrollarea.html)
+  明确说明其用于显示超过框架大小的子部件并通过滚动条访问全部内容；同时只核对官方维护的
+  [qtbase 实现](https://github.com/qt/qtbase/blob/dev/src/widgets/widgets/qscrollarea.cpp)。
+- 这不会改变 ADR-W30、数据流或威胁模型：没有新增配置字段、外部请求、数据类别或密钥路径。仍需由用户在更新后的实际
+  Windows 桌面上验证鼠标滚轮、滚动条及 Tab 导航；headless Qt 不能忠实覆盖 DPI、窗口管理器和实际输入设备行为。
+
 ## 开源复用调研与决策
 
 - 已核对官方 [`openai/openai-python`](https://github.com/openai/openai-python) 项目：其当前维护状态、Apache-2.0
@@ -94,6 +119,12 @@
   `uv run mypy`（`259 source files`）、`uv lock --check`（`65 packages`）与 `git diff --check` 均通过。
 - `uv build --wheel --out-dir dist/w30-fixture-ci-stabilization` 成功；随后 `w05_ci_smoke.py` 的 installed-wheel `status`
   为 `ok`，且 `source_tree_imported=false`。该本地 provenance 为 `local-unrecorded`，不是发布 artifact。
+- **设置页滚动可达性后续修复（2026-07-31，当前工作树）：** 新增的紧凑 `820×650` UI 回归与相关设置/启动回归先得到
+  `64 passed`；随后完整 `uv run pytest` 得到 `1433 passed, 3 skipped in 215.08s`，总覆盖率 `90.45%`。三个 skip 仍是
+  RapidOCR、Pillow 与当前用户无法创建目录 symlink 的既有可选环境条件。`uv run ruff check .`、`uv run ruff format --check .`
+  （`266 files already formatted`）、`uv run mypy`（`259 source files`）、`uv lock --check`、`git diff --check` 均通过。
+  新鲜 wheel `dist/w30-settings-scroll` 的 installed-smoke 为 `status=ok`、`source_tree_imported=false`；4 个变更 Markdown
+  文件的相对链接和变更 diff 的候选敏感信息扫描均无失败。新 head CI 在本文更新时尚待完成。
 
 以上为本地自动化证据，不替代真实 API、远端隐私政策或最终 PR head 的 CI。
 
@@ -106,6 +137,7 @@
 | V4 仅作为本任务文本 Provider | 已确认 | 官方集成说明；不把图像支持写入 W30。 |
 | 当前实现、MockTransport、DPAPI、UI 和 prompt gate 的自动化结果 | 本地与 PR 自动化已验证 | 核心实现为 `cd5cd43`；聚焦 `172 passed`；完整 `1379 passed, 3 skipped, 90.39%`，并通过 lint/type/lock/build/smoke/link/sensitive 扫描。PR #35 的审计 head `e35dbc7` 四项跨平台 CI 都通过；后续 head 需重审。 |
 | W30 既有本地 Gateway compatibility | 本地与 `a0ccfc6` exact-code CI 已验证 | 40 项 Gateway MockTransport 测试，fake-DPAPI/bootstrap/secret，headless settings/preflight 及直连 GPT-SoVITS 回归均通过。`a0ccfc6` 只修改测试夹具；完整 `1432 passed, 3 skipped, 90.45%`、静态/lock/wheel/smoke 检查通过，其 push `30615939286` 与 PR `30615942372` 均四项通过。未访问真实 Gateway。 |
+| 设置页滚动可达性后续修复 | 本地质量门已验证；本次新 head 的 CI/交付审计待完成 | 紧凑 `820×650` Qt 回归证明滚动条能使底部 DeepSeek API 密钥卡完整可见且可获焦点；完整 `1433 passed, 3 skipped, 90.45%`，静态/lock/wheel/smoke/链接/候选敏感信息扫描通过。这不替代真实 Windows DPI/桌面 shell 验证，新 head CI 尚待重审。 |
 | 真实 Key、账户权限、服务可用性、计费和真实远端响应 | 未验证 | 本任务未持有或请求真实 Key，自动化不得联网。 |
 | DeepSeek 远端处理/保留/地域政策 | 外部服务边界 | 以 [隐私政策](https://cdn.deepseek.com/policies/en-US/deepseek-privacy-policy.html) 为准；本项目不能替代该政策或作零保留承诺。 |
 
@@ -142,6 +174,9 @@ uv run pytest --no-cov \
 - 视觉摘要接线不是实际截图捕获、OCR 质量或敏感窗口 false-negative 的证据；这些仍属于独立视觉/隐私任务。
 - Gateway 的固定 HTTP loopback endpoint 不证明监听进程身份或 TLS 机密性。同用户恶意进程可能抢占端口并接收 bearer 和
   待合成文本；固定地址、purpose-bound token、无 proxy/redirect 和响应校验只能限制误配置，不能消除此主机本地风险。
+- 设置页滚动回归只在受控、headless 的 `820×650` 逻辑视口中证明几何、滚动条与焦点。用户更新后的实际 Windows 桌面仍须
+  检查：打开“设置与隐私”→“连接与设备”，能用鼠标滚轮/右侧滚动条到底，DeepSeek API 密钥输入框和“保存并启用”按钮可见、
+  可点击且 Tab 可到达；任一项失败即该视觉交互 Gate 不通过。
 
 ## 回滚
 

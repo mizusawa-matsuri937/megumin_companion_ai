@@ -69,6 +69,13 @@
    - 新增 MockTransport/fake-DPAPI/headless-UI 回归，重新运行完整 quality、wheel、sensitive scan 和 Draft PR
      exact-head CI；不得借用 W29 既有绿测或验收结论。
 
+7. **设置页滚动可达性后续修复（2026-07-31，用户报告）**
+   - “连接与设备”页的内容高于可用视口时，必须用既有 Qt Widgets 的 `QScrollArea` 承载完整页面；不得删减、隐藏或把
+     DeepSeek API Key 卡移入另一个不透明入口。状态提示与关闭操作保持在滚动区外。
+   - 给滚动区稳定 object name 和中文无障碍说明；保留鼠标滚轮、滚动条以及滚动后输入焦点，不影响通用密钥、TTS/STT 或其他标签页。
+   - 自动化以固定 `820×650` 逻辑窗口验证：存在垂直溢出、底部密钥框在滚到底后完整可见并可获焦点。该测试不宣称真实
+     Windows DPI/桌面 shell 视觉已通过；交付前仍要重跑完整质量门、wheel/smoke、链接/敏感信息扫描和新 head CI。
+
 ## 接口与验收
 
 | 接口 | 约束 |
@@ -91,6 +98,8 @@
   不证明隐私政策、保留或长期可用性。[隐私政策](https://cdn.deepseek.com/policies/en-US/deepseek-privacy-policy.html)
 - Gateway 兼容回归必须验证：专用 token purpose、别名、缺失 token 无 Mock fallback、固定 URL/header、health/WAV/错误、
   情绪映射、容量释放、取消/清理、preflight 的 skipped semantic 和禁用 cache/proxy/custom-CA；不访问真实 Gateway。
+- 设置页回归必须验证：在紧凑逻辑窗口中“连接与设备”页有滚动范围，DeepSeek API 密钥及“保存并启用”卡片可滚到、完整
+  可见并保留输入焦点；不得把 headless 模拟结果表述成真实 Windows 显示缩放验证。
 
 ## 回滚与发布阻断
 

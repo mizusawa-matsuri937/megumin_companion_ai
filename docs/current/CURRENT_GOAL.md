@@ -1,5 +1,14 @@
 # 当前产品目标
 
+> **2026-07-31 设置页可达性跟进（优先于下方较早快照）：** 用户报告“连接与设备”页在较小可用高度不能向下滚动，
+> 因而无法操作 DeepSeek API 密钥卡。已确认该页原本把超过窗口高度的表单直接放入标签页：离屏紧凑视口中，DeepSeek
+> 输入框在页面纵坐标约 `934..955`，可见区域只有约 `558`。W30 现以 `QScrollArea` 承载该页，保留原有控件、状态栏和
+> 按钮语义，并允许鼠标滚轮、滚动条访问底部卡片；滚动后底部输入框仍可获焦点。新的 headless Qt 回归在固定 `820×650` 逻辑窗口中断言有
+> 垂直溢出、滚到最大值后 API 密钥和“保存并启用”按钮完整可见且输入框可获焦点；当前完整 `uv run pytest` 为
+> `1433 passed, 3 skipped, 90.45%`。Ruff、格式、strict mypy、lock、fresh wheel installed-smoke（`status=ok`、
+> `source_tree_imported=false`）、变更文档链接和候选敏感信息扫描均已通过。这证明受控逻辑视口，不替代实际 Windows
+> DPI/桌面 shell 的视觉验收；新 head 的 CI 尚待完成，故尚不能把此后续交付标为完成。
+
 > **2026-07-31 后续状态（优先于下方较早快照）：** Gateway compatibility 已由 `84c92bb` 推送。夹具修复提交
 > `a0ccfc6` 只调整测试夹具的事件同步和非 deadline 场景的时限余量；其 exact-code head 的 push workflow
 > `30615939286` 和 PR workflow `30615942372` 均通过 Windows/macOS quality 与 installed-wheel 四项检查。此前
@@ -47,6 +56,7 @@
 | 固定 endpoint/model、文本输入和多轮协议边界 | 已确认 | 官方 [Chat Completions](https://api-docs.deepseek.com/api/create-chat-completion/) 与[多轮对话](https://api-docs.deepseek.com/guides/multi_round_chat)。 |
 | W30 代码、MockTransport/DPAPI/UI/prompt gate 的自动化结果 | 本地与 PR 自动化已验证 | `cd5cd43` 的聚焦测试为 `172 passed`；完整 `uv run pytest` 为 `1379 passed, 3 skipped, 90.39%`，且 lint/type/lock/build/smoke/link/sensitive 扫描通过。PR #35 的审计 head `e35dbc7` 四项跨平台 CI 都通过；没有评论或评审，后续 head 必须重审。 |
 | W30 既有本地 Gateway compatibility | 本地与 `a0ccfc6` exact-code CI 已验证 | 2026-07-31 所有者授权；固定 loopback/protocol、专用 token/bootstrap、emotion slot adapter 与 UI/preflight 均已实现。夹具修复后的完整 `1432 passed, 3 skipped, 90.45%`、Ruff/mypy/lock/wheel/smoke 通过；`a0ccfc6` 的 push `30615939286` 与 PR `30615942372` 各四项跨平台 CI 通过。不访问真实 Gateway。 |
+| 设置页滚动可达性后续修复 | 本地质量门已验证；新 head CI/交付审计待完成 | `SettingsDialog` 的“连接与设备”页已改为可滚动；紧凑 `820×650` 回归验证底部 DeepSeek API 密钥卡可滚到、完整可见并可获焦点。完整 `1433 passed, 3 skipped, 90.45%`，Ruff/format/mypy/lock、fresh wheel smoke、链接和候选敏感信息扫描均通过；尚未声称实际 Windows DPI 视觉通过，且本次新 head CI 尚待审计。 |
 | 真实 API Key、账户权限、远端响应、计费/限流与服务可用性 | 未验证 | 本任务未持有或请求 Key；自动化不得发起真实网络请求。 |
 | DeepSeek 的远端处理、保留、地域和政策 | 外部服务边界 | 项目无法保证；以 [DeepSeek 隐私政策](https://cdn.deepseek.com/policies/en-US/deepseek-privacy-policy.html) 为准。 |
 
@@ -70,7 +80,10 @@ W30 是以 W28 基线建立的独立 sibling 任务。W29 为暂停的独立工�
 4. Gateway 跟进的 MockTransport/secret/bootstrap/UI 回归、夹具修复后的完整质量门与 wheel smoke 已在本地通过；`a0ccfc6`
    的 push `30615939286` 和 PR `30615942372` 均四项通过。发布审计必须比较最终 PR #35 的
    base/head/diff/review/mergeability 与对应 CI 证据。自动化不调用真实 Gateway 或 DeepSeek。
-5. 用户提供 Key 后，可由用户显式发起一次不带真实历史、长期记忆或视觉摘要的非敏感连通性验证。它只能证明当时的
+5. 设置页滚动可达性后续修复已完成紧凑逻辑视口、完整 pytest、Ruff/format/mypy/lock、fresh wheel smoke、文档链接和
+   候选敏感信息扫描；仍须完成 Draft PR exact-head CI。用户实际 Windows 缩放下的鼠标滚轮、滚动条和键盘访问属于无法由
+   headless Qt 忠实替代的最小视觉/交互确认，不能把模拟结果写成已通过。
+6. 用户提供 Key 后，可由用户显式发起一次不带真实历史、长期记忆或视觉摘要的非敏感连通性验证。它只能证明当时的
    账号/网络/服务组合，不证明远端隐私政策或长期可用性；Key、请求正文和响应正文不入仓库或证据。
 
 ## 相关资料

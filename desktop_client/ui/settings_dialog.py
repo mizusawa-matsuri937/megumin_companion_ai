@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QScrollArea,
     QTabWidget,
     QTreeWidget,
     QTreeWidgetItem,
@@ -392,7 +393,21 @@ class SettingsDialog(QDialog):
         deepseek_layout.addWidget(self.deepseek_flash_state, 2, 0, 1, 3)
         layout.addWidget(deepseek)
         layout.addStretch(1)
-        return page
+        self.connection_settings_scroll = QScrollArea(self)
+        self.connection_settings_scroll.setObjectName("connection_settings_scroll")
+        self.connection_settings_scroll.setAccessibleName("连接与设备设置（可滚动）")
+        self.connection_settings_scroll.setAccessibleDescription(
+            "可使用鼠标滚轮、滚动条或键盘访问所有连接与设备设置。"
+        )
+        self.connection_settings_scroll.setWidgetResizable(True)
+        self.connection_settings_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        self.connection_settings_scroll.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        self.connection_settings_scroll.setWidget(page)
+        return self.connection_settings_scroll
 
     def _build_avatar_tab(self) -> QWidget:
         page = QWidget(self)

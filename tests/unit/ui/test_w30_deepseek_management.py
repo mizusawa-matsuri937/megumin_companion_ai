@@ -28,7 +28,7 @@ from desktop_client.ui.contracts import (
 )
 from desktop_client.ui.management import DesktopManagementRuntime, ManagementViewModel
 from desktop_client.ui.settings_dialog import SettingsDialog
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QScrollArea, QWidget
 
 
 class _Secrets:
@@ -96,6 +96,13 @@ def _form() -> DesktopSettingsForm:
         stt_device="",
         startup_enabled=False,
     )
+
+
+def _fully_visible(scroll_area: QScrollArea, widget: QWidget) -> bool:
+    viewport = scroll_area.viewport()
+    return viewport.rect().contains(
+        widget.mapTo(viewport, widget.rect().topLeft())
+    ) and viewport.rect().contains(widget.mapTo(viewport, widget.rect().bottomRight()))
 
 
 def _events(bridge: ApplicationBridge) -> list[object]:
@@ -338,6 +345,43 @@ class _ConfirmingSettingsDialog(SettingsDialog):
 
     def _confirm(self, _title: str, _message: str) -> bool:
         return self._confirmations.pop(0)
+
+
+def test_deepseek_flash_settings_card_is_reachable_in_scrollable_connection_tab(
+    qapp: QApplication,
+) -> None:
+    model = ManagementViewModel()
+    model.settings = SettingsSnapshot(
+        form=_form(),
+        llm_secret_configured=False,
+        vts_secret_configured=False,
+        settings_schema_upgrade_required=False,
+    )
+    dialog = _ConfirmingSettingsDialog(model, lambda _command: True, confirmations=[])
+    dialog.setFixedSize(820, 650)
+    dialog.show()
+    qapp.processEvents()
+
+    dialog.tabs.setCurrentIndex(0)
+    connection_tab = dialog.tabs.widget(0)
+    assert isinstance(connection_tab, QScrollArea)
+    assert connection_tab is dialog.connection_settings_scroll
+    assert connection_tab.accessibleName() == "连接与设备设置（可滚动）"
+    assert connection_tab.widgetResizable()
+    assert dialog.height() == 650
+
+    scrollbar = connection_tab.verticalScrollBar()
+    assert scrollbar.maximum() > 0
+    scrollbar.setValue(0)
+    assert not _fully_visible(connection_tab, dialog.deepseek_flash_secret)
+    scrollbar.setValue(scrollbar.maximum())
+    qapp.processEvents()
+    assert scrollbar.value() == scrollbar.maximum()
+    assert _fully_visible(connection_tab, dialog.deepseek_flash_secret)
+    assert _fully_visible(connection_tab, dialog.enable_deepseek_flash)
+    dialog.deepseek_flash_secret.setFocus()
+    assert dialog.deepseek_flash_secret.hasFocus()
+    dialog.close()
 
 
 def test_deepseek_flash_settings_card_uses_separate_secret_and_locks_generic_controls(
