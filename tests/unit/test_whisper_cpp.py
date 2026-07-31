@@ -322,7 +322,10 @@ def test_timeout_and_cancellation_reap_the_direct_whisper_process(tmp_path: Path
             await runner.transcribe(
                 audio,
                 language="zh",
-                timeout_seconds=0.25,
+                # This verifies process reaping, not a 250 ms startup SLA.
+                # Coverage-heavy Windows runners can take longer than that
+                # merely to schedule the direct child process.
+                timeout_seconds=2.0,
                 cancelled=asyncio.Event(),
             )
         assert caught.value.code == "stt_timeout"

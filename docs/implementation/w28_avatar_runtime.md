@@ -9,6 +9,10 @@
 > 最后核验：2026-07-29（Asia/Shanghai）。工作分支 `codex/w28-avatar-runtime`，stacked base 为
 > `codex/w19-provider-preflight@a64f5ac12a4b14175ecbfd2ac0d76168ac01f589`；当前已核验交付代码 head 为
 > `a0b46bc8d7d46087b5cbf2db1a43f063ede62ab8`。
+>
+> **后续更新（2026-07-30）：** 本文关于 W28 当时未配置真实中文 TTS、未实现结构化 Avatar 回合的记录
+> 仍是该任务的历史事实；后续 W29 已在独立工作树补齐这两项并完成本机客观链路验证。其发布状态与剩余
+> 主观试听 Gate 见 [W29 实现记录](w29_five_emotion_tts_vts.md)，不反向改写 W28 的 exact-head 证据。
 
 ## 实现范围
 

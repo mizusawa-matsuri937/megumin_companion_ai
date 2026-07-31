@@ -2,14 +2,14 @@
 
 > 版本：2026-07-31
 > 状态：Gate W0 已批准的目标契约；W17/W18 的 MediaWorker 音频路径已实现并验证，W19 的 provider
-> 配置与显式联合 preflight 已在本地工作树实现并完成聚焦 fake/headless 验证。W28 的单写者
-> AvatarRuntime、标量 mouth progress 和真实输出 drain 已在本地工作树实现并完成对应自动/实机验证。受管中文 STT
+> 配置与显式联合 preflight 已实现并完成聚焦 fake/headless 验证。W28 的单写者
+> AvatarRuntime、标量 mouth progress 和真实输出 drain 已完成自动/实机验证；W29 的结构化回合、私有五槽
+> TTS 网关、真实中文播放与 VTS 联动已完成自动/实机验证。受管中文 STT
 > runtime 已由 [`224e06f`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/224e06f9cbb1d2ab0cc2260fb244b1f74cd7dfbc)
-> 加入并完成该 code head 的 CI；W28 完整质量门、Draft PR、真实中文 TTS 和主观自然度 Gate 仍未完成；
-> 其他行仍不代表代码已经实现。W30 核心实现 `cd5cd43` 已推送至 Draft PR #35，包含 DeepSeek Flash 的文本出口、专用密钥与
+> 加入并完成该 code head 的 CI。W30 核心实现 `cd5cd43` 已推送至 Draft PR #35，包含 DeepSeek Flash 的文本出口、专用密钥与
 > 脱敏摘要组合，并通过完整本地自动化质量门及审计 head `e35dbc7` 的跨平台 CI；2026-07-31 所有者另行授权
-> W30 对既有本地 GPT-SoVITS Gateway 的最小兼容跟进；本地自动化/质量门、wheel/smoke 与敏感扫描已通过，新的远端
-> head/CI 尚待重新验证；真实 Key 验证尚未形成证据。
+> W30 对既有本地 GPT-SoVITS Gateway 的最小兼容跟进。当前 sibling 组合树仍须通过新 exact-head CI；
+> 真实 DeepSeek Key、账号、计费与远端保留仍未由本地自动化验证。
 > 关联：[`../adr/README.md`](../adr/README.md)、[`../decisions/w00_owner_decisions.md`](../decisions/w00_owner_decisions.md)、
 > [`../decisions/w18_managed_chinese_stt_runtime.md`](../decisions/w18_managed_chinese_stt_runtime.md)
 
@@ -24,15 +24,18 @@ flowchart LR
     B <-->|"继承匿名 pipe + typed JSON"| M["MediaWorker / Job Object"]
     B <-->|"继承匿名 pipe + typed JSON"| P["PerceptionWorker / Job Object"]
     B <-->|"仅显式确认：固定 HTTPS STT 资产"| R["GitHub / Hugging Face"]
-    B -->|"HTTPS/WSS"| E["外部 LLM/TTS/VTS（含固定文本 DeepSeek）"]
-    B -->|"固定 loopback HTTP + bearer"| G["私有 GPT-SoVITS Gateway"]
+    B -->|"HTTPS"| L["外部 LLM（含固定文本 DeepSeek）/legacy TTS"]
+    B -->|"WS loopback / WSS remote"| V["VTube Studio"]
+    B -->|"DPAPI Bearer + path-free loopback"| G["私有 TTS 网关"]
+    G -->|"固定 manifest + 离线推理"| T["仓库外 GPT-SoVITS runtime"]
     P -->|"显式 opt-in + 脱敏图像 + TLS"| C["云视觉 provider"]
     B --> S[("LocalAppData state")]
 ```
 
 用户输入、dev API、helper protocol、外部 provider 和屏幕内容都属于不可信边界。截图/PCM 原始数据留在 worker；云视觉
 是独立网络出口，不因 vision 本地启用而自动启用。STT runtime 下载也是单独网络边界：仅用户确认安装/修复时访问固定
-GitHub/Hugging Face HTTPS URL，绝不发送录音、转写、设备名或用户路径。
+GitHub/Hugging Face HTTPS URL，绝不发送录音、转写、设备名或用户路径。W29 私有 TTS 网关不是普通
+loopback 信任：peer、Host、Origin、Bearer、body、JSON 和 admission 均在解析/推理前验证。
 
 DeepSeek 是与云视觉分离的文本 HTTPS 出口：只在用户启用专用 provider 后，才可能发送当前用户文字和既有开关
 已允许的历史/长期记忆检索/有限语义标签生成的摘要文本。它不接收截图、图像 URL、窗口标题、OCR 原文、bbox、路径或 observation ID；
@@ -175,6 +178,42 @@ sequenceDiagram
 - VTS health/管理面只显示四层 availability、稳定 reason code 和聚合计数，不显示模型、hotkey、
   Expression 或逐帧值。
 
+## W29 结构化回合与私有 TTS 数据流（2026-07-30）
+
+```mermaid
+sequenceDiagram
+    participant L as LLM provider
+    participant P as Strict turn parser
+    participant E as EmotionEngine / local mapper
+    participant G as Private TTS gateway
+    participant M as MediaWorker
+    participant A as AvatarRuntime
+
+    L-->>P: bounded JSON chunks
+    P->>P: strict schema + complete segment boundary
+    P->>E: emotion suggestion + focused variant
+    E-->>P: final emotion + local voice slot/speed/action semantics
+    par bounded synthesis
+        P->>G: DPAPI Bearer + text + slot + speed
+        G->>G: manifest/ACL/hash + transactional pair switch
+        G-->>P: bounded validated WAV
+    end
+    P->>M: approved temp WAV lease
+    M-->>A: first real playback progress + mouth scalar
+    P-->>A: generation-scoped plan / ordered red-eye event
+    M-->>A: terminal mouth scalar 0
+```
+
+确认边界：
+
+- parser 只释放完整、严格校验的段；半成品 JSON、字段名、非法正文和控制值不显示、不朗读、不进入历史。
+- LLM 只建议受限 emotion/focused variant 和逐段红眼；声音槽、速率、动作语义、爆裂/中二病最低红眼规则
+  均由本地确定，LLM 不能提供路径、权重、VTS 入口或任意动作名。
+- 网关请求不含 reference、prompt、权重路径或 VTS 信息；私有 manifest 才拥有五槽权重、参考 WAV、
+  日语提示和哈希。网关一次只持有一个槽位，切换 pair 失败时完整回滚，回滚失败进入 quarantine。
+- 主体动作和红眼跟随实际有序播放，不跟随 LLM 到达或并行合成完成顺序。取消使 generation 失效并清理
+  未消费 WAV；迟到音频、动作、红眼和口型均被拒绝。
+
 ## W18 实现状态（2026-07-23）
 
 - 已确认：PTT 按钮仅在按下后让 MediaWorker 打开麦克风；原始 PCM 留在预分配 ring，WAV/JSON 留在该 worker 的私有
@@ -196,6 +235,7 @@ sequenceDiagram
 | 文本草稿 | Qt/UI | 发送后经 bridge 到 BackendThread | 草稿默认不持久化 | 仅显式发送后进入 LLM/TTS | 未发送草稿随 UI 生命周期清除 | 不记录正文 |
 | 已发送用户文字 | TurnService/history owner | bridge/API → backend | LocalAppData SQLite，默认近期历史 7 天 | 用户配置的 LLM/TTS；不得进入云视觉 metadata | retention/clear/卸载策略 | 只记 turn/session fingerprint、长度和状态 |
 | 助手回复/字幕 | TurnService/history owner | backend → UI/VTS generation | 成功回复可存近期历史 | TTS；VTS 只收表现事件 | 同历史策略；取消后的旧 delta 不恢复 | 不记录正文 |
+| 结构化回合控制 | LLM adapter → strict parser → EmotionEngine | 只传受限 emotion/focused variant/red-eye；本地再派生声音/动作 | 不单独持久化；成功正文按助手回复规则 | 仅本地 mapper、TTS owner 和 AvatarRuntime | turn/generation 结束释放；parse 失败丢弃未播放段 | 不记录原始 JSON、控制字段或非法正文 |
 | 麦克风 PCM/WAV | MediaWorker | 原始数据不离开 worker；只返回有界 transcript metadata | 预分配 ring + 每次录音私有 worker temp；parent 仅有 registry lease，默认无持久缓存 | 本地 whisper；未经另行批准不得上传 STT 云服务 | stop/cancel/failure/watchdog 后 wipe + 删除；crash 后 scavenger | 不记 PCM、WAV 路径或 transcript |
 | transcript | MediaWorker → Qt/Backend | typed result，转为 voice `UserMessage` | 按显式用户消息规则进入近期历史 | LLM/TTS | 与用户文字一致 | 不记录正文 |
 | 原始指定窗口截图 | PerceptionWorker | 不返回主进程 | 默认内存 only；无普通 temp | 禁止直接上传 | 本地处理结束立即 wipe；worker kill 后残留扫描 | 不记图像、标题或路径 |
@@ -208,12 +248,13 @@ sequenceDiagram
 | DeepSeek API key（W30） | 专用 Secret store | 仅 `DeepSeekFlashLLMProvider` 读取；桌面配置命令 write-only | 独立、purpose-bound 的 DPAPI current-user 密文槽；不写 YAML 或通用 LLM 槽 | 仅作为 Bearer 发至固定 `https://api.deepseek.com/chat/completions` | 停用时先切 `llm.provider=none` 并 reload，再 revoke；撤销失败仍保持远端 provider 禁用 | 不记录值、密文、header、文件路径或请求正文 |
 | 本地 GPT-SoVITS Gateway token（W30 兼容） | 专用 Secret store | 仅 Gateway client 在运行/显式预检时读取 | 独立、purpose-bound 的 DPAPI current-user 密文槽；不写 YAML 或 LLM/DeepSeek 槽 | 仅作为 Bearer 发至固定 `http://127.0.0.1:9880` 的私有 Gateway 协议 | replace/revoke/reset；不创建音频 cache | 不记录值、密文、header、文件路径或请求正文 |
 | DeepSeek Chat 请求（W30） | Backend/固定 Flash provider | 仅进程内组合用户文字与已获现有开关允许的历史、记忆检索、无 ID 的批准有限语义标签摘要 | 不新增请求正文持久化；既有历史/记忆各自按其行的保留规则 | 仅 HTTPS 的固定 DeepSeek chat endpoint；文本模型，不含图像、multipart content 或 tool call | 响应/取消后释放本地请求对象；远端处理/保留由 DeepSeek 外部政策决定 | 只记稳定状态、provider/model、长度/延迟；不记正文、摘要或 header |
-| 用户设置 | Config owner | UI command → config service | `config/settings.yaml`，带 schema version；W19 preset/reference/prompt 属于用户私密配置但不是 secret | 无，除非对应 provider 请求需要最小配置 | 升级迁移/卸载选择 | 只记 schema/version/字段类别；不记 reference/prompt/完整路径 |
+| 用户设置 | Config owner | UI command → config service | `config/settings.yaml`，带 schema version；W19 preset/reference/prompt 属于用户私密配置但不是 secret；W29 只保存 gateway/system playback/VTS/Avatar 开关与私有语义映射 | 无，除非对应 provider 请求需要最小配置 | 升级迁移/卸载选择 | 只记 schema/version/字段类别；不记 reference/prompt/完整路径或私有入口名 |
 | 日志/健康/诊断 | 单 writer/exporter | allowlist event | `logs`，10 MiB × 5 且最多 14 天 | 用户显式导出脱敏诊断包 | rotation + retention | 禁止正文、截图、OCR、音频、secret、完整路径 |
-| TTS 临时 WAV | TTS owner；正常播放期间由 MediaWorker 独占消费；W19 preflight WAV 不播放 | 正常播放只提交批准根下的 `ResourceReference`；preflight WAV 不跨入 helper；wire 不含绝对路径、PCM、WAV body 或 native device index | `temp/audio`；可选 `cache/audio` 默认关闭，preflight 强制关闭 cache | 正常路径仅到本地 MediaWorker playback；preflight 无播放出口 | 取消/消费后 release；preflight 成功立即 discard；W12 terminal cleanup 与 scavenger；受 W07 在途音频预算约束 | 只记 job id、bytes、duration、稳定 error/notice code |
+| TTS 临时 WAV | TTS owner；正常播放期间由 MediaWorker 独占消费；W19 preflight WAV 不播放 | 正常播放只提交批准根下的 `ResourceReference`；preflight WAV 不跨入 helper；W29 loopback response 只由 provider 写入原子受管临时文件；worker wire 不含绝对路径、PCM、WAV body 或 native device index | `temp/audio`；可选 `cache/audio` 默认关闭，W19 preflight 与 W29 gateway provider 强制关闭 cache | 正常路径仅到本地 MediaWorker playback；preflight 无播放出口 | 取消/消费后 release；preflight 成功立即 discard；provider close/terminal/scavenger 清理；受 W07 在途音频预算约束 | 只记 job id、bytes、duration、稳定 error/notice code |
 | Mouth envelope / Avatar frame | MediaWorker / AvatarRuntime | helper 只返回 job、sequence、finite 0～1 scalar；AvatarRuntime 单写 VTS | 不持久化；latest sample/frame 仅在内存 | 仅到本机 VTS API | terminal/cancel/failure/crash/close 归零；generation 失效即丢弃 | 只记 sent/coalesced/dropped 和稳定 reason code；不记逐帧值 |
 | 受管中文 STT runtime/model | 显式安装服务 | BackendThread/CLI 只下载固定公开 URL；worker 只读本地已验证文件 | `%LOCALAPPDATA%\MeguminCompanion\models\stt\whispercpp\v1.9.1\`，安装包/wheel/CI artifact 外 | 仅用户确认时从 GitHub/Hugging Face 下载 asset bytes；**不发送音频或转写** | staging 失败/取消清理；已验证资产保留到用户修复/删除；不后台更新 | 不记完整本地路径、下载 token、音频或转写；本地 NOTICE 仅含公开来源/许可证/hash |
-| 模型/角色/参考音频 | 用户/外部路径 | worker/provider 读取批准路径；W19 只将 reference 配置交给用户指定的 GPT-SoVITS | 安装包外；用户 YAML 可记录 reference 字符串，不复制资产 | 只发给用户明确配置的本地/远端服务 | 用户管理；卸载不复制或删除原资产 | 不记录完整路径、prompt 或内容 |
+| W29 私有 GPT-SoVITS runtime/manifest | 仓库外 gateway owner | 主应用只发送 text/slot/speed；gateway 读取固定权重、参考 WAV、日语提示和公共模型 | Git、wheel、CI artifact、诊断包外的 current-user 私有根 | 安装阶段仅访问固定公开源码/模型来源；推理无云端出口 | 失败 staging 清理；已验证 runtime 保留；不后台启动、上传或更新 | 不记权重/参考/提示/hash/路径；只记稳定状态码和内容无关计数 |
+| 模型/角色/参考音频 | 用户/外部路径 | W19 legacy provider 可将 reference 配置交给用户指定服务；W29 主应用不能读取或传递 reference/path | 安装包外；W19 用户 YAML 可记录 reference 字符串，W29 私有 manifest 留在仓库外 | 只发给用户明确配置的 legacy 服务；W29 仅本机离线 gateway 读取 | 用户管理；卸载不复制或删除原资产 | 不记录完整路径、prompt、hash 或内容 |
 
 ## 云视觉序列
 
@@ -253,3 +294,5 @@ sequenceDiagram
    Avatar，不能阻断文字或安全音频关闭。
 7. DeepSeek 停用先使 `llm.provider=none` 生效，再撤销专用密钥；撤销、reload 或密钥状态未知时不得恢复远端 provider，
    更不得回退为通用密钥或图像输入。
+8. W29 gateway 不由主程序自动启动；关闭桌面启动器必须关闭 Job Object 并清理整个推理子进程树。网关
+   失败或未运行时文字和安全视觉 fallback 继续，嘴保持闭合。

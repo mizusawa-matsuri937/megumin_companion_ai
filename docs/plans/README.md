@@ -12,6 +12,9 @@
   W28 的详细执行包，冻结 Avatar Runtime、程序微动作、实际播放音量口型、主体动作/红眼生命周期、
   自动化、真实 VTS/音频 Gate 和 Draft PR 交付。它保留为既有计划，不是 W30 的完成证据；其实现证据见
   [`../implementation/w28_avatar_runtime.md`](../implementation/w28_avatar_runtime.md)。
+- [`w29_five_emotion_tts_vts_execution_plan.md`](w29_five_emotion_tts_vts_execution_plan.md) 是 W28
+  之上的结构化回合、五声音槽、私有 GPT-SoVITS 网关、VTS 联动和发布执行包；当前实现证据见
+  [`../implementation/w29_five_emotion_tts_vts.md`](../implementation/w29_five_emotion_tts_vts.md)。
 
 ## 历史计划
 

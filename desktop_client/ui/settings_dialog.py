@@ -110,7 +110,7 @@ _MANAGEMENT_REASON_TEXT = {
     "deepseek_memory_pro_required": "长期记忆候选写入需要尚未接入的 DeepSeek Pro；请先关闭该功能。",
     "deepseek_flash_rollback_failed": "DeepSeek 配置未能安全回滚；请重启后检查设置状态。",
     "deepseek_flash_key_revoke_failed": "DeepSeek 已停用，但加密密钥暂时无法移除；可稍后重试。",
-    "tts_provider_unsupported": "当前仅支持 mock 或已配置的 GPT-SoVITS。",
+    "tts_provider_unsupported": "当前仅支持 mock、私有网关或兼容 GPT-SoVITS。",
     "tts_preset_required": "GPT-SoVITS 需要先配置默认 preset；请在 W19 配置向导完成预检。",
     "tts_reference_required": "GPT-SoVITS 需要填写 reference 资源。",
     "tts_reference_unavailable": "GPT-SoVITS 无法使用当前 reference 资源。",

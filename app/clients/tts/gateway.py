@@ -29,8 +29,9 @@ _WAVE_CONTENT_TYPES = frozenset({"audio/wav", "audio/wave", "audio/x-wav"})
 _EXPECTED_BASE_URL = "http://127.0.0.1:9880"
 _PROTOCOL_HEADER = "x-tts-gateway-protocol"
 
-# W30 keeps the direct GPT-SoVITS style vocabulary. The compatibility adapter
-# translates only the bounded emotion label into the gateway's smaller voice-slot set.
+# The W29 structured pipeline supplies a canonical gateway slot in ``style``.
+# W30's compatibility path can still receive the older bounded emotion labels,
+# which are mapped only when ``style`` is not already a valid slot.
 _EMOTION_TO_VOICE_SLOT: dict[str, str] = {
     "neutral": "neutral",
     "bored": "neutral",
@@ -455,7 +456,13 @@ class GPTSoVITSGatewayProvider:
         task.cancel()
 
     def _synthesis_finished(self, task: asyncio.Task[AudioResult]) -> None:
-        self._synthesis_tasks.discard(task)
+        # A worker owns exactly one permit after ``synthesize`` hands off the
+        # acquired slot.  Keep the membership guard so an accidental duplicate
+        # callback cannot over-release BoundedSemaphore, including if a task is
+        # cancelled before its coroutine receives its first scheduling slice.
+        if task not in self._synthesis_tasks:
+            return
+        self._synthesis_tasks.remove(task)
         self._synthesis_cancellations.discard(task)
         self._synthesis_capacity.release()
 
@@ -476,8 +483,10 @@ class GPTSoVITSGatewayProvider:
 
 
 def _gateway_voice_slot(job: TTSJob) -> str | None:
-    """Map W30's bounded emotion labels without changing direct-provider styles."""
+    """Prefer W29's canonical style and retain W30 compatibility labels."""
 
+    if job.style in VOICE_SLOTS:
+        return job.style
     if job.emotion in VOICE_SLOTS:
         return job.emotion
     return _EMOTION_TO_VOICE_SLOT.get(job.emotion)

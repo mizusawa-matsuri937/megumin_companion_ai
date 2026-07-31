@@ -21,6 +21,7 @@
 | [ADR-W07](ADR-W07-native-worker-isolation.md) | native worker 隔离、hard kill 和清理 | 已批准 |
 | [ADR-W08](ADR-W08-packaging-upgrade.md) | wheel、onedir、per-user 安装与升级 | 已批准；安装器实现暂定 |
 | [ADR-W28](ADR-W28-avatar-runtime.md) | 单写者 Avatar Runtime、标量音量包络与 VTS 生命周期 | 已批准并在 W28 本地工作树实现；发布/自然度 Gate 待关闭 |
+| [ADR-W29](ADR-W29-private-tts-gateway-and-structured-turns.md) | 私有五槽 TTS 网关、流式结构化回合与有序 Avatar 联动 | 已批准并在 W29 实现；P0 permit 代码 head 已通过 8/8 CI，状态记录仍待自身 exact-head CI；主观试听 Gate 待关闭 |
 | [ADR-W30](ADR-W30-deepseek-flash.md) | 固定 DeepSeek V4 Flash 文本 Provider、专用 DPAPI 密钥、脱敏视觉摘要出口与既有本地 Gateway 最小兼容 | 已按所有者指令采用；核心 `cd5cd43` 已在 Draft PR #35，本地自动化/质量门与审计 head `e35dbc7` CI 通过。Gateway 本地门与 `a0ccfc6` exact-code CI 已通过；真实 Key 仍未验证。 |
 
 ADR 只冻结架构和失败语义，不表示对应代码、Windows VM、真实设备或发布 Gate 已完成。修改任一 ADR 必须更新所有者决策、威胁模型、数据流清单和 Gate 记录。

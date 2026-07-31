@@ -35,7 +35,7 @@ from app.clients.vts import (
     VTSToken,
 )
 from app.config.settings import AvatarConfig
-from app.emotion import EmotionLabel
+from app.emotion import EmotionLabel, FocusedVariant
 from app.health import CapabilityCheck, CapabilityState
 from app.media import MouthEnvelopeSample
 from app.secret_store import SecretStoreError
@@ -221,6 +221,7 @@ class AvatarRuntime:
 
         self._semantic_emotion = EmotionLabel.neutral
         self._body_lifecycle_emotion = EmotionLabel.neutral
+        self._body_lifecycle_variant = FocusedVariant.default
         self._body_pose_active = False
         self._body_replay_required = False
         self._last_motion_by_semantic: dict[str, str] = {}
@@ -686,8 +687,7 @@ class AvatarRuntime:
                     VTSRequestTimeout,
                 ):
                     mapping_error = True
-                    ids = []
-                    break
+                    continue
             if ids:
                 resolved[semantic] = tuple(ids)
         self._motion_hotkey_ids = resolved
@@ -1072,6 +1072,7 @@ class AvatarRuntime:
                 or self._body_replay_required
             )
             self._body_lifecycle_emotion = EmotionLabel.neutral
+            self._body_lifecycle_variant = FocusedVariant.default
             self._body_pose_active = False
             self._body_replay_required = False
             if should_release:
@@ -1080,24 +1081,30 @@ class AvatarRuntime:
 
         same_active = (
             self._body_lifecycle_emotion is emotion
+            and self._body_lifecycle_variant is plan.focused_variant
             and self._body_pose_active
             and not self._body_replay_required
         )
         if same_active:
             return
         candidates = self._motion_hotkey_ids.get(plan.body_motion_key, ())
-        release_first = self._body_pose_active and self._body_lifecycle_emotion is not emotion
+        release_first = self._body_pose_active and (
+            self._body_lifecycle_emotion is not emotion
+            or self._body_lifecycle_variant is not plan.focused_variant
+        )
         selected = self._choose_motion(plan.body_motion_key, candidates)
         if not candidates:
             self._body_motion_error_code = "avatar_motion_unmapped"
             if release_first:
                 self._queue_action(_ActionKind.release, _Priority.safety)
             self._body_lifecycle_emotion = emotion
+            self._body_lifecycle_variant = plan.focused_variant
             self._body_pose_active = False
             self._body_replay_required = True
             self._notify()
             return
         self._body_lifecycle_emotion = emotion
+        self._body_lifecycle_variant = plan.focused_variant
         self._body_pose_active = True
         self._body_replay_required = False
         self._queue_action(

@@ -8,6 +8,8 @@
   不可信有限语义视觉摘要与长期记忆写入拒绝边界，以及 2026-07-31 所有者授权的既有本地 Gateway 最小兼容边界。
 - [`../adr/ADR-W28-avatar-runtime.md`](../adr/ADR-W28-avatar-runtime.md)：单写者 Avatar Runtime、实际播放
   标量包络、generation、红眼所有权和关闭/降级决策。
+- [`../adr/ADR-W29-private-tts-gateway-and-structured-turns.md`](../adr/ADR-W29-private-tts-gateway-and-structured-turns.md)：
+  流式结构化回合、五声音槽、私有 path-free TTS 网关和有序 Avatar 播放决策。
 
 ## 目标/历史架构背景
 

@@ -1,4 +1,4 @@
-"""Path-free tests for the authenticated W30 Gateway compatibility adapter."""
+"""Path-free client tests for the integrated W29/W30 TTS gateway boundary."""
 
 from __future__ import annotations
 
@@ -42,8 +42,8 @@ def _job(token: CancellationToken, **changes: object) -> TTSJob:
         "turn_id": "turn/../../escape",
         "segment_id": "segment_1",
         "text": "固定中文测试句",
-        # Deliberately keep W30's direct-provider style vocabulary here. Gateway
-        # routing must select from the bounded emotion label instead.
+        # Exercise W30's compatibility fallback. W29-specific cases override
+        # ``style`` with an already-normalized gateway slot.
         "style": "default",
         "emotion": "worried",
         "speed_factor": 1.05,
@@ -115,6 +115,43 @@ def test_gateway_provider_probe_synthesize_discard_and_minimal_payload(tmp_path:
         assert not result.audio_path.exists()
         await provider.close()
         assert len(requests) == 2
+
+    asyncio.run(scenario())
+
+
+def test_gateway_provider_releases_capacity_after_every_success(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        provider = GPTSoVITSGatewayProvider(
+            "http://127.0.0.1:9880",
+            tmp_path / "audio",
+            _TOKEN,
+            max_owned_synthesis_tasks=1,
+            transport=httpx.MockTransport(
+                lambda _request: httpx.Response(
+                    200,
+                    headers={
+                        "Content-Type": "audio/wav",
+                        "X-TTS-Gateway-Protocol": "1",
+                    },
+                    content=_wave_bytes(),
+                )
+            ),
+        )
+        for index in range(3):
+            token = CancellationToken(f"turn-{index}")
+            result = await provider.synthesize(
+                _job(
+                    token,
+                    job_id=f"job-{index}",
+                    turn_id=f"turn-{index}",
+                    segment_id=f"segment-{index}",
+                ),
+                segment_index=0,
+                token=token,
+            )
+            assert result.success
+            await provider.discard(result)
+        await provider.close()
 
     asyncio.run(scenario())
 
@@ -338,12 +375,13 @@ class _ChunkStream(httpx.AsyncByteStream):
 def test_gateway_provider_cancellation_removes_partial_audio(tmp_path: Path) -> None:
     async def scenario() -> None:
         stream = _BlockedStream()
-        provider = GPTSoVITSGatewayProvider(
-            "http://127.0.0.1:9880",
-            tmp_path,
-            _TOKEN,
-            transport=httpx.MockTransport(
-                lambda _request: httpx.Response(
+        requests = 0
+
+        def handler(_request: httpx.Request) -> httpx.Response:
+            nonlocal requests
+            requests += 1
+            if requests == 1:
+                return httpx.Response(
                     200,
                     headers={
                         "Content-Type": "audio/wav",
@@ -351,7 +389,21 @@ def test_gateway_provider_cancellation_removes_partial_audio(tmp_path: Path) -> 
                     },
                     stream=stream,
                 )
-            ),
+            return httpx.Response(
+                200,
+                headers={
+                    "Content-Type": "audio/wav",
+                    "X-TTS-Gateway-Protocol": "1",
+                },
+                content=_wave_bytes(),
+            )
+
+        provider = GPTSoVITSGatewayProvider(
+            "http://127.0.0.1:9880",
+            tmp_path,
+            _TOKEN,
+            max_owned_synthesis_tasks=1,
+            transport=httpx.MockTransport(handler),
         )
         token = CancellationToken("turn")
         task = asyncio.create_task(provider.synthesize(_job(token), segment_index=0, token=token))
@@ -361,6 +413,20 @@ def test_gateway_provider_cancellation_removes_partial_audio(tmp_path: Path) -> 
             await task
         assert list(tmp_path.rglob("*.wav")) == []
         assert list(tmp_path.rglob("*.part")) == []
+        recovery_token = CancellationToken("recovery-turn")
+        recovery = await provider.synthesize(
+            _job(
+                recovery_token,
+                job_id="recovery-job",
+                turn_id="recovery-turn",
+                segment_id="recovery-segment",
+            ),
+            segment_index=0,
+            token=recovery_token,
+        )
+        assert recovery.success
+        await provider.discard(recovery)
+        assert requests == 2
         await provider.close()
 
     asyncio.run(scenario())

@@ -28,6 +28,7 @@ from app.emotion import EmotionEngine, EmotionSegmentDecorator, ExpressionCooldo
 from app.media import MouthEnvelopeSample, create_media_worker_audio_player
 from app.pipelines import DialoguePipeline
 from app.pipelines.audio_player import AudioPlayer, SilentAudioPlayer
+from app.pipelines.structured_turn import EmotionTurnPlanResolver
 from app.prompts import (
     EmotionPromptContextBuilder,
     PromptBudget,
@@ -190,6 +191,10 @@ def build_dialogue_pipeline(
         context_builder=context_builder,
         proactive_context_builder=proactive_context_builder,
         segment_decorator=segment_decorator,
+        turn_plan_resolver=EmotionTurnPlanResolver(
+            emotion_engine,
+            enabled=settings.emotion.enabled,
+        ),
         tts_worker_count=settings.pipeline.tts_worker_count,
         segment_min_chars=settings.pipeline.segment_min_chars,
         segment_max_chars=settings.pipeline.segment_max_chars,
