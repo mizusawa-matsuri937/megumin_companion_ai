@@ -8,7 +8,13 @@ from datetime import timedelta
 from app.avatar import AvatarRuntime
 from app.clients.llm import DeepSeekFlashLLMProvider, MockLLMProvider, OpenAICompatibleLLMProvider
 from app.clients.llm.base import LLMProvider
-from app.clients.tts import GPTSoVITSPreset, GPTSoVITSProvider, MockTTSProvider, TTSProvider
+from app.clients.tts import (
+    GPTSoVITSGatewayProvider,
+    GPTSoVITSPreset,
+    GPTSoVITSProvider,
+    MockTTSProvider,
+    TTSProvider,
+)
 from app.clients.vts import (
     DPAPITokenStore,
     ExpressionMapper,
@@ -33,9 +39,12 @@ from app.secret_store import (
     DEEPSEEK_API_KEY_ID,
     DEEPSEEK_API_KEY_PURPOSE,
     LLM_API_KEY_ID,
+    TTS_GATEWAY_TOKEN_ID,
+    TTS_GATEWAY_TOKEN_PURPOSE,
     EncryptedSecretFile,
     deepseek_api_key_file,
     llm_api_key_file,
+    tts_gateway_token_file,
     vts_token_file,
 )
 from app.temp_assets import TempAssetRegistry
@@ -108,6 +117,7 @@ def build_dialogue_pipeline(
     temp_registry: TempAssetRegistry | None = None,
     mouth_envelope_listener: Callable[[MouthEnvelopeSample], object] | None = None,
     allow_deepseek_env_fallback: bool = False,
+    tts_gateway_secret_file: EncryptedSecretFile | None = None,
 ) -> DialoguePipeline | None:
     settings.validate_runtime_limits()
     llm = llm_provider or build_llm_provider(
@@ -117,7 +127,11 @@ def build_dialogue_pipeline(
     if llm is None:
         return None
 
-    tts = _build_tts(settings, temp_registry=temp_registry)
+    tts = _build_tts(
+        settings,
+        temp_registry=temp_registry,
+        gateway_secret_file=tts_gateway_secret_file,
+    )
     player: AudioPlayer
     if settings.pipeline.playback_mode == "system":
         player = create_media_worker_audio_player(
@@ -192,6 +206,7 @@ def _build_tts(
     settings: Settings,
     *,
     temp_registry: TempAssetRegistry | None,
+    gateway_secret_file: EncryptedSecretFile | None = None,
 ) -> TTSProvider:
     provider_name = settings.tts.provider.strip().lower()
     if provider_name == "mock":
@@ -200,6 +215,37 @@ def _build_tts(
             cache_path,
             duration_ms=settings.pipeline.mock_audio_duration_ms,
             volume=settings.pipeline.mock_audio_volume,
+            temp_registry=temp_registry,
+        )
+    if provider_name in {
+        "gpt-sovits-gateway",
+        "gpt_sovits_gateway",
+        "gateway",
+    }:
+        if settings.tts.cache_enabled:
+            raise RuntimeError("私有 GPT-SoVITS 网关禁止持久音频缓存。")
+        if (
+            settings.tts.transport.proxy_url is not None
+            or settings.tts.transport.ca_bundle_path is not None
+        ):
+            raise RuntimeError("私有 GPT-SoVITS 网关禁止代理和自定义 CA。")
+        secret = gateway_secret_file or tts_gateway_token_file(settings.paths)
+        metadata = secret.metadata
+        if (
+            metadata.key_id != TTS_GATEWAY_TOKEN_ID
+            or metadata.purpose != TTS_GATEWAY_TOKEN_PURPOSE
+            or metadata.scope != "current_user"
+        ):
+            raise ConfigurationError("GPT-SoVITS 网关必须使用专用的 current-user DPAPI 令牌槽。")
+        bearer_token = secret.read_text()
+        if bearer_token is None:
+            raise ConfigurationError("GPT-SoVITS 网关令牌尚未配置。")
+        return GPTSoVITSGatewayProvider(
+            settings.tts.base_url,
+            settings.tts_output_directory(),
+            bearer_token,
+            max_audio_bytes=settings.tts.max_audio_bytes,
+            max_owned_synthesis_tasks=settings.limits.tts_queue_capacity,
             temp_registry=temp_registry,
         )
     if provider_name not in {"gpt-sovits", "gpt_sovits"}:

@@ -616,6 +616,45 @@ def test_w16_settings_secret_and_feature_disable_wait_for_barrier(
     qapp.processEvents()
 
 
+def test_gateway_tts_settings_save_accepts_legacy_aliases_without_reference_audio(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        for provider_name in (
+            "gpt-sovits-gateway",
+            "gpt_sovits_gateway",
+            "gateway",
+        ):
+            settings = _settings(tmp_path / provider_name)
+            management = DesktopManagementRuntime(settings, None, secrets=_Secrets())
+            bridge = ApplicationBridge()
+            form = replace(
+                _form(),
+                tts_provider=provider_name,
+                tts_ref_audio_path="",
+                tts_prompt_text="",
+            )
+
+            await management.dispatch(
+                bridge,
+                SettingsSaveCommand(payload=form),
+                capabilities=BackendCapabilities(text_chat=True, turn_cancel=True),
+            )
+
+            events = _events(bridge)
+            assert any(
+                isinstance(event, ManagementResultEvent)
+                and event.operation == "settings_saved"
+                and event.restart_required
+                for event in events
+            )
+            layer = read_user_settings(app_paths=settings.paths)
+            assert layer["tts"]["provider"] == provider_name
+            assert layer["tts"]["presets"] == {}
+
+    asyncio.run(scenario())
+
+
 def test_w16_memory_list_detail_update_delete_and_export_are_bounded(
     tmp_path: Path,
     qapp: QApplication,

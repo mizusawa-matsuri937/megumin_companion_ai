@@ -1,11 +1,12 @@
 # Windows Gate W0 威胁模型
 
-> 版本：2026-07-30
+> 版本：2026-07-31
 > 状态：项目所有者自审通过；没有独立人工安全/隐私 reviewer
 > 范围：Windows 11 x64、标准用户、单交互会话、私人使用
 > W30 注记：DeepSeek Flash 的固定文本出口、专用 DPAPI 密钥和提示注入边界已纳入本模型，核心实现 `cd5cd43` 已推送至
 > Draft PR #35，且本地完整自动化质量门及审计 head `e35dbc7` 的跨平台 CI 已通过；真实 Key 和远端服务行为仍须独立核验，
-> 任一新 head 都须重审。
+> 任一新 head 都须重审。所有者已另行授权 W30 的既有本地 GPT-SoVITS Gateway 最小兼容跟进；它必须作为独立
+> loopback/bearer 边界审计，不能借此扩大 DeepSeek 出站数据。本地自动化/质量门已通过，但新远端 head 的 CI 尚待形成证据。
 
 ## 保护目标
 
@@ -54,6 +55,7 @@
 | TM-W00-17 | 恶意/脆弱 GPT-SoVITS 服务或模型处理导致远端命令执行、数据泄露或错误响应；预检被误写成安全认证 | 应用不安装/打包/启动/升级服务，不调用有副作用的 `/set_refer_audio`；只连接用户显式配置且通过 W08 endpoint/TLS policy 的服务；预检只发送固定短语和已保存 preset/reference，响应受 deadline/bytes/WAV 校验且不播放并清理 | W19 fake API v2 route/synthesis、错误 body/path sentinel、deadline/cleanup 与设置/事件边界测试；真实服务仅做人类体验 Gate | [GHSL-2025-045～048](https://securitylab.github.com/advisories/GHSL-2025-045_GHSL-2025-048_RVC-Boss_GPT-SoVITS/) 披露命令注入，[GHSL-2025-049～053](https://securitylab.github.com/advisories/GHSL-2025-049_GHSL-2025-053_RVC-Boss_GPT-SoVITS/) 披露不安全反序列化/RCE；两组测试 `20250228v3`。服务及模型资产安全不由本应用证明，用户配置的 reference/prompt 会到达该服务 |
 | TM-W00-18 | 多个 VTS writer、迟到 mouth progress 或错误红眼所有权导致旧 turn 重放、取消后重新张嘴、姿态残留或关闭人工状态；progress 泄漏 PCM/路径 | 单写者 AvatarRuntime；urgent bounded queue + latest frame；turn/playback/VTS/model generation；strict finite scalar `job.progress`；全部 terminal path 归零；release/Neutral/cancel 生命周期；`off/manual/system` Expression 所有权；状态不可验证即禁用自动层 | W28 fake VTS/event malformed、slow writer、fake clock/seed、20k frame、10k coalescing、progress flood/stale/terminal、PCM RMS 与 Avatar failure isolation；真实 VTS lifecycle/reconnect/manual-system 以及真实输出 silence/ramp/cancel/drain | VTS/driver/display latency 和主观自然度仍需真实体验；真实中文 GPT-SoVITS 当前未配置；私有配置 exact-byte guard 有等价 metadata 差异，只能声明 semantic 未改写 |
 | TM-W00-19 | DeepSeek 路由/模型/thinking 漂移、通用密钥混用、图像/tool call/原始感知数据出站、候选写入误用 Flash、或将外部服务承诺为本地保证 | 专用固定 `DeepSeekFlashLLMProvider`；固定 HTTPS endpoint/Flash/disabled thinking；请求 image 或 non-string multipart content 与任一 response choice 的 tool call 本地拒绝；HTTP/SSE/JSON 的 `insufficient_system_resource` 受控为 retryable unavailable；专用 purpose-bound DPAPI 槽的 post-replace 回滚和 write-only UI；桌面不读环境 key；候选分析开启即拒绝配置/组合；视觉 prompt 只接收无 ID 的有限语义标签并拒绝自由文本/URI/path | MockTransport 覆盖固定 header/payload、SSE/JSON/finish/error；fake DPAPI configure/revoke/post-replace rollback 与 sentinel scan；原始 `PerceptionContext`/URL/OCR/title/path 自由文本、视觉 gate/budget/prompt-injection 测试；真实 Key 仅在用户明确触发的非敏感检查中使用 | 本地不能证明账号权限、服务可用性、费用、限流、远端停止、地域、保留或政策；任何用户允许的文本上下文仍会离开设备 |
+| TM-W00-20 | 恶意或被抢占的本机 loopback 进程接收 Gateway bearer、伪造健康/WAV、滥用待合成文本，或利用兼容层绕过直连 GPT-SoVITS 的边界 | 只允许固定数值 `127.0.0.1:9880`、`trust_env=false`、无重定向/代理/自定义 CA/缓存；专用 current-user DPAPI token 不复用 LLM/DeepSeek/VTS；请求只含文本、有限 voice slot、speed，响应必须携带协议头并通过有界 health/WAV 校验；未知 emotion、无 token、错误 purpose 和 transport override fail closed；不启动/管理 Gateway | MockTransport 覆盖固定 URL/Bearer/协议头、health、WAV、超时、取消、错误和 token-slot 隔离；bootstrap/UI 配置测试覆盖无 preset/reference、无 token 与无 Mock fallback | loopback HTTP 不提供进程身份、TLS 或对本机同用户恶意代码的机密性保证；Gateway 的下游、模型、保留和安全公告由用户部署边界决定，不能当作 DeepSeek 或本项目已验证 |
 
 ## 反方审查清单
 
@@ -89,3 +91,8 @@
    模型改进、计费或政策变化；项目不承诺零保留或不用于训练。以
    [DeepSeek 隐私政策](https://cdn.deepseek.com/policies/en-US/deepseek-privacy-policy.html)为准，私人使用由所有者
    显式知情选择；公开分发或改变发送字段前必须重新进行隐私、法律、许可与服务条款审查。
+9. **RR-W00-09 本地 Gateway 进程身份与下游：** 固定 loopback、专用 DPAPI token 和响应校验限制了误配置、
+   proxy/redirect 与未认证服务响应，但 HTTP loopback 不能证明监听端就是预期 Gateway，也不能阻止同一受控主机上的
+   恶意进程先绑定端口后接收 bearer 和待合成文本。当前单机、单用户私人范围内，这一风险由所有者显式接受；本项目不
+   声称其得到 TLS、进程证明、Gateway 上游漏洞修复或下游保留策略保证。扩大到公开分发、多用户或不受控主机前必须
+   重新设计本地认证/进程所有权并重新 Gate。

@@ -13,11 +13,14 @@ from app.paths import AppPaths
 from app.secret_store import (
     DEEPSEEK_API_KEY_ID,
     LLM_API_KEY_ID,
+    TTS_GATEWAY_TOKEN_ID,
+    TTS_GATEWAY_TOKEN_PURPOSE,
     EncryptedSecretFile,
     SecretStoreError,
     SecretStoreErrorCode,
     deepseek_api_key_file,
     llm_api_key_file,
+    tts_gateway_token_file,
 )
 from app.windows_security import PortableDirectorySecurity, WindowsSecurityError
 
@@ -74,6 +77,32 @@ def _secret_file(paths: AppPaths) -> EncryptedSecretFile:
         protector=_TestProtector(),
         directory_security=PortableDirectorySecurity(),
     )
+
+
+def test_tts_gateway_token_has_an_independent_purpose_bound_slot(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    generic = _secret_file(paths)
+    deepseek = deepseek_api_key_file(
+        paths,
+        protector=_TestProtector(),
+        directory_security=PortableDirectorySecurity(),
+    )
+    gateway = tts_gateway_token_file(
+        paths,
+        protector=_TestProtector(),
+        directory_security=PortableDirectorySecurity(),
+    )
+
+    generic.write_text("generic-never-log-secret")
+    deepseek.write_text("deepseek-never-log-secret")
+    metadata = gateway.write_text("A" * 43)
+
+    assert metadata.key_id == TTS_GATEWAY_TOKEN_ID
+    assert metadata.purpose == TTS_GATEWAY_TOKEN_PURPOSE
+    assert metadata.key_id not in {LLM_API_KEY_ID, DEEPSEEK_API_KEY_ID}
+    assert gateway.read_text() == "A" * 43
+    serialized = (paths.secrets / "tts-gateway-token.json").read_text(encoding="ascii")
+    assert "A" * 43 not in serialized
 
 
 def test_secret_round_trip_replace_revoke_and_reset(tmp_path: Path) -> None:

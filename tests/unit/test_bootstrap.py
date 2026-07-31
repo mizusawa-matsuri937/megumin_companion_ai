@@ -14,7 +14,7 @@ from app.bootstrap import (
     build_vts_event_sink,
 )
 from app.clients.llm import DeepSeekFlashLLMProvider, MockLLMProvider, OpenAICompatibleLLMProvider
-from app.clients.tts import GPTSoVITSProvider
+from app.clients.tts import GPTSoVITSGatewayProvider, GPTSoVITSProvider
 from app.clients.vts import VTSBridgeSnapshot, VTSBridgeState
 from app.config import ConfigurationError, Settings
 from app.config.settings import (
@@ -25,6 +25,7 @@ from app.config.settings import (
     LLMConfig,
     MemoryConfig,
     PipelineConfig,
+    ProviderTransportConfig,
     TTSConfig,
     VTSConfig,
 )
@@ -33,7 +34,11 @@ from app.paths import AppPaths
 from app.prompts import EmotionPromptContextBuilder, HistoryMessage, PromptContextSnapshot
 from app.schemas import ChatRole, ExternalContextBlock, UserMessage
 from app.schemas.ai import ContextOrigin, ContextTrust
-from app.secret_store import deepseek_api_key_file, llm_api_key_file
+from app.secret_store import (
+    deepseek_api_key_file,
+    llm_api_key_file,
+    tts_gateway_token_file,
+)
 from app.windows_security import PortableDirectorySecurity
 
 
@@ -280,6 +285,112 @@ def test_gpt_sovits_wiring_is_explicit_and_cache_defaults_off(tmp_path: Path) ->
     assert not pipeline._tts._cache_enabled
     assert pipeline._tts._max_owned_synthesis_tasks == settings.limits.tts_queue_capacity
     asyncio.run(pipeline.close())
+
+
+@pytest.mark.parametrize(
+    "provider",
+    ["gpt-sovits-gateway", "gpt_sovits_gateway", "gateway"],
+)
+def test_private_gateway_wiring_reads_distinct_encrypted_token(
+    tmp_path: Path,
+    provider: str,
+) -> None:
+    paths = AppPaths(root=tmp_path / "AppData")
+    encrypted = tts_gateway_token_file(
+        paths,
+        protector=_ReversingProtector(),
+        directory_security=PortableDirectorySecurity(),
+    )
+    encrypted.write_text("A" * 43)
+    settings = Settings(
+        llm=LLMConfig(provider="mock"),
+        tts=TTSConfig(
+            provider=provider,
+            output_directory=Path("ephemeral"),
+        ),
+    )
+    settings._paths = paths
+
+    pipeline = build_dialogue_pipeline(
+        settings,
+        tts_gateway_secret_file=encrypted,
+    )
+
+    assert pipeline is not None
+    assert isinstance(pipeline._tts, GPTSoVITSGatewayProvider)
+    assert pipeline._tts._max_audio_bytes == settings.tts.max_audio_bytes
+    asyncio.run(pipeline.close())
+
+
+def test_private_gateway_requires_a_dedicated_token_slot(tmp_path: Path) -> None:
+    paths = AppPaths(root=tmp_path / "AppData")
+    generic = llm_api_key_file(
+        paths,
+        protector=_ReversingProtector(),
+        directory_security=PortableDirectorySecurity(),
+    )
+    generic.write_text("generic-test-value")
+    settings = Settings(
+        llm=LLMConfig(provider="mock"),
+        tts=TTSConfig(provider="gpt-sovits-gateway"),
+    )
+    settings._paths = paths
+
+    with pytest.raises(ConfigurationError, match="专用"):
+        build_dialogue_pipeline(settings, tts_gateway_secret_file=generic)
+
+
+def test_private_gateway_without_a_token_does_not_fall_back_to_mock(tmp_path: Path) -> None:
+    paths = AppPaths(root=tmp_path / "AppData")
+    encrypted = tts_gateway_token_file(
+        paths,
+        protector=_ReversingProtector(),
+        directory_security=PortableDirectorySecurity(),
+    )
+    settings = Settings(
+        llm=LLMConfig(provider="mock"),
+        tts=TTSConfig(provider="gpt-sovits-gateway"),
+    )
+    settings._paths = paths
+
+    with pytest.raises(ConfigurationError, match="令牌尚未配置"):
+        build_dialogue_pipeline(settings, tts_gateway_secret_file=encrypted)
+
+
+@pytest.mark.parametrize(
+    "tts",
+    [
+        TTSConfig(provider="gpt-sovits-gateway", cache_enabled=True),
+        TTSConfig(
+            provider="gpt-sovits-gateway",
+            transport=ProviderTransportConfig(proxy_url="http://127.0.0.1:8080"),
+        ),
+        TTSConfig(
+            provider="gpt-sovits-gateway",
+            transport=ProviderTransportConfig(ca_bundle_path=Path("gateway-ca.pem")),
+        ),
+    ],
+    ids=["cache", "proxy", "custom-ca"],
+)
+def test_private_gateway_rejects_cache_and_transport_overrides(
+    tmp_path: Path,
+    tts: TTSConfig,
+) -> None:
+    paths = AppPaths(root=tmp_path / "AppData")
+    encrypted = tts_gateway_token_file(
+        paths,
+        protector=_ReversingProtector(),
+        directory_security=PortableDirectorySecurity(),
+    )
+    encrypted.write_text("A" * 43)
+    settings = Settings(llm=LLMConfig(provider="mock"), tts=tts)
+    settings._paths = paths
+
+    with pytest.raises(RuntimeError):
+        build_dialogue_pipeline(
+            settings,
+            tts_gateway_secret_file=encrypted,
+        )
 
 
 def test_disabling_emotion_keeps_prompt_policy_and_external_context() -> None:

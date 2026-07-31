@@ -1,7 +1,9 @@
 # W30：DeepSeek V4 Flash 独立接入执行计划
 
-> **状态：** 核心实现 `cd5cd43` 已推送至 Draft PR #35，且本地完整自动化质量门和审计 head `e35dbc7` CI 已通过；
-> 本文仍是范围与验收契约，不以此替代真实 API 验证，任一新 head 都须重新核验。
+> **状态：** 核心实现 `cd5cd43` 已推送至 Draft PR #35，且本地完整自动化质量门和审计 head `e35dbc7` CI 已通过。
+> 2026-07-31 所有者授权一项既有本地 Gateway 的最小兼容跟进；其本地质量门、wheel/smoke 和敏感扫描已通过，
+> 但必须以新的 W30 head 重新经过远端 CI。
+> 本文仍是范围与验收契约，不以此替代真实 API 或真实 Gateway 验证。
 >
 > **基线：** `codex/w30-deepseek-flash@b09841c13f1a733ec267027df62da6da7fc31fb6`
 >
@@ -15,6 +17,9 @@
 - 历史、长期记忆检索和视觉摘要只能在各自既有开关已允许时随本轮文本请求发送；W30 不自动启用它们。
 - DeepSeek V4 为文本路径：不发送截图、图像 URL、OCR 原文、窗口标题或任何未经脱敏的视觉数据。
 - 不实现 Pro、记忆候选提取或长期记忆写入；候选分析开启时拒绝 DeepSeek 配置和启动组合。
+- 已存在的 `gpt-sovits-gateway` 配置不是直连 GPT-SoVITS 的别名。为避免其使整个 desktop backend
+  启动降级，所有者授权在 W30 内增加固定 loopback、专用 bearer token、无 cache/proxy/custom-CA 的最小兼容
+  client；它不修改 W29 工作树、不启动 Gateway、不回退 Mock，也不改变 DeepSeek 数据出口。
 
 ## 实施顺序
 
@@ -49,7 +54,19 @@
 5. **文档、验证和发布**
    - 更新 ADR、数据流、威胁模型、目标快照与索引；明确 DeepSeek 出站文本和远端政策风险。
    - 先运行聚焦 unit/UI/integration 测试，再运行完整质量门、类型/格式、依赖/产物/敏感信息扫描。
-   - 只暂存 W30 文件、建立聚焦提交、推送 `codex/w30-deepseek-flash` 并创建/更新 Draft PR；W29 不进入 diff。
+    - 只暂存 W30 文件、建立聚焦提交、推送 `codex/w30-deepseek-flash` 并创建/更新 Draft PR；W29 不进入 diff。
+
+6. **既有本地 Gateway 兼容跟进（2026-07-31，所有者授权）**
+   - 只接受 `gpt-sovits-gateway`、`gpt_sovits_gateway`、`gateway`；通过独立
+     `tts-gateway-token` DPAPI purpose 槽连接固定 `http://127.0.0.1:9880/v1/{health,tts}`，请求与响应都带
+     protocol version 头。
+   - Gateway client 保持 W30 直连 GPT-SoVITS 的 style 语义不变，只在本地把 `TTSJob.emotion` 映射到
+     `neutral/gentle/tsundere/focused/excited_explosion`。未知标签、令牌错误、cache、代理和自定义 CA 均在网络前
+     fail closed。
+   - UI 保存不要求 direct-provider 的 preset/reference；显式预检把 health 加固定 neutral WAV 合成为一个服务检查，
+     并将不适用的 preset/reference 标为 skipped。它不回显 token、请求正文、WAV 或路径。
+   - 新增 MockTransport/fake-DPAPI/headless-UI 回归，重新运行完整 quality、wheel、sensitive scan 和 Draft PR
+     exact-head CI；不得借用 W29 既有绿测或验收结论。
 
 ## 接口与验收
 
@@ -60,6 +77,7 @@
 | `DeepSeekFlashDisableCommand` | 先禁用 provider，再撤销专用密钥。 |
 | `SettingsSnapshot` | 只暴露 `deepseek_flash_configured` 等布尔状态，不暴露 key、header、路径或远端正文。 |
 | 视觉 prompt source | 只接受有限语义标签的 `ApprovedVisualSummary`，不传递 source/observation ID 或自由文本；仅在 feature/单次同意/新鲜/非敏感同时满足时输出。 |
+| `GPTSoVITSGatewayProvider` | 仅固定数值 loopback `/v1/health`、`/v1/tts`，专用 bearer/protocol header、无 proxy/cache/redirect；W30 emotion 在本地映射到五个 Gateway slot。 |
 
 最小自动化矩阵：
 
@@ -70,10 +88,12 @@
   自由文本无法构造成批准上下文、不传递 observation ID 的断言。
 - 真实 API 不在自动化中调用。用户明确提供 Key 后才执行一次非敏感手动连通性检查；这只能证明当时的服务/账号组合，
   不证明隐私政策、保留或长期可用性。[隐私政策](https://cdn.deepseek.com/policies/en-US/deepseek-privacy-policy.html)
+- Gateway 兼容回归必须验证：专用 token purpose、别名、缺失 token 无 Mock fallback、固定 URL/header、health/WAV/错误、
+  情绪映射、容量释放、取消/清理、preflight 的 skipped semantic 和禁用 cache/proxy/custom-CA；不访问真实 Gateway。
 
 ## 回滚与发布阻断
 
 - 回滚为 `llm.provider=none` 并撤销专用密钥；保留通用兼容配置和其密钥，不在 W30 中删除。
 - 以下任何一项阻断交付声明：真实 API Key 未提供、真实连通性未验证、测试/质量门失败、密钥或视觉敏感数据出现在
-  diff/artifact、或 W29 改动混入 W30。
+  diff/artifact、无关 W29 改动混入 W30，或 Gateway compatibility 未经本 W30 head 的独立测试/CI 验证。
 - W30 的视觉摘要接口不是“实时截图理解”完成声明；生产截图捕获仍是独立任务。

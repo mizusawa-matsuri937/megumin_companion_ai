@@ -5,7 +5,7 @@
 - [`windows_data_flow_inventory.md`](windows_data_flow_inventory.md)：Windows 数据流、保留清单与相关边界。
 - [`chat_appearance_presentation_layer.md`](chat_appearance_presentation_layer.md)：聊天窗口的纯表现层主题与可替换消息渲染接口。
 - [`../adr/ADR-W30-deepseek-flash.md`](../adr/ADR-W30-deepseek-flash.md)：固定 DeepSeek Flash 文本出口、专用密钥、
-  不可信有限语义视觉摘要与长期记忆写入拒绝边界。
+  不可信有限语义视觉摘要与长期记忆写入拒绝边界，以及 2026-07-31 所有者授权的既有本地 Gateway 最小兼容边界。
 - [`../adr/ADR-W28-avatar-runtime.md`](../adr/ADR-W28-avatar-runtime.md)：单写者 Avatar Runtime、实际播放
   标量包络、generation、红眼所有权和关闭/降级决策。
 

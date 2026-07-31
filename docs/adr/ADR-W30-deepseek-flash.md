@@ -61,6 +61,21 @@ W30 需要让桌面用户只输入一个 DeepSeek API Key 即能启用固定的 
 - 发送到 DeepSeek 的文本由远端服务处理；项目无法保证其地域、保留或模型改进政策。启用前的 UI 和文档必须说明
   这一点，不能承诺“零保留”或“不用于训练”。[DeepSeek 隐私政策](https://cdn.deepseek.com/policies/en-US/deepseek-privacy-policy.html)
 
+### 既有本地 GPT-SoVITS Gateway 的启动兼容（2026-07-31）
+
+- 所有者针对已经存在的本机配置，明确授权 W30 增加一个**受限兼容层**。它只识别
+  `gpt-sovits-gateway`、`gpt_sovits_gateway` 和 `gateway`；这不是把它们改写为直连
+  `gpt-sovits`，也不是自动回退到 Mock。
+- 兼容层只连接固定数值 loopback `http://127.0.0.1:9880` 的私有 `/v1/health` 与 `/v1/tts`
+  协议，使用独立 current-user DPAPI `tts-gateway-token` 槽和服务响应的协议版本头。它禁止
+  缓存、代理、自定义 CA、重定向和可配置远端地址；缺少、损坏或 purpose 不匹配的令牌必须安全失败。
+- W30 的直连 GPT-SoVITS 仍使用其原有 preset/reference 和 style 语义。Gateway 只接收有限
+  `voice_slot`；兼容 client 在本地以 `TTSJob.emotion` 映射到五个 Gateway 槽，不能修改全局
+  emotion mapper 或把未知标签发送出进程。
+- 该路径只为了使已有本地配置能够启动。W30 不安装、启动、升级、管理或认证 Gateway 后端，也不把
+  Gateway token、文本、WAV 或设置路径发给 DeepSeek。Gateway 后端及其下游处理仍是独立的本机/用户
+  服务边界。
+
 ## 备选与取舍
 
 - **拒绝复用通用 Provider 配置：** 会允许 endpoint/model/thinking 漂移，且可能把专用密钥写入通用槽。
@@ -74,7 +89,8 @@ W30 需要让桌面用户只输入一个 DeepSeek API Key 即能启用固定的 
 - 自动化以 MockTransport、假 DPAPI protector、fake prompt context 和 headless Qt 覆盖固定请求、完成原因、拒绝、
   密钥隔离、配置/撤销顺序与上下文 gate；这些不证明真实服务可用或远端保留行为。
 - 用户提供真实 Key 后，才可显式进行一次不含真实对话、记忆或视觉摘要的低风险连通性验证；该验证不得写入仓库。
-- W29 是独立、暂停且未混入的工作；本 ADR 不改变其 TTS/VTS 代码、测试、PR 或验收结论。
+- W29 工作树仍是独立、暂停且未被修改的工作；本 ADR 不改变其 TTS/VTS 代码、测试、PR 或验收结论。
+  2026-07-31 的兼容层是 W30 中单独实现、可审计的最小协议适配，不是合并 W29 未完成改动。
 
 ## 回滚
 

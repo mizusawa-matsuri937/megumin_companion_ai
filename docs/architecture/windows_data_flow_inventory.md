@@ -1,13 +1,15 @@
 # Windows 数据流与保留清单
 
-> 版本：2026-07-30
+> 版本：2026-07-31
 > 状态：Gate W0 已批准的目标契约；W17/W18 的 MediaWorker 音频路径已实现并验证，W19 的 provider
 > 配置与显式联合 preflight 已在本地工作树实现并完成聚焦 fake/headless 验证。W28 的单写者
 > AvatarRuntime、标量 mouth progress 和真实输出 drain 已在本地工作树实现并完成对应自动/实机验证。受管中文 STT
 > runtime 已由 [`224e06f`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/224e06f9cbb1d2ab0cc2260fb244b1f74cd7dfbc)
 > 加入并完成该 code head 的 CI；W28 完整质量门、Draft PR、真实中文 TTS 和主观自然度 Gate 仍未完成；
 > 其他行仍不代表代码已经实现。W30 核心实现 `cd5cd43` 已推送至 Draft PR #35，包含 DeepSeek Flash 的文本出口、专用密钥与
-> 脱敏摘要组合，并通过完整本地自动化质量门及审计 head `e35dbc7` 的跨平台 CI；真实 Key 验证尚未形成证据，任一新 head 须重审。
+> 脱敏摘要组合，并通过完整本地自动化质量门及审计 head `e35dbc7` 的跨平台 CI；2026-07-31 所有者另行授权
+> W30 对既有本地 GPT-SoVITS Gateway 的最小兼容跟进；本地自动化/质量门、wheel/smoke 与敏感扫描已通过，新的远端
+> head/CI 尚待重新验证；真实 Key 验证尚未形成证据。
 > 关联：[`../adr/README.md`](../adr/README.md)、[`../decisions/w00_owner_decisions.md`](../decisions/w00_owner_decisions.md)、
 > [`../decisions/w18_managed_chinese_stt_runtime.md`](../decisions/w18_managed_chinese_stt_runtime.md)
 
@@ -23,6 +25,7 @@ flowchart LR
     B <-->|"继承匿名 pipe + typed JSON"| P["PerceptionWorker / Job Object"]
     B <-->|"仅显式确认：固定 HTTPS STT 资产"| R["GitHub / Hugging Face"]
     B -->|"HTTPS/WSS"| E["外部 LLM/TTS/VTS（含固定文本 DeepSeek）"]
+    B -->|"固定 loopback HTTP + bearer"| G["私有 GPT-SoVITS Gateway"]
     P -->|"显式 opt-in + 脱敏图像 + TLS"| C["云视觉 provider"]
     B --> S[("LocalAppData state")]
 ```
@@ -34,6 +37,12 @@ GitHub/Hugging Face HTTPS URL，绝不发送录音、转写、设备名或用户
 DeepSeek 是与云视觉分离的文本 HTTPS 出口：只在用户启用专用 provider 后，才可能发送当前用户文字和既有开关
 已允许的历史/长期记忆检索/有限语义标签生成的摘要文本。它不接收截图、图像 URL、窗口标题、OCR 原文、bbox、路径或 observation ID；
 关闭视觉或单次不同意时不附加摘要。远端对文本的处理、保留和地域仍是外部服务边界，不能由本地 TLS 或 DPAPI 消除。
+
+本地 GPT-SoVITS Gateway 是与 DeepSeek 和直连 GPT-SoVITS 分离的兼容出口：仅在已保存的 Gateway provider
+被选择时，BackendThread 才向固定 `127.0.0.1:9880` 发出助手待合成文本、有限 voice slot 与 speed factor，并以
+专用 current-user DPAPI bearer token 鉴权。它没有 preset/reference、持久音频缓存、代理或自定义 CA 配置面，且不能
+重定向到其他地址；Gateway 进程及其可能的下游转发不由本项目启动、管理或验证。这个本机明文 loopback 边界不等同于
+端到端远端安全保证，具体残余风险见威胁模型。
 
 ## W19 provider preflight 数据流（2026-07-25）
 
@@ -70,6 +79,30 @@ sequenceDiagram
   GPT-SoVITS endpoint。`service_resource` 的可见性只能由该服务本次 `/tts` 结果证明。
 - 预检 WAV 使用既有 TTS temp owner，cache 关闭，不进入 MediaWorker/playback；成功、失败和 close 都走既有清理。
 - VTS token 仍只在 current-user DPAPI store 与 VTS 官方认证请求之间流动；设置页和 preflight snapshot 不回显。
+
+## W30 既有本地 Gateway 兼容数据流（2026-07-31，跟进中）
+
+```mermaid
+sequenceDiagram
+    participant B as BackendThread
+    participant S as current-user DPAPI
+    participant G as 固定本地 Gateway
+
+    B->>S: 读取 purpose-bound tts-gateway-token
+    S-->>B: 仅进程内 bearer value
+    B->>G: GET /v1/health + Bearer
+    G-->>B: protocol header + bounded health JSON
+    B->>G: POST /v1/tts + 文本/voice_slot/speed_factor
+    G-->>B: protocol header + bounded WAV 或 stable error
+    B->>B: 本地 WAV 校验、temp owner/cleanup
+```
+
+- endpoint 固定为数值 loopback `http://127.0.0.1:9880`；client 使用 `trust_env=false`、禁止重定向，且
+  配置组合拒绝代理、自定义 CA 和音频缓存。它不会读取通用 LLM/DeepSeek secret，也不会把 token 放入 UI、事件、日志或 YAML。
+- W30 的全局 emotion mapper 仍服务直连 GPT-SoVITS；Gateway client 只在请求边界把有限 `TTSJob.emotion`
+  映射为其五个 voice slot。未知标签在出网前拒绝，原始 emotion/source、WAV body 和临时绝对路径不跨 UI/worker 边界。
+- `/v1/health` 和固定短语 `/v1/tts` 只在用户显式触发设置预检时发生；正常回合不增加新的网络目的地，仍在已选择的
+  Gateway 内合成。该服务的进程身份、模型、后续转发、保留或漏洞不能由本项目验证。
 
 ## W30 DeepSeek Flash 文本出站数据流（2026-07-30）
 
@@ -173,6 +206,7 @@ sequenceDiagram
 | 长期记忆 | MemoryService/SQLite | backend 内部 | 同一 DB，显式 opt-in | 用户显式 export；作为 LLM 上下文 | confirm/update/delete/clear；凭据永不成为候选 | 只记记录 id/操作/状态 |
 | 通用 LLM API key/VTS token | Secret store | 对应 provider adapter 只在使用时读取 | DPAPI current-user 密文文件 | 仅发给对应 endpoint/协议 | replace/revoke/reset；普通卸载默认删除 | 不记录值、密文、header 或路径 |
 | DeepSeek API key（W30） | 专用 Secret store | 仅 `DeepSeekFlashLLMProvider` 读取；桌面配置命令 write-only | 独立、purpose-bound 的 DPAPI current-user 密文槽；不写 YAML 或通用 LLM 槽 | 仅作为 Bearer 发至固定 `https://api.deepseek.com/chat/completions` | 停用时先切 `llm.provider=none` 并 reload，再 revoke；撤销失败仍保持远端 provider 禁用 | 不记录值、密文、header、文件路径或请求正文 |
+| 本地 GPT-SoVITS Gateway token（W30 兼容） | 专用 Secret store | 仅 Gateway client 在运行/显式预检时读取 | 独立、purpose-bound 的 DPAPI current-user 密文槽；不写 YAML 或 LLM/DeepSeek 槽 | 仅作为 Bearer 发至固定 `http://127.0.0.1:9880` 的私有 Gateway 协议 | replace/revoke/reset；不创建音频 cache | 不记录值、密文、header、文件路径或请求正文 |
 | DeepSeek Chat 请求（W30） | Backend/固定 Flash provider | 仅进程内组合用户文字与已获现有开关允许的历史、记忆检索、无 ID 的批准有限语义标签摘要 | 不新增请求正文持久化；既有历史/记忆各自按其行的保留规则 | 仅 HTTPS 的固定 DeepSeek chat endpoint；文本模型，不含图像、multipart content 或 tool call | 响应/取消后释放本地请求对象；远端处理/保留由 DeepSeek 外部政策决定 | 只记稳定状态、provider/model、长度/延迟；不记正文、摘要或 header |
 | 用户设置 | Config owner | UI command → config service | `config/settings.yaml`，带 schema version；W19 preset/reference/prompt 属于用户私密配置但不是 secret | 无，除非对应 provider 请求需要最小配置 | 升级迁移/卸载选择 | 只记 schema/version/字段类别；不记 reference/prompt/完整路径 |
 | 日志/健康/诊断 | 单 writer/exporter | allowlist event | `logs`，10 MiB × 5 且最多 14 天 | 用户显式导出脱敏诊断包 | rotation + retention | 禁止正文、截图、OCR、音频、secret、完整路径 |

@@ -33,6 +33,8 @@ DEEPSEEK_API_KEY_ID = "deepseek-api-key"
 DEEPSEEK_API_KEY_PURPOSE = "deepseek.api-key"
 VTS_TOKEN_ID = "vts-token"
 VTS_TOKEN_PURPOSE = "vts.authentication-token"
+TTS_GATEWAY_TOKEN_ID = "tts-gateway-token"
+TTS_GATEWAY_TOKEN_PURPOSE = "tts.gateway-bearer"
 
 _IDENTIFIER = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 _MAX_SECRET_BYTES = 64 * 1024
@@ -397,6 +399,24 @@ def deepseek_api_key_file(
         app_root=paths.root,
         key_id=DEEPSEEK_API_KEY_ID,
         purpose=DEEPSEEK_API_KEY_PURPOSE,
+        protector=protector,
+        directory_security=directory_security,
+    )
+
+
+def tts_gateway_token_file(
+    paths: AppPaths,
+    *,
+    protector: DataProtector | None = None,
+    directory_security: DirectorySecurity | None = None,
+) -> EncryptedSecretFile:
+    """Return the private local GPT-SoVITS Gateway bearer-token store."""
+
+    return EncryptedSecretFile(
+        paths.secrets / f"{TTS_GATEWAY_TOKEN_ID}.json",
+        app_root=paths.root,
+        key_id=TTS_GATEWAY_TOKEN_ID,
+        purpose=TTS_GATEWAY_TOKEN_PURPOSE,
         protector=protector,
         directory_security=directory_security,
     )
