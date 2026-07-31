@@ -128,6 +128,8 @@ memory:
 
 perception:
   operation_timeout_seconds: 10
+  # Only a freshly privacy-reviewed text summary may be attached to an opted-in chat turn.
+  prompt_context_max_age_seconds: 30
   max_frame_bytes: 20971520
   minimum_hash_distance: 0.08
   max_tracked_windows: 128

@@ -13,16 +13,17 @@ from app.bootstrap import (
     build_llm_provider,
     build_vts_event_sink,
 )
-from app.clients.llm import MockLLMProvider, OpenAICompatibleLLMProvider
+from app.clients.llm import DeepSeekFlashLLMProvider, MockLLMProvider, OpenAICompatibleLLMProvider
 from app.clients.tts import GPTSoVITSGatewayProvider, GPTSoVITSProvider
 from app.clients.vts import VTSBridgeSnapshot, VTSBridgeState
-from app.config import Settings
+from app.config import ConfigurationError, Settings
 from app.config.settings import (
     AppConfig,
     AvatarConfig,
     EmotionConfig,
     GPTSoVITSPresetConfig,
     LLMConfig,
+    MemoryConfig,
     PipelineConfig,
     ProviderTransportConfig,
     TTSConfig,
@@ -33,7 +34,11 @@ from app.paths import AppPaths
 from app.prompts import EmotionPromptContextBuilder, HistoryMessage, PromptContextSnapshot
 from app.schemas import ChatRole, ExternalContextBlock, UserMessage
 from app.schemas.ai import ContextOrigin, ContextTrust
-from app.secret_store import llm_api_key_file, tts_gateway_token_file
+from app.secret_store import (
+    deepseek_api_key_file,
+    llm_api_key_file,
+    tts_gateway_token_file,
+)
 from app.windows_security import PortableDirectorySecurity
 
 
@@ -144,6 +149,123 @@ def test_production_real_provider_ignores_environment_and_uses_encrypted_secret(
     asyncio.run(provider.close())
 
 
+def test_deepseek_flash_uses_its_fixed_profile_and_development_environment(tmp_path: Path) -> None:
+    settings = Settings(
+        llm=LLMConfig(
+            provider="deepseek",
+            model="",
+            api_key_env="GENERIC_LLM_KEY",
+            temperature=0.45,
+            max_tokens=321,
+        )
+    )
+    settings._environment = {
+        "DEEPSEEK_API_KEY": "deepseek-development-key",
+        "GENERIC_LLM_KEY": "must-not-be-used",
+    }
+    settings._paths = AppPaths(root=tmp_path / "AppData")
+
+    provider = build_llm_provider(settings, allow_deepseek_env_fallback=True)
+
+    assert isinstance(provider, DeepSeekFlashLLMProvider)
+    assert provider._client.headers["Authorization"] == "Bearer deepseek-development-key"
+    assert provider._model == "deepseek-v4-flash"
+    assert provider._endpoint == "/chat/completions"
+    asyncio.run(provider.close())
+
+
+def test_deepseek_flash_desktop_default_does_not_read_environment_key(tmp_path: Path) -> None:
+    paths = AppPaths(root=tmp_path / "AppData")
+    dedicated = deepseek_api_key_file(
+        paths,
+        protector=_ReversingProtector(),
+        directory_security=PortableDirectorySecurity(),
+    )
+    settings = Settings(llm=LLMConfig(provider="deepseek"))
+    settings._environment = {"DEEPSEEK_API_KEY": "desktop-must-not-use-environment-key"}
+    settings._paths = paths
+
+    with pytest.raises(ConfigurationError, match="deepseek-api-key"):
+        build_llm_provider(settings, deepseek_secret_file=dedicated)
+
+
+def test_deepseek_flash_production_uses_its_own_dpapi_slot(tmp_path: Path) -> None:
+    paths = AppPaths(root=tmp_path / "AppData")
+    encrypted = deepseek_api_key_file(
+        paths,
+        protector=_ReversingProtector(),
+        directory_security=PortableDirectorySecurity(),
+    )
+    encrypted.write_text("deepseek-production-key")
+    generic = llm_api_key_file(
+        paths,
+        protector=_ReversingProtector(),
+        directory_security=PortableDirectorySecurity(),
+    )
+    generic.write_text("generic-must-not-be-used")
+    settings = Settings(app=AppConfig(environment="prod"), llm=LLMConfig(provider="deepseek"))
+    settings._environment = {"DEEPSEEK_API_KEY": "ignored-development-key"}
+    settings._paths = paths
+
+    provider = build_llm_provider(settings, deepseek_secret_file=encrypted)
+
+    assert isinstance(provider, DeepSeekFlashLLMProvider)
+    assert provider._client.headers["Authorization"] == "Bearer deepseek-production-key"
+    asyncio.run(provider.close())
+
+
+def test_deepseek_flash_never_falls_back_to_the_generic_llm_secret(tmp_path: Path) -> None:
+    paths = AppPaths(root=tmp_path / "AppData")
+    dedicated = deepseek_api_key_file(
+        paths,
+        protector=_ReversingProtector(),
+        directory_security=PortableDirectorySecurity(),
+    )
+    generic = llm_api_key_file(
+        paths,
+        protector=_ReversingProtector(),
+        directory_security=PortableDirectorySecurity(),
+    )
+    generic.write_text("generic-must-not-be-used")
+    settings = Settings(app=AppConfig(environment="prod"), llm=LLMConfig(provider="deepseek"))
+    settings._paths = paths
+
+    with pytest.raises(ConfigurationError, match="deepseek-api-key"):
+        build_llm_provider(settings, deepseek_secret_file=dedicated)
+
+
+def test_deepseek_flash_rejects_a_generic_slot_injected_through_a_test_seam(tmp_path: Path) -> None:
+    paths = AppPaths(root=tmp_path / "AppData")
+    generic = llm_api_key_file(
+        paths,
+        protector=_ReversingProtector(),
+        directory_security=PortableDirectorySecurity(),
+    )
+    generic.write_text("generic-must-not-be-used")
+    settings = Settings(app=AppConfig(environment="prod"), llm=LLMConfig(provider="deepseek"))
+    settings._paths = paths
+
+    with pytest.raises(ConfigurationError, match="专用"):
+        build_llm_provider(settings, deepseek_secret_file=generic)
+
+
+def test_deepseek_flash_refuses_memory_candidate_use_before_any_provider_is_built() -> None:
+    settings = Settings(llm=LLMConfig(provider="deepseek"))
+
+    with pytest.raises(ConfigurationError, match="DeepSeek Flash"):
+        build_llm_provider(settings, purpose="memory_candidate")
+
+
+def test_deepseek_flash_refuses_candidate_analysis_at_the_provider_boundary() -> None:
+    settings = Settings(
+        llm=LLMConfig(provider="deepseek"),
+        memory=MemoryConfig(candidate_analysis_enabled=True),
+    )
+
+    with pytest.raises(ConfigurationError, match="DeepSeek Flash"):
+        build_llm_provider(settings)
+
+
 def test_gpt_sovits_wiring_is_explicit_and_cache_defaults_off(tmp_path: Path) -> None:
     settings = Settings(
         llm=LLMConfig(provider="mock"),
@@ -165,7 +287,14 @@ def test_gpt_sovits_wiring_is_explicit_and_cache_defaults_off(tmp_path: Path) ->
     asyncio.run(pipeline.close())
 
 
-def test_private_gateway_wiring_reads_distinct_encrypted_token(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "provider",
+    ["gpt-sovits-gateway", "gpt_sovits_gateway", "gateway"],
+)
+def test_private_gateway_wiring_reads_distinct_encrypted_token(
+    tmp_path: Path,
+    provider: str,
+) -> None:
     paths = AppPaths(root=tmp_path / "AppData")
     encrypted = tts_gateway_token_file(
         paths,
@@ -176,7 +305,7 @@ def test_private_gateway_wiring_reads_distinct_encrypted_token(tmp_path: Path) -
     settings = Settings(
         llm=LLMConfig(provider="mock"),
         tts=TTSConfig(
-            provider="gpt-sovits-gateway",
+            provider=provider,
             output_directory=Path("ephemeral"),
         ),
     )
@@ -193,6 +322,41 @@ def test_private_gateway_wiring_reads_distinct_encrypted_token(tmp_path: Path) -
     asyncio.run(pipeline.close())
 
 
+def test_private_gateway_requires_a_dedicated_token_slot(tmp_path: Path) -> None:
+    paths = AppPaths(root=tmp_path / "AppData")
+    generic = llm_api_key_file(
+        paths,
+        protector=_ReversingProtector(),
+        directory_security=PortableDirectorySecurity(),
+    )
+    generic.write_text("generic-test-value")
+    settings = Settings(
+        llm=LLMConfig(provider="mock"),
+        tts=TTSConfig(provider="gpt-sovits-gateway"),
+    )
+    settings._paths = paths
+
+    with pytest.raises(ConfigurationError, match="专用"):
+        build_dialogue_pipeline(settings, tts_gateway_secret_file=generic)
+
+
+def test_private_gateway_without_a_token_does_not_fall_back_to_mock(tmp_path: Path) -> None:
+    paths = AppPaths(root=tmp_path / "AppData")
+    encrypted = tts_gateway_token_file(
+        paths,
+        protector=_ReversingProtector(),
+        directory_security=PortableDirectorySecurity(),
+    )
+    settings = Settings(
+        llm=LLMConfig(provider="mock"),
+        tts=TTSConfig(provider="gpt-sovits-gateway"),
+    )
+    settings._paths = paths
+
+    with pytest.raises(ConfigurationError, match="令牌尚未配置"):
+        build_dialogue_pipeline(settings, tts_gateway_secret_file=encrypted)
+
+
 @pytest.mark.parametrize(
     "tts",
     [
@@ -201,7 +365,12 @@ def test_private_gateway_wiring_reads_distinct_encrypted_token(tmp_path: Path) -
             provider="gpt-sovits-gateway",
             transport=ProviderTransportConfig(proxy_url="http://127.0.0.1:8080"),
         ),
+        TTSConfig(
+            provider="gpt-sovits-gateway",
+            transport=ProviderTransportConfig(ca_bundle_path=Path("gateway-ca.pem")),
+        ),
     ],
+    ids=["cache", "proxy", "custom-ca"],
 )
 def test_private_gateway_rejects_cache_and_transport_overrides(
     tmp_path: Path,

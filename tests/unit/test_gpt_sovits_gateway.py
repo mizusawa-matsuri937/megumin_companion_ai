@@ -1,4 +1,4 @@
-"""Path-free client tests for the authenticated W29 TTS gateway."""
+"""Path-free client tests for the integrated W29/W30 TTS gateway boundary."""
 
 from __future__ import annotations
 
@@ -21,6 +21,9 @@ from app.schemas import AudioResult, TTSJob
 from app.temp_assets import TempAssetKind, TempAssetRegistry, TempRegistryError
 
 _TOKEN = "A" * 43
+_FIXTURE_CONNECT_TIMEOUT_MS = 1_000
+_FIXTURE_FIRST_BYTE_TIMEOUT_MS = 1_000
+_FIXTURE_TOTAL_TIMEOUT_MS = 3_000
 
 
 def _wave_bytes(*, sample_rate: int = 32_000, frame_count: int = 320) -> bytes:
@@ -39,11 +42,17 @@ def _job(token: CancellationToken, **changes: object) -> TTSJob:
         "turn_id": "turn/../../escape",
         "segment_id": "segment_1",
         "text": "固定中文测试句",
-        "style": "gentle",
+        # Exercise W30's compatibility fallback. W29-specific cases override
+        # ``style`` with an already-normalized gateway slot.
+        "style": "default",
+        "emotion": "worried",
         "speed_factor": 1.05,
-        "connect_timeout_ms": 80,
-        "first_byte_timeout_ms": 80,
-        "timeout_ms": 300,
+        # A synchronous MockTransport still crosses async streaming, token and
+        # filesystem task boundaries. These defaults are fixture headroom, not
+        # timeout behavior under test; deadline-specific cases override them.
+        "connect_timeout_ms": _FIXTURE_CONNECT_TIMEOUT_MS,
+        "first_byte_timeout_ms": _FIXTURE_FIRST_BYTE_TIMEOUT_MS,
+        "timeout_ms": _FIXTURE_TOTAL_TIMEOUT_MS,
         "cancellation_timeout_ms": 80,
         "cancellation_token_id": token.token_id,
     }
@@ -58,6 +67,7 @@ def test_gateway_provider_probe_synthesize_discard_and_minimal_payload(tmp_path:
         async def handler(request: httpx.Request) -> httpx.Response:
             requests.append(request)
             assert request.headers["authorization"] == f"Bearer {_TOKEN}"
+            assert request.headers["x-tts-gateway-protocol"] == "1"
             assert request.url.host == "127.0.0.1"
             if request.url.path == "/v1/health":
                 return httpx.Response(
@@ -180,7 +190,7 @@ def test_gateway_provider_rejects_invalid_slot_without_network(tmp_path: Path) -
         )
         token = CancellationToken("turn")
         result = await provider.synthesize(
-            _job(token, style="private-model-path"),
+            _job(token, emotion="private-model-path"),
             segment_index=0,
             token=token,
         )
@@ -486,17 +496,12 @@ def test_gateway_provider_maps_bounded_transport_failures(
             transport=httpx.MockTransport(handler),
         )
         token = CancellationToken("turn")
-        # This matrix validates transport/error classification.  Only the
-        # first-byte case is intended to exercise its deadline; keeping the
-        # other immediate MockTransport cases at 20 ms makes their result
-        # depend on coverage-run scheduling rather than the branch under test.
-        first_byte_timeout_ms = 20 if kind == "first_byte" else 200
-        timeout_ms = 300 if kind == "first_byte" else 500
         result = await provider.synthesize(
             _job(
                 token,
-                first_byte_timeout_ms=first_byte_timeout_ms,
-                timeout_ms=timeout_ms,
+                first_byte_timeout_ms=(
+                    20 if kind == "first_byte" else _FIXTURE_FIRST_BYTE_TIMEOUT_MS
+                ),
             ),
             segment_index=0,
             token=token,
@@ -841,3 +846,101 @@ def test_gateway_client_helpers_cover_cancellation_and_validation(tmp_path: Path
 
     assert gateway_module._has_ssl_error(ssl.SSLError("direct"))
     assert not gateway_module._has_ssl_error(ValueError("plain"))
+
+
+@pytest.mark.parametrize(
+    ("emotion", "expected_slot"),
+    [
+        ("neutral", "neutral"),
+        ("bored", "neutral"),
+        ("sleepy", "neutral"),
+        ("happy", "gentle"),
+        ("worried", "gentle"),
+        ("shy", "tsundere"),
+        ("angry_cute", "tsundere"),
+        ("proud", "focused"),
+        ("focused", "focused"),
+        ("excited", "excited_explosion"),
+        ("explosion_mode", "excited_explosion"),
+        # Already-normalized gateway slots remain valid without touching the direct
+        # provider's independent style field.
+        ("gentle", "gentle"),
+        ("tsundere", "tsundere"),
+        ("excited_explosion", "excited_explosion"),
+    ],
+)
+def test_gateway_provider_maps_w30_emotions_to_bounded_slots(
+    tmp_path: Path,
+    emotion: str,
+    expected_slot: str,
+) -> None:
+    async def scenario() -> None:
+        payloads: list[dict[str, object]] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            payloads.append(cast(dict[str, object], json.loads(request.content)))
+            return httpx.Response(
+                200,
+                headers={
+                    "Content-Type": "audio/wav",
+                    "X-TTS-Gateway-Protocol": "1",
+                },
+                content=_wave_bytes(),
+            )
+
+        provider = GPTSoVITSGatewayProvider(
+            "http://127.0.0.1:9880",
+            tmp_path,
+            _TOKEN,
+            transport=httpx.MockTransport(handler),
+        )
+        token = CancellationToken("emotion-map")
+        result = await provider.synthesize(
+            _job(token, style="bright", emotion=emotion),
+            segment_index=0,
+            token=token,
+        )
+        assert result.success
+        assert payloads == [
+            {
+                "text": "固定中文测试句",
+                "voice_slot": expected_slot,
+                "speed_factor": 1.05,
+            }
+        ]
+        await provider.close()
+
+    asyncio.run(scenario())
+
+
+def test_gateway_provider_releases_owned_capacity_after_success(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        calls = 0
+
+        def handler(_request: httpx.Request) -> httpx.Response:
+            nonlocal calls
+            calls += 1
+            return httpx.Response(
+                200,
+                headers={
+                    "Content-Type": "audio/wav",
+                    "X-TTS-Gateway-Protocol": "1",
+                },
+                content=_wave_bytes(),
+            )
+
+        provider = GPTSoVITSGatewayProvider(
+            "http://127.0.0.1:9880",
+            tmp_path,
+            _TOKEN,
+            max_owned_synthesis_tasks=1,
+            transport=httpx.MockTransport(handler),
+        )
+        token = CancellationToken("capacity-release")
+        first = await provider.synthesize(_job(token), segment_index=0, token=token)
+        second = await provider.synthesize(_job(token), segment_index=1, token=token)
+        assert first.success and second.success
+        assert calls == 2
+        await provider.close()
+
+    asyncio.run(scenario())

@@ -5,6 +5,7 @@ from app.tts_gateway.contracts import (
     VOICE_SLOTS,
     GatewayHealth,
     GatewayTTSRequest,
+    VoiceSlot,
 )
 from app.tts_gateway.engine import (
     GatewayEngine,
@@ -44,4 +45,5 @@ __all__ = [
     "create_gateway_app",
     "load_gateway_manifest",
     "safe_import_voice_package",
+    "VoiceSlot",
 ]

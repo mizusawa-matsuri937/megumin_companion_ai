@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QScrollArea,
     QTabWidget,
     QTreeWidget,
     QTreeWidgetItem,
@@ -39,6 +40,8 @@ from PySide6.QtWidgets import (
 
 from desktop_client.ui.contracts import (
     AudioOutputDevicesCommand,
+    DeepSeekFlashConfigureCommand,
+    DeepSeekFlashDisableCommand,
     DesktopSettingsForm,
     FeatureSetCommand,
     ManagementCommand,
@@ -101,6 +104,12 @@ _FEATURE_ENABLE_CONFIRMATIONS = {
 _MANAGEMENT_REASON_TEXT = {
     "secret_required": "真实 LLM 需要先保存 DPAPI 密钥。",
     "llm_model_required": "真实 LLM 需要填写模型名。",
+    "deepseek_flash_configure_required": "请使用 DeepSeek V4 Flash 专用卡片保存并启用。",
+    "deepseek_flash_key_required": "DeepSeek V4 Flash 需要单独保存 API 密钥。",
+    "deepseek_flash_disable_required": "请先使用 DeepSeek V4 Flash 专用卡片停用该配置。",
+    "deepseek_memory_pro_required": "长期记忆候选写入需要尚未接入的 DeepSeek Pro；请先关闭该功能。",
+    "deepseek_flash_rollback_failed": "DeepSeek 配置未能安全回滚；请重启后检查设置状态。",
+    "deepseek_flash_key_revoke_failed": "DeepSeek 已停用，但加密密钥暂时无法移除；可稍后重试。",
     "tts_provider_unsupported": "当前仅支持 mock、私有网关或兼容 GPT-SoVITS。",
     "tts_preset_required": "GPT-SoVITS 需要先配置默认 preset；请在 W19 配置向导完成预检。",
     "tts_reference_required": "GPT-SoVITS 需要填写 reference 资源。",
@@ -162,6 +171,8 @@ _MANAGEMENT_OPERATION_TEXT = {
     "memory_exported": "长期记忆已导出",
     "stt_runtime_installed": "中文离线 STT 已安装",
     "provider_preflight_completed": "TTS/VTS 联合预检已完成",
+    "deepseek_flash_configured": "DeepSeek V4 Flash 已保存并启用",
+    "deepseek_flash_disabled": "DeepSeek V4 Flash 已停用，密钥已移除",
 }
 _PREFLIGHT_NAMES: dict[ProviderPreflightName, str] = {
     "tts_service": "GPT-SoVITS 服务",
@@ -197,6 +208,7 @@ class SettingsDialog(QDialog):
         self._submit_command = submit_command
         self._populating_form = False
         self._form_dirty = False
+        self._pending_deepseek_flash_command_id: str | None = None
         self._clearing_sensitive = False
         self._feature_buttons: dict[FeatureName, QPushButton] = {}
         self.setWindowTitle("设置与隐私")
@@ -227,7 +239,9 @@ class SettingsDialog(QDialog):
         """Discard a hidden dialog's drafts and plaintext secret widgets."""
 
         self.llm_secret.clear()
+        self.deepseek_flash_secret.clear()
         self.vts_secret.clear()
+        self._pending_deepseek_flash_command_id = None
         self._form_dirty = False
         if not self._clearing_sensitive:
             self.sync_from_model()
@@ -333,13 +347,13 @@ class SettingsDialog(QDialog):
         secrets_layout.addWidget(guidance, 0, 0, 1, 3)
         self.llm_secret = self._secret_edit("LLM API 密钥")
         self.llm_secret_state = QLabel("LLM 密钥：未知", secrets)
-        save_llm = QPushButton("保存 LLM 密钥", secrets)
-        save_llm.clicked.connect(lambda: self._store_secret("llm"))
-        revoke_llm = QPushButton("移除 LLM 密钥", secrets)
-        revoke_llm.clicked.connect(lambda: self._revoke_secret("llm"))
+        self.save_llm_secret = QPushButton("保存 LLM 密钥", secrets)
+        self.save_llm_secret.clicked.connect(lambda: self._store_secret("llm"))
+        self.revoke_llm_secret = QPushButton("移除 LLM 密钥", secrets)
+        self.revoke_llm_secret.clicked.connect(lambda: self._revoke_secret("llm"))
         secrets_layout.addWidget(self.llm_secret, 1, 0)
-        secrets_layout.addWidget(save_llm, 1, 1)
-        secrets_layout.addWidget(revoke_llm, 1, 2)
+        secrets_layout.addWidget(self.save_llm_secret, 1, 1)
+        secrets_layout.addWidget(self.revoke_llm_secret, 1, 2)
         secrets_layout.addWidget(self.llm_secret_state, 2, 0, 1, 3)
         self.vts_secret = self._secret_edit("VTS 认证令牌")
         self.vts_secret_state = QLabel("VTS 令牌：未知", secrets)
@@ -352,8 +366,48 @@ class SettingsDialog(QDialog):
         secrets_layout.addWidget(revoke_vts, 3, 2)
         secrets_layout.addWidget(self.vts_secret_state, 4, 0, 1, 3)
         layout.addWidget(secrets)
+
+        deepseek = QGroupBox("DeepSeek V4 Flash（固定配置）", page)
+        deepseek_layout = QGridLayout(deepseek)
+        self.deepseek_flash_guidance = QLabel(
+            "仅使用固定的 DeepSeek V4 Flash 文本接口，关闭 thinking，不上传截图原图。"
+            "启用后，当前已开启且允许发送的历史、长期记忆检索和有限语义标签生成的视觉摘要文本可能"
+            "发送至 DeepSeek；"
+            "其远端处理、保留与地域风险不能由本项目消除；"
+            "该 API 密钥与通用 LLM 密钥分开以当前 Windows 用户 DPAPI 加密保存。",
+            deepseek,
+        )
+        self.deepseek_flash_guidance.setWordWrap(True)
+        deepseek_layout.addWidget(self.deepseek_flash_guidance, 0, 0, 1, 3)
+        self.deepseek_flash_secret = self._secret_edit("DeepSeek API 密钥")
+        self.deepseek_flash_state = QLabel("DeepSeek V4 Flash：未知", deepseek)
+        self.enable_deepseek_flash = QPushButton("保存并启用 DeepSeek V4 Flash", deepseek)
+        self.enable_deepseek_flash.setAccessibleName("保存并启用 DeepSeek V4 Flash")
+        self.enable_deepseek_flash.clicked.connect(self._configure_deepseek_flash)
+        self.disable_deepseek_flash = QPushButton("停用并移除 DeepSeek 密钥", deepseek)
+        self.disable_deepseek_flash.setAccessibleName("停用并移除 DeepSeek 密钥")
+        self.disable_deepseek_flash.clicked.connect(self._disable_deepseek_flash)
+        deepseek_layout.addWidget(self.deepseek_flash_secret, 1, 0)
+        deepseek_layout.addWidget(self.enable_deepseek_flash, 1, 1)
+        deepseek_layout.addWidget(self.disable_deepseek_flash, 1, 2)
+        deepseek_layout.addWidget(self.deepseek_flash_state, 2, 0, 1, 3)
+        layout.addWidget(deepseek)
         layout.addStretch(1)
-        return page
+        self.connection_settings_scroll = QScrollArea(self)
+        self.connection_settings_scroll.setObjectName("connection_settings_scroll")
+        self.connection_settings_scroll.setAccessibleName("连接与设备设置（可滚动）")
+        self.connection_settings_scroll.setAccessibleDescription(
+            "可使用鼠标滚轮、滚动条或键盘访问所有连接与设备设置。"
+        )
+        self.connection_settings_scroll.setWidgetResizable(True)
+        self.connection_settings_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        self.connection_settings_scroll.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        self.connection_settings_scroll.setWidget(page)
+        return self.connection_settings_scroll
 
     def _build_avatar_tab(self) -> QWidget:
         page = QWidget(self)
@@ -826,6 +880,53 @@ class SettingsDialog(QDialog):
         if self._confirm("移除密钥", f"确定移除保存的{label}吗？此操作无法恢复。"):
             self._submit(SecretRevokeCommand(secret_id="llm" if secret_id == "llm" else "vts"))
 
+    def _configure_deepseek_flash(self) -> None:
+        if self._model.settings is None:
+            self.status_label.setText("设置尚未加载。")
+            return
+        if self._form_dirty:
+            self.status_label.setText("请先保存或放弃通用设置草稿，再启用 DeepSeek V4 Flash。")
+            return
+        value = self.deepseek_flash_secret.text()
+        if not value.strip():
+            self.status_label.setText("请输入非空 DeepSeek API 密钥。")
+            return
+        if not self._confirm(
+            "启用 DeepSeek V4 Flash",
+            "将保存 API 密钥并在重启后使用固定的 DeepSeek V4 Flash 文本接口。"
+            "当前已开启且本消息明确允许的历史、长期记忆检索和有限语义标签生成的视觉摘要文本可能发送至"
+            "DeepSeek；不会上传截图原图。远端处理、保留与地域风险不能由本项目消除。是否继续？",
+        ):
+            return
+        try:
+            command = DeepSeekFlashConfigureCommand(value=value)
+            accepted = self._submit(command)
+        except ValueError:
+            self.status_label.setText("DeepSeek API 密钥无效。")
+            return
+        if accepted:
+            # Retain the input for a retry if BackendThread rejects the write;
+            # erase it only after the matching successful terminal result.
+            self._pending_deepseek_flash_command_id = command.command_id
+            self.setEnabled(False)
+
+    def _disable_deepseek_flash(self) -> None:
+        if self._model.settings is None:
+            self.status_label.setText("设置尚未加载。")
+            return
+        if self._form_dirty:
+            self.status_label.setText("请先保存或放弃通用设置草稿，再停用 DeepSeek V4 Flash。")
+            return
+        if self._confirm(
+            "停用 DeepSeek V4 Flash",
+            "将先切换到离线 LLM，再移除当前 Windows 用户保存的 DeepSeek API 密钥。"
+            "此操作无法恢复，之后重新启用时需要再次输入密钥。是否继续？",
+        ):
+            command = DeepSeekFlashDisableCommand()
+            if self._submit(command):
+                self._pending_deepseek_flash_command_id = command.command_id
+                self.setEnabled(False)
+
     def _toggle_feature(self, feature: FeatureName) -> None:
         state = self._model.feature_states.get(feature)
         if state is None:
@@ -988,6 +1089,32 @@ class SettingsDialog(QDialog):
         self._sync_audio_output_devices(selected_device_id)
         self.llm_secret_state.setText(
             "LLM 密钥：已配置" if snapshot.llm_secret_configured else "LLM 密钥：未配置"
+        )
+        deepseek_active = form.llm_provider.strip().casefold() == "deepseek"
+        generic_llm_widgets = (
+            self.llm_provider,
+            self.llm_base_url,
+            self.llm_model,
+            self.llm_secret,
+        )
+        for widget in generic_llm_widgets:
+            widget.setReadOnly(deepseek_active)
+        self.save_llm_secret.setEnabled(not deepseek_active)
+        self.revoke_llm_secret.setEnabled(not deepseek_active)
+        if deepseek_active and snapshot.deepseek_flash_configured:
+            self.deepseek_flash_state.setText(
+                "DeepSeek V4 Flash：已启用；固定 Flash 文本配置将在重启后应用。"
+            )
+        elif deepseek_active:
+            self.deepseek_flash_state.setText(
+                "DeepSeek V4 Flash：配置不完整；请重新输入专用 API 密钥。"
+            )
+        elif snapshot.deepseek_flash_configured:
+            self.deepseek_flash_state.setText("DeepSeek V4 Flash：密钥已保存，当前未启用。")
+        else:
+            self.deepseek_flash_state.setText("DeepSeek V4 Flash：未配置。")
+        self.disable_deepseek_flash.setEnabled(
+            deepseek_active or snapshot.deepseek_flash_configured
         )
         self.vts_secret_state.setText(
             "VTS 令牌：已配置" if snapshot.vts_secret_configured else "VTS 令牌：未配置"
@@ -1185,6 +1312,16 @@ class SettingsDialog(QDialog):
         result = self._model.last_result
         if result is None:
             return
+        if result.command_id == self._pending_deepseek_flash_command_id and result.operation in {
+            "deepseek_flash_configured",
+            "deepseek_flash_configure",
+            "deepseek_flash_disabled",
+            "deepseek_flash_disable",
+        }:
+            if result.operation == "deepseek_flash_configured" and result.reason_code is None:
+                self.deepseek_flash_secret.clear()
+            self._pending_deepseek_flash_command_id = None
+            self.setEnabled(True)
         if result.reason_code is not None:
             if result.operation == "stt_runtime_install":
                 self.install_stt_runtime.setEnabled(True)
@@ -1201,7 +1338,11 @@ class SettingsDialog(QDialog):
             suffix += "；底层清理待处理"
         operation = _MANAGEMENT_OPERATION_TEXT.get(result.operation, result.operation)
         self.status_label.setText(f"操作完成：{operation}{suffix}")
-        if result.operation == "settings_saved":
+        if result.operation in {
+            "settings_saved",
+            "deepseek_flash_configured",
+            "deepseek_flash_disabled",
+        }:
             self._form_dirty = False
         if result.operation == "provider_preflight_completed":
             self.run_provider_preflight.setEnabled(True)
@@ -1210,6 +1351,8 @@ class SettingsDialog(QDialog):
         """Erase dialog-held credentials, paths and memory bodies before final exit."""
 
         self._clearing_sensitive = True
+        self._pending_deepseek_flash_command_id = None
+        self.setEnabled(True)
         for edit in (
             self.llm_provider,
             self.llm_base_url,
@@ -1227,6 +1370,7 @@ class SettingsDialog(QDialog):
             self.stt_model_path,
             self.stt_device,
             self.llm_secret,
+            self.deepseek_flash_secret,
             self.vts_secret,
         ):
             edit.clear()

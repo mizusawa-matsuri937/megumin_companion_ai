@@ -29,6 +29,8 @@ from app.windows_security import (
 SECRET_FORMAT_VERSION = 1
 LLM_API_KEY_ID = "llm-api-key"
 LLM_API_KEY_PURPOSE = "llm.api-key"
+DEEPSEEK_API_KEY_ID = "deepseek-api-key"
+DEEPSEEK_API_KEY_PURPOSE = "deepseek.api-key"
 VTS_TOKEN_ID = "vts-token"
 VTS_TOKEN_PURPOSE = "vts.authentication-token"
 TTS_GATEWAY_TOKEN_ID = "tts-gateway-token"
@@ -171,18 +173,28 @@ class EncryptedSecretFile:
         )
         self._prepare_parent()
         self._validate_existing_target()
+        previous_envelope = self._read_existing_envelope_bytes()
         temporary = self._path.with_name(f".{self._path.name}.{uuid4().hex}.part")
+        replaced = False
         try:
             with temporary.open("x", encoding="ascii", newline="\n") as output:
                 output.write(envelope)
                 output.flush()
                 os.fsync(output.fileno())
             os.replace(temporary, self._path)
+            replaced = True
             if self.read_text() != value:
                 raise SecretStoreError(SecretStoreErrorCode.corrupt, self._key_id)
         except SecretStoreError:
+            if replaced:
+                self._restore_previous_envelope(previous_envelope)
             raise
         except OSError as exc:
+            if replaced:
+                try:
+                    self._restore_previous_envelope(previous_envelope)
+                except SecretStoreError as rollback_exc:
+                    raise rollback_exc from exc
             raise SecretStoreError(SecretStoreErrorCode.io_failed, self._key_id) from exc
         finally:
             with suppress(OSError):
@@ -283,6 +295,55 @@ class EncryptedSecretFile:
         if not stat.S_ISREG(path_stat.st_mode):
             raise SecretStoreError(SecretStoreErrorCode.io_failed, self._key_id)
 
+    def _read_existing_envelope_bytes(self) -> bytes | None:
+        """Keep an encrypted pre-write snapshot for post-replace verification rollback."""
+
+        try:
+            try:
+                path_stat = self._path.lstat()
+            except FileNotFoundError:
+                return None
+            assert_no_reparse_points(self._app_root, self._path)
+            if not stat.S_ISREG(path_stat.st_mode) or path_stat.st_size > _MAX_ENVELOPE_BYTES:
+                raise SecretStoreError(SecretStoreErrorCode.io_failed, self._key_id)
+            return self._path.read_bytes()
+        except SecretStoreError:
+            raise
+        except WindowsSecurityError as exc:
+            raise SecretStoreError(SecretStoreErrorCode.io_failed, self._key_id) from exc
+        except OSError as exc:
+            raise SecretStoreError(SecretStoreErrorCode.io_failed, self._key_id) from exc
+
+    def _restore_previous_envelope(self, previous_envelope: bytes | None) -> None:
+        """Undo only a verified-after-replace failure without retaining plaintext."""
+
+        if previous_envelope is None:
+            try:
+                self._validate_existing_target()
+                self._path.unlink(missing_ok=True)
+                return
+            except SecretStoreError:
+                raise
+            except OSError as exc:
+                raise SecretStoreError(SecretStoreErrorCode.io_failed, self._key_id) from exc
+
+        temporary = self._path.with_name(f".{self._path.name}.{uuid4().hex}.restore")
+        try:
+            self._prepare_parent()
+            self._validate_existing_target()
+            with temporary.open("xb") as output:
+                output.write(previous_envelope)
+                output.flush()
+                os.fsync(output.fileno())
+            os.replace(temporary, self._path)
+        except SecretStoreError:
+            raise
+        except OSError as exc:
+            raise SecretStoreError(SecretStoreErrorCode.io_failed, self._key_id) from exc
+        finally:
+            with suppress(OSError):
+                temporary.unlink(missing_ok=True)
+
     def _decode_inner(self, plaintext: bytes) -> str:
         try:
             inner: Any = json.loads(plaintext.decode("ascii"))
@@ -321,6 +382,46 @@ def llm_api_key_file(
     )
 
 
+def deepseek_api_key_file(
+    paths: AppPaths,
+    *,
+    protector: DataProtector | None = None,
+    directory_security: DirectorySecurity | None = None,
+) -> EncryptedSecretFile:
+    """Return the provider-bound DeepSeek credential store.
+
+    Keeping this separate from the generic compatible-provider credential makes
+    switching providers incapable of reusing a key against a different host.
+    """
+
+    return EncryptedSecretFile(
+        paths.secrets / f"{DEEPSEEK_API_KEY_ID}.json",
+        app_root=paths.root,
+        key_id=DEEPSEEK_API_KEY_ID,
+        purpose=DEEPSEEK_API_KEY_PURPOSE,
+        protector=protector,
+        directory_security=directory_security,
+    )
+
+
+def tts_gateway_token_file(
+    paths: AppPaths,
+    *,
+    protector: DataProtector | None = None,
+    directory_security: DirectorySecurity | None = None,
+) -> EncryptedSecretFile:
+    """Return the private local GPT-SoVITS Gateway bearer-token store."""
+
+    return EncryptedSecretFile(
+        paths.secrets / f"{TTS_GATEWAY_TOKEN_ID}.json",
+        app_root=paths.root,
+        key_id=TTS_GATEWAY_TOKEN_ID,
+        purpose=TTS_GATEWAY_TOKEN_PURPOSE,
+        protector=protector,
+        directory_security=directory_security,
+    )
+
+
 def vts_token_file(
     paths: AppPaths,
     path: Path,
@@ -333,22 +434,6 @@ def vts_token_file(
         app_root=paths.root,
         key_id=VTS_TOKEN_ID,
         purpose=VTS_TOKEN_PURPOSE,
-        protector=protector,
-        directory_security=directory_security,
-    )
-
-
-def tts_gateway_token_file(
-    paths: AppPaths,
-    *,
-    protector: DataProtector | None = None,
-    directory_security: DirectorySecurity | None = None,
-) -> EncryptedSecretFile:
-    return EncryptedSecretFile(
-        paths.secrets / f"{TTS_GATEWAY_TOKEN_ID}.json",
-        app_root=paths.root,
-        key_id=TTS_GATEWAY_TOKEN_ID,
-        purpose=TTS_GATEWAY_TOKEN_PURPOSE,
         protector=protector,
         directory_security=directory_security,
     )

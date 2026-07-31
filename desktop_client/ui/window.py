@@ -18,6 +18,7 @@ from pydantic import ValidationError
 from PySide6.QtCore import QEvent
 from PySide6.QtGui import QCloseEvent, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
+    QCheckBox,
     QHBoxLayout,
     QLabel,
     QMainWindow,
@@ -60,6 +61,7 @@ from desktop_client.ui.settings_dialog import SettingsDialog
 
 MAX_VISIBLE_MESSAGES = 200
 MAX_VISIBLE_MESSAGE_CHARS = 100_000
+_NO_VISUAL_SUMMARY_REASON = "当前版本尚未接入合规的视觉摘要来源。"
 
 
 @dataclass(slots=True)
@@ -333,6 +335,8 @@ class MainWindow(QMainWindow):
         self._lifecycle_notice: str | None = None
         self._settings_dialog: SettingsDialog | None = None
         self._voice_press_active = False
+        self._screen_context_available = False
+        self._screen_context_unavailable_reason: str | None = _NO_VISUAL_SUMMARY_REASON
         self._appearance = appearance or DefaultChatAppearance()
         self.setWindowTitle("Megumin Companion")
         self.resize(720, 560)
@@ -351,6 +355,21 @@ class MainWindow(QMainWindow):
         self.editor.setTabChangesFocus(True)
         self.editor.setMaximumBlockCount(2_000)
         button_row = QHBoxLayout()
+        self.screen_context_checkbox = QCheckBox(
+            "本条使用有限语义视觉摘要（如有）",
+            central,
+        )
+        self.screen_context_checkbox.setObjectName("chatVisualSummaryConsent")
+        self.screen_context_checkbox.setAccessibleName("本条发送有限语义视觉摘要")
+        self.screen_context_checkbox.setAccessibleDescription(
+            "仅在视觉感知已启用且存在新鲜、非敏感的有限语义摘要时发送；不会上传截图或 OCR 原文。"
+        )
+        self.screen_context_checkbox.setToolTip(
+            "仅发送有限语义标签生成的文本摘要；不会上传截图或 OCR 原文。"
+        )
+        self.screen_context_status = QLabel("视觉摘要：正在检查可用性", central)
+        self.screen_context_status.setObjectName("chatVisualSummaryStatus")
+        self.screen_context_status.setAccessibleName("视觉摘要：正在检查可用性")
         self.send_button = QPushButton("发送", central)
         self.send_button.setObjectName("chatSendButton")
         self.send_button.setAccessibleName("发送消息")
@@ -363,6 +382,8 @@ class MainWindow(QMainWindow):
         self.settings_button = QPushButton("设置与隐私", central)
         self.settings_button.setObjectName("chatSettingsButton")
         self.settings_button.setAccessibleName("设置与隐私")
+        button_row.addWidget(self.screen_context_checkbox)
+        button_row.addWidget(self.screen_context_status)
         button_row.addStretch(1)
         button_row.addWidget(self.settings_button)
         button_row.addWidget(self.voice_button)
@@ -405,7 +426,8 @@ class MainWindow(QMainWindow):
             )
         )
         QWidget.setTabOrder(self.message_view, self.editor)
-        QWidget.setTabOrder(self.editor, self.voice_button)
+        QWidget.setTabOrder(self.editor, self.screen_context_checkbox)
+        QWidget.setTabOrder(self.screen_context_checkbox, self.voice_button)
         QWidget.setTabOrder(self.voice_button, self.stop_button)
         QWidget.setTabOrder(self.stop_button, self.send_button)
         QWidget.setTabOrder(self.send_button, self.settings_button)
@@ -433,7 +455,10 @@ class MainWindow(QMainWindow):
         text = self.editor.toPlainText()
         if text.strip():
             try:
-                message = UserMessage(text=text)
+                message = UserMessage(
+                    text=text,
+                    screen_context_allowed=self.screen_context_checkbox.isChecked(),
+                )
             except ValidationError:
                 self._show_error("invalid_user_message")
                 return
@@ -449,6 +474,7 @@ class MainWindow(QMainWindow):
             self._pending_command_ids.add(command.command_id)
             self.model.add_user_message(message)
             self.editor.clear()
+            self.screen_context_checkbox.setChecked(False)
             self._sync_view()
 
     def _stop_turn(self) -> None:
@@ -528,6 +554,27 @@ class MainWindow(QMainWindow):
 
     def set_lifecycle_notice(self, value: str | None) -> None:
         self._lifecycle_notice = value
+        self._sync_view()
+
+    def set_visual_summary_available(
+        self,
+        available: bool,
+        *,
+        unavailable_reason: str | None = None,
+    ) -> None:
+        """Set the future visual-summary capability without accepting image data.
+
+        W30 has no capture or OCR producer, so callers currently leave this at
+        the fail-closed default. A later privacy-reviewed producer can enable
+        the single-turn consent control only after it has a compliant summary.
+        """
+
+        self._screen_context_available = available
+        self._screen_context_unavailable_reason = (
+            None if available else (unavailable_reason or _NO_VISUAL_SUMMARY_REASON)
+        )
+        if not available:
+            self.screen_context_checkbox.setChecked(False)
         self._sync_view()
 
     def begin_lifecycle_shutdown(self) -> None:
@@ -627,6 +674,14 @@ class MainWindow(QMainWindow):
         self.feature_status.setText(feature_status)
         self.feature_status.setAccessibleName(feature_status)
         self.send_button.setEnabled(chat_ready)
+        self.screen_context_checkbox.setEnabled(chat_ready and self._screen_context_available)
+        visual_status = (
+            "视觉摘要：可用于本条；仍需勾选单次同意。"
+            if self._screen_context_available
+            else f"视觉摘要不可用：{self._screen_context_unavailable_reason}"
+        )
+        self.screen_context_status.setText(visual_status)
+        self.screen_context_status.setAccessibleName(visual_status)
         self.stop_button.setEnabled(self.can_stop_current_turn)
         voice_ready = (
             self.model.connection_state is BackendState.ready
@@ -704,6 +759,9 @@ class MainWindow(QMainWindow):
             self._settings_dialog.close()
             self._settings_dialog = None
         self.editor.clear()
+        self.screen_context_checkbox.setChecked(False)
+        self._screen_context_available = False
+        self._screen_context_unavailable_reason = _NO_VISUAL_SUMMARY_REASON
         self._transcript_surface.clear_sensitive()
         self._pending_message = None
         self._pending_command_ids.clear()

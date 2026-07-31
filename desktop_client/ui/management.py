@@ -30,7 +30,12 @@ from app.memory.service import (
     FeatureDisabledError,
 )
 from app.schemas import FeatureName, FeatureState
-from app.secret_store import SecretStoreError, llm_api_key_file, vts_token_file
+from app.secret_store import (
+    SecretStoreError,
+    deepseek_api_key_file,
+    llm_api_key_file,
+    vts_token_file,
+)
 from app.stt_runtime import (
     ManagedChineseSttRuntime,
     SttRuntimeError,
@@ -47,6 +52,8 @@ from desktop_client.ui.contracts import (
     AudioOutputDevicesEvent,
     AvatarLayerStatus,
     BackendCapabilities,
+    DeepSeekFlashConfigureCommand,
+    DeepSeekFlashDisableCommand,
     DesktopSettingsForm,
     FeatureSetCommand,
     FeatureStatesEvent,
@@ -82,17 +89,17 @@ from desktop_client.ui.provider_preflight import ProviderPreflightRunner
 
 LOCAL_DESKTOP_USER_ID = "local_user"
 _OFFLINE_LLM_PROVIDERS = frozenset({"", "none", "mock"})
-_SUPPORTED_TTS_PROVIDERS = frozenset(
+_DEEPSEEK_FLASH_PROVIDER = "deepseek"
+_GATEWAY_TTS_PROVIDERS = frozenset(
     {
-        "mock",
-        "gpt-sovits",
-        "gpt_sovits",
         "gpt-sovits-gateway",
         "gpt_sovits_gateway",
         "gateway",
     }
 )
-_GATEWAY_TTS_PROVIDERS = frozenset({"gpt-sovits-gateway", "gpt_sovits_gateway", "gateway"})
+_SUPPORTED_TTS_PROVIDERS = frozenset({"mock", "gpt-sovits", "gpt_sovits"}) | (
+    _GATEWAY_TTS_PROVIDERS
+)
 _DEVICE_INDEX = re.compile(r"^[0-9]+$")
 
 
@@ -112,9 +119,16 @@ class DesktopSecretStore(Protocol):
 
     def store_llm(self, settings: Settings, value: str) -> None: ...
 
+    def deepseek_flash_configured(self, settings: Settings) -> bool: ...
+
+    def store_deepseek_flash(self, settings: Settings, value: str) -> None:
+        """Atomically replace the provider-bound key or leave its old slot unchanged."""
+
     async def store_vts(self, settings: Settings, value: str) -> None: ...
 
     def revoke_llm(self, settings: Settings) -> bool: ...
+
+    def revoke_deepseek_flash(self, settings: Settings) -> bool: ...
 
     def revoke_vts(self, settings: Settings) -> bool: ...
 
@@ -131,6 +145,12 @@ class DPAPIDesktopSecretStore:
     def store_llm(self, settings: Settings, value: str) -> None:
         llm_api_key_file(settings.paths).write_text(value)
 
+    def deepseek_flash_configured(self, settings: Settings) -> bool:
+        return deepseek_api_key_file(settings.paths).exists
+
+    def store_deepseek_flash(self, settings: Settings, value: str) -> None:
+        deepseek_api_key_file(settings.paths).write_text(value)
+
     async def store_vts(self, settings: Settings, value: str) -> None:
         store = DPAPITokenStore(vts_token_file(settings.paths, settings.vts_token_path()))
         await store.save(
@@ -143,6 +163,9 @@ class DPAPIDesktopSecretStore:
 
     def revoke_llm(self, settings: Settings) -> bool:
         return llm_api_key_file(settings.paths).revoke()
+
+    def revoke_deepseek_flash(self, settings: Settings) -> bool:
+        return deepseek_api_key_file(settings.paths).revoke()
 
     def revoke_vts(self, settings: Settings) -> bool:
         return vts_token_file(settings.paths, settings.vts_token_path()).revoke()
@@ -181,6 +204,8 @@ class DesktopManagementRuntime:
             (
                 ManagementRefreshCommand,
                 SettingsSaveCommand,
+                DeepSeekFlashConfigureCommand,
+                DeepSeekFlashDisableCommand,
                 SttInstallCommand,
                 AudioOutputDevicesCommand,
                 ProviderPreflightCommand,
@@ -231,6 +256,12 @@ class DesktopManagementRuntime:
                 return
             if isinstance(command, SettingsSaveCommand):
                 await self._save_settings(bridge, command)
+                return
+            if isinstance(command, DeepSeekFlashConfigureCommand):
+                await self._configure_deepseek_flash(bridge, command)
+                return
+            if isinstance(command, DeepSeekFlashDisableCommand):
+                await self._disable_deepseek_flash(bridge, command)
                 return
             if isinstance(command, SttInstallCommand):
                 await self._install_stt_runtime(bridge, command)
@@ -297,7 +328,45 @@ class DesktopManagementRuntime:
     ) -> None:
         form = command.payload
         provider = form.llm_provider.strip().casefold()
-        if provider not in _OFFLINE_LLM_PROVIDERS:
+        active_deepseek_flash = (
+            self._settings.llm.provider.strip().casefold() == _DEEPSEEK_FLASH_PROVIDER
+        )
+        if provider == _DEEPSEEK_FLASH_PROVIDER:
+            if not active_deepseek_flash:
+                self._result(
+                    bridge,
+                    operation="settings_save",
+                    command_id=command.command_id,
+                    reason_code="deepseek_flash_configure_required",
+                )
+                return
+            try:
+                deepseek_flash_configured = self._secrets.deepseek_flash_configured(self._settings)
+            except Exception as exc:
+                self._result(
+                    bridge,
+                    operation="settings_save",
+                    command_id=command.command_id,
+                    reason_code=_management_error_code(exc),
+                )
+                return
+            if not deepseek_flash_configured:
+                self._result(
+                    bridge,
+                    operation="settings_save",
+                    command_id=command.command_id,
+                    reason_code="deepseek_flash_key_required",
+                )
+                return
+        elif active_deepseek_flash:
+            self._result(
+                bridge,
+                operation="settings_save",
+                command_id=command.command_id,
+                reason_code="deepseek_flash_disable_required",
+            )
+            return
+        elif provider not in _OFFLINE_LLM_PROVIDERS:
             if not form.llm_model.strip():
                 self._result(
                     bridge,
@@ -347,7 +416,7 @@ class DesktopManagementRuntime:
         try:
             await asyncio.to_thread(
                 patch_user_settings,
-                _settings_patch(form),
+                _settings_patch(form, include_llm=not active_deepseek_flash),
                 app_paths=self._settings.paths,
             )
             self._settings = await asyncio.to_thread(
@@ -370,6 +439,161 @@ class DesktopManagementRuntime:
             operation="settings_saved",
             command_id=command.command_id,
             restart_required=True,
+        )
+
+    async def _configure_deepseek_flash(
+        self,
+        bridge: ApplicationBridge,
+        command: DeepSeekFlashConfigureCommand,
+    ) -> None:
+        """Activate only the fixed Flash profile and its isolated DPAPI key.
+
+        The runtime consumes persisted settings only after a restart.  Patching
+        the provider before storing the key therefore cannot issue an outbound
+        request.  Reload settings before the DPAPI write, so every failure that
+        can occur after patching happens before a credential is changed.  The
+        production secret store restores its encrypted pre-write envelope if
+        post-replace verification fails; this orchestration adds a revoke
+        fallback for a previously absent slot.
+        """
+
+        if self._settings.memory.candidate_analysis_enabled:
+            self._result(
+                bridge,
+                operation="deepseek_flash_configure",
+                command_id=command.command_id,
+                reason_code="deepseek_memory_pro_required",
+            )
+            return
+
+        previous_provider = self._settings.llm.provider
+        provider_patched = False
+        key_write_started = False
+        had_existing_key = False
+        try:
+            await asyncio.to_thread(
+                patch_user_settings,
+                {"llm": {"provider": _DEEPSEEK_FLASH_PROVIDER}},
+                app_paths=self._settings.paths,
+            )
+            provider_patched = True
+            updated_settings = await asyncio.to_thread(
+                load_settings,
+                app_paths=self._settings.paths,
+                environ={},
+            )
+            had_existing_key = await asyncio.to_thread(
+                self._secrets.deepseek_flash_configured,
+                updated_settings,
+            )
+            key_write_started = True
+            await asyncio.to_thread(
+                self._secrets.store_deepseek_flash,
+                updated_settings,
+                command.value,
+            )
+        except Exception as exc:
+            provider_rollback_failed = False
+            if provider_patched:
+                try:
+                    await asyncio.to_thread(
+                        patch_user_settings,
+                        {"llm": {"provider": previous_provider}},
+                        app_paths=self._settings.paths,
+                    )
+                    self._settings = await asyncio.to_thread(
+                        load_settings,
+                        app_paths=self._settings.paths,
+                        environ={},
+                    )
+                except Exception:
+                    provider_rollback_failed = True
+            key_rollback_failed = False
+            if key_write_started and not had_existing_key:
+                try:
+                    await asyncio.to_thread(
+                        self._secrets.revoke_deepseek_flash,
+                        updated_settings,
+                    )
+                except Exception:
+                    key_rollback_failed = True
+            if provider_rollback_failed or key_rollback_failed:
+                self._result(
+                    bridge,
+                    operation="deepseek_flash_configure",
+                    command_id=command.command_id,
+                    reason_code="deepseek_flash_rollback_failed",
+                )
+                return
+            self._result(
+                bridge,
+                operation="deepseek_flash_configure",
+                command_id=command.command_id,
+                reason_code=_management_error_code(exc),
+            )
+            return
+
+        self._settings = updated_settings
+        await self._publish_settings(bridge, command_id=command.command_id)
+        self._result(
+            bridge,
+            operation="deepseek_flash_configured",
+            command_id=command.command_id,
+            restart_required=True,
+        )
+
+    async def _disable_deepseek_flash(
+        self,
+        bridge: ApplicationBridge,
+        command: DeepSeekFlashDisableCommand,
+    ) -> None:
+        """Disable remote use before deleting an isolated DeepSeek credential."""
+
+        active_deepseek_flash = (
+            self._settings.llm.provider.strip().casefold() == _DEEPSEEK_FLASH_PROVIDER
+        )
+        if active_deepseek_flash:
+            try:
+                await asyncio.to_thread(
+                    patch_user_settings,
+                    {"llm": {"provider": "none"}},
+                    app_paths=self._settings.paths,
+                )
+                self._settings = await asyncio.to_thread(
+                    load_settings,
+                    app_paths=self._settings.paths,
+                    environ={},
+                )
+            except Exception as exc:
+                self._result(
+                    bridge,
+                    operation="deepseek_flash_disable",
+                    command_id=command.command_id,
+                    reason_code=_management_error_code(exc),
+                )
+                return
+
+        try:
+            await asyncio.to_thread(self._secrets.revoke_deepseek_flash, self._settings)
+        except Exception:
+            # The provider has already been switched to the offline safe value;
+            # publish that fact even if the stale encrypted file cannot be removed.
+            await self._publish_settings(bridge, command_id=command.command_id)
+            self._result(
+                bridge,
+                operation="deepseek_flash_disabled",
+                command_id=command.command_id,
+                reason_code="deepseek_flash_key_revoke_failed",
+                restart_required=active_deepseek_flash,
+            )
+            return
+
+        await self._publish_settings(bridge, command_id=command.command_id)
+        self._result(
+            bridge,
+            operation="deepseek_flash_disabled",
+            command_id=command.command_id,
+            restart_required=active_deepseek_flash,
         )
 
     async def _install_stt_runtime(
@@ -857,6 +1081,20 @@ class DesktopManagementRuntime:
                     reason_code=_management_error_code(exc),
                 )
         try:
+            deepseek_flash_configured = await asyncio.to_thread(
+                self._secrets.deepseek_flash_configured,
+                self._settings,
+            )
+        except Exception as exc:
+            deepseek_flash_configured = False
+            if command_id is not None:
+                self._result(
+                    bridge,
+                    operation="deepseek_flash_status",
+                    command_id=command_id,
+                    reason_code=_management_error_code(exc),
+                )
+        try:
             stt_runtime = await asyncio.to_thread(
                 self._stt_runtime.status_for_settings,
                 self._settings,
@@ -870,6 +1108,7 @@ class DesktopManagementRuntime:
                     llm_secret_configured=llm_configured,
                     vts_secret_configured=vts_configured,
                     settings_schema_upgrade_required=self._settings.settings_schema_upgrade_required,
+                    deepseek_flash_configured=deepseek_flash_configured,
                     stt_runtime=stt_runtime,
                 ),
                 command_id=command_id,
@@ -1058,7 +1297,11 @@ def _settings_form(settings: Settings) -> DesktopSettingsForm:
     )
 
 
-def _settings_patch(form: DesktopSettingsForm) -> dict[str, object]:
+def _settings_patch(
+    form: DesktopSettingsForm,
+    *,
+    include_llm: bool = True,
+) -> dict[str, object]:
     raw_device = form.stt_device.strip()
     device: int | str | None
     if not raw_device:
@@ -1067,13 +1310,8 @@ def _settings_patch(form: DesktopSettingsForm) -> dict[str, object]:
         device = int(raw_device)
     else:
         device = raw_device
-    return {
+    patch: dict[str, object] = {
         "desktop": {"startup_enabled": form.startup_enabled},
-        "llm": {
-            "provider": form.llm_provider.strip(),
-            "base_url": form.llm_base_url.strip(),
-            "model": form.llm_model.strip(),
-        },
         "tts": {
             "provider": form.tts_provider.strip(),
             "base_url": form.tts_base_url.strip(),
@@ -1122,6 +1360,13 @@ def _settings_patch(form: DesktopSettingsForm) -> dict[str, object]:
             "mouth_release_seconds": form.avatar_mouth_release_seconds,
         },
     }
+    if include_llm:
+        patch["llm"] = {
+            "provider": form.llm_provider.strip(),
+            "base_url": form.llm_base_url.strip(),
+            "model": form.llm_model.strip(),
+        }
+    return patch
 
 
 def _memory_summary(item: Any) -> MemorySummary:

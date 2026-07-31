@@ -2,11 +2,7 @@
 
 > 原始版本：2026-07-17 Gate W0 决策落版
 >
-> 最新修订：2026-07-30 W29 五情绪 TTS/VTS 联动的既有实现、私有安装、真实中文链路、完整质量门、
-> 功能提交和 stacked Draft PR #34 均保留；当前代码审计确认 gateway permit 泄漏这一 P0 合并阻断项，
-> 同时复核到既有 cancellation circuit 会在未结算 worker 存在时 fail closed。P0 提交 `a790f47` 的本地与
-> push/PR CI 证据已完成（8/8）；本状态记录仍待自身 exact-head CI。circuit 的安全恢复需要独立生命周期设计。不得把既有 CI 或主观试听 Gate 当作这些缺陷已关闭；W20～W27 的
-> 既有编号和范围不变
+> 最新修订：2026-07-31 所有者已授权合并当前全部 PR，包括 W30/DeepSeek，并接受已记录的主观 Gate 与残余发布风险。W29 PR #34 已合入 W28；W30 必须先与该最新 W28/W29 组合、解析重叠并通过新 exact-head 质量门，随后再按堆栈逆序合并。未验证的真实 DeepSeek Key/账号/计费/远端保留不因合并授权而变成已验证；W20～W27 编号与范围不变。
 >
 > 代码基线：`agent/windows-development-baseline` / `d56cfbd`
 >
@@ -458,6 +454,7 @@ updated_at: UTC
 | 边界 | timeout/cancel 后 owner | 是否真的停止 | 清理与重试 | 用户状态与无敏感日志 |
 | --- | --- | --- | --- | --- |
 | LLM HTTP stream | provider task，直到 response close | asyncio/httpx 可取消并 close；远端计算可能继续 | 不自动重放已播 turn；按错误类别人工/退避重试 | `llm_timeout/connection/protocol`，只记 provider/model/latency/id |
+| W30 DeepSeek Flash HTTP | 专用 provider task，直到 response close | 同上；本地取消不保证 DeepSeek 已停止处理 | 固定 endpoint/model/disabled thinking；图像、multipart content/tool call 本地拒绝，资源不足为 retryable unavailable；不得改为通用 key 或图像回退 | 稳定 `llm_*` reason code；不记 key、header、正文、视觉摘要或远端错误 body |
 | GPT-SoVITS HTTP/WAV | W19 legacy provider，或 W29 provider + 私有 gateway/manifest owner | request 可取消；上游/本机 CUDA 推理在取消瞬间未必停止；launcher close 可杀完整 gateway 子树 | `.part`/ephemeral 登记删除；W29 事务切换完整 pair、失败回滚/quarantine；文件锁下次重试 | 字幕与视觉 fallback 继续，音频 degraded；只记 job id/bytes/duration/稳定码，不记 reference/prompt/path |
 | VTS WebSocket/action | VTS bridge + generation | socket 可关闭；W28 使用已验证的专用 release 入口收束主体动作 | purge 旧 generation、release 主体动作、关闭程序红眼、参数归零、jitter reconnect；不得播放伪 Neutral motion | `vts_disconnected/auth/config`，不记 token/text |
 | PortAudio playback | MediaWorker | soft abort 失败则 Job hard kill | worker temp/lease scavenger，设备重枚举 | `audio_device_lost/hung`，不记 WAV 路径或正文 |
@@ -494,10 +491,29 @@ flowchart LR
     W12 --> W21
     W10 --> W22
     W19 --> W28 --> W29 --> W24
+    W28 --> W30 --> W24
     W22 --> W23 --> W24 --> W25 --> W26 --> W27
 ```
 
 不可逆基础是 W01～W12。W13 以后不得通过复制临时路径、旧 WS 契约或无界 queue 绕过前置 PR。
+
+### 独立工作项 W30：DeepSeek V4 Flash 文本接入
+
+W30 是从 W28 基线派生的独立、可回滚工作项，不是原 W00～W27 线性阶段的完成声明，也不依赖或修改暂停的 W29。
+详细范围以 [`plans/w30_deepseek_flash_execution_plan.md`](./plans/w30_deepseek_flash_execution_plan.md) 和
+[`adr/ADR-W30-deepseek-flash.md`](./adr/ADR-W30-deepseek-flash.md) 为准。
+
+- **当前状态：** 实施中；没有 W30 exact commit、完整质量门、Draft PR 或真实 Key 连通性证据。
+- **范围：** 专用 `DeepSeekFlashLLMProvider` 固定到 chat-completions、Flash 和 disabled thinking；专用
+  current-user DPAPI Key；桌面配置/停用命令；既有历史、长期记忆**检索**和视觉开关的受限复用；仅发送无 ID、无 URI/path
+  且无自由文本入口的 `ApprovedVisualSummary` 有限语义标签文本。
+- **禁止：** 不引入 SDK，不改通用兼容 Provider，不上传截图/图像 URL/OCR 原文/窗口标题，不接入 Pro 或长期记忆写入；
+  candidate analysis 开启时必须 fail closed。
+- **自动验收：** MockTransport、fake DPAPI、headless UI 与 prompt-context 测试覆盖固定请求、SSE/JSON、错误、
+  密钥隔离/撤销、无泄漏、上下文 gate 和预算。真实 API 不在自动化中调用。
+- **人工/外部边界：** 用户提供 Key 后才可显式进行一次不含历史、长期记忆或视觉摘要的非敏感检查。它不能证明远端
+  保留、地域、费用或长期可用性，且 Key/请求/响应正文不进入证据。
+- **回滚：** 先令 `llm.provider=none` 生效，再撤销专用密钥；保留通用 Provider 配置，不以通用密钥或图像输入绕过失败。
 
 ### Phase W0：决策、威胁模型与测试基准（2～4 工程日 + 人工签字）
 
@@ -976,6 +992,7 @@ flowchart LR
 | W19 | VTS/TTS configuration wizard/preflight | preset/capability status schema | fake services + 真实 VTS/GPT-SoVITS/资产 H | text-only 或 silent 模式 | M |
 | W28 | AvatarRuntime、VTS parameter/event API、MediaWorker envelope | avatar config、受限 `job.progress`、turn plan/state contract | fake clock/VTS/worker stress + 真实 VTS/音频/自然度 H | avatar/lip-sync/auto-red-eye disabled；文字和原音频继续 | XL |
 | W29 | structured turn parser、五槽私有 TTS gateway、safe importer/launcher | avatar JSON v1、gateway protocol v1、私有 manifest、DPAPI token | parser/security/transaction tests + 五槽/真实播放/VTS/试听 H | gateway 关闭，TTS 切回 Mock/silent；Avatar/文字继续 | XL |
+| W30 | 专用 DeepSeek Flash Provider、secret store、bootstrap、prompt context、桌面设置 | 只切换 `llm.provider=deepseek`；独立 DPAPI 槽；不迁移/改写通用 LLM 配置或用户记忆 | MockTransport/DPAPI/UI/prompt gate + 全量质量门；用户显式、非敏感真实 Key 检查 | `llm.provider=none` 后 revoke 专用 key；保留通用配置 | M |
 | W20 | Windows session/focus/idle adapters、proactive counters | OS signal snapshot、counter DB migration | fake clock/state tests + Windows focus/lock/RDP H | vision/proactive actual disabled | L |
 | W21 | PerceptionWorker/capture adapter/WinRT binding | perception helper protocol v1；不迁移截图 | buffer/fault tests + 多显示器/权限/范围隐私 H | `vision=disabled`，移除 worker artifact | XL |
 | W22 | `app/main.py` perception composition、feature lifecycle | vision actual-state/generation DB migration | race/stale/sentinel tests + 敏感窗口 H | vision 强制 disabled，保留迁移后的状态 | XL |
@@ -1030,6 +1047,7 @@ flowchart LR
 | Beta B | W17～W19 | 38～58 日 | 增加真实语音、音频和 VTS provider/preflight。 |
 | Avatar Runtime closure | W28 | 旧估算外；完成基线/调研后校准 | 增加程序微动作、实际播放音量口型和可靠 VTS 生命周期。 |
 | Five-emotion TTS/VTS closure | W29 | W28 后独立校准 | 增加结构化回合、五槽私有中文 TTS 和有序动作/红眼联动。 |
+| DeepSeek Flash（独立） | W30 | 不纳入原线性工期；以独立质量门校验 | 可选固定文本 Provider；不表示视觉、Pro 或长期记忆写入完成。 |
 | Local RC | W20～W27 | 56～85 日 + soak | 完成 Windows 感知、主动发话、安装升级和发布 Gate。 |
 
 说明：
@@ -1151,19 +1169,12 @@ flowchart LR
 2026-07-30 起，下列顺序覆盖本节此前基于 W28 的历史停点：
 
 1. 完整读取 [`current/CURRENT_GOAL.md`](./current/CURRENT_GOAL.md)、
-   [`plans/w29_five_emotion_tts_vts_execution_plan.md`](./plans/w29_five_emotion_tts_vts_execution_plan.md)、
-   ADR-W29、W29 实现记录和本地恢复状态；不得重问已确认问题或把私有路径/资产复制到 Git。
-2. W29 以 W28 exact head 为 stacked base；W28/W19 未合并时不得把它们的 diff 混入 W29 审计或改写其历史
-   Gate。发布前重新查询两项 Draft PR、远端 base/head 和 CI。
-3. W29 公共实现、私有安装、五槽校准、真实链路、正式文档、wheel/source quarantine、staged 私有
-   denylist、最终私有 runtime smoke、功能提交、push 和 stacked Draft PR #34 已完成；这不覆盖随后
-   确认的 P0 gateway permit/取消缺陷。
-4. P0 `a790f47` 已修复 permit 生命周期、通过连续多轮回归与代码 head 的新质量门；保留 W08 cancellation
-   circuit，并为卡死 inference 的 bounded recovery 单独设计生命周期 owner。现在形成状态记录、等待其
-   exact-head CI，再重审 PR 的 base/head/diff/review/conversation/mergeability/隐私。
-5. 不合并。所有者试听五种音色、情绪差异、中文自然度和整体动作观感前，不把主观 Gate 写成通过；也不得
-   把完整 WAV 延迟或未来 streaming/restart 设计误写成 P0 已解决。
-6. W20～W27 的编号、范围和依赖保持；W24 在当前顺序中依赖 W29。
+   [`plans/w29_five_emotion_tts_vts_execution_plan.md`](./plans/w29_five_emotion_tts_vts_execution_plan.md) 与
+   [`plans/w30_deepseek_flash_execution_plan.md`](./plans/w30_deepseek_flash_execution_plan.md)，再以当前远端 PR/工作树核验事实。
+2. 将 W29 先合入 W28，再把更新后的 W28 合入 W30；重叠 gateway/bootstrap/UI/测试/文档必须保留两侧安全语义。
+3. 对 W29+W30 组合树运行聚焦回归、完整 pytest/coverage、Ruff、format、strict mypy、双 lock、wheel/source-quarantine 和敏感边界检查。
+4. 只在新 exact head 的 push/PR 检查全部成功后，才用 expected-head guard 合并 W30；随后等待 W28、W19 父分支新 head 各自 CI，再逆序合并 #33/#32。
+5. 合并授权不会把真实 DeepSeek Key、远端隐私/计费、真实 Windows DPI 或未完成的外部事实写成已验证。
 
 ## 12. 官方平台依据
 
@@ -1175,3 +1186,6 @@ flowchart LR
 - [Windows Known Folders / LocalAppData](https://learn.microsoft.com/en-us/windows/win32/shell/knownfolderid)
 - [Windows DACLs and ACEs](https://learn.microsoft.com/en-us/windows/win32/secauthz/dacls-and-aces)
 - [Windows.Graphics.Capture](https://learn.microsoft.com/en-us/uwp/api/windows.graphics.capture)
+- [DeepSeek Chat Completions](https://api-docs.deepseek.com/api/create-chat-completion/)
+- [DeepSeek 多轮对话](https://api-docs.deepseek.com/guides/multi_round_chat)
+- [DeepSeek 隐私政策](https://cdn.deepseek.com/policies/en-US/deepseek-privacy-policy.html)

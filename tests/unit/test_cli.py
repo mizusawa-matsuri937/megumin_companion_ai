@@ -212,8 +212,14 @@ def test_explicit_dev_api_constructs_one_secured_app_and_passes_loopback_overrid
     calls: list[tuple[object, str, int, int]] = []
     monkeypatch.setattr(cli, "_load_settings", lambda *_args: settings)
 
-    def create_secured_app(received: Settings, *, dev_api: DevAPIConfig) -> object:
+    def create_secured_app(
+        received: Settings,
+        *,
+        dev_api: DevAPIConfig,
+        allow_deepseek_env_fallback: bool,
+    ) -> object:
         assert received is settings
+        assert allow_deepseek_env_fallback
         received_configs.append(dev_api)
         return application
 
@@ -312,7 +318,13 @@ def test_dev_admin_is_explicit_and_grants_both_scopes(
     received: list[DevAPIConfig] = []
     monkeypatch.setattr(cli, "_load_settings", lambda *_args: settings)
 
-    def create_secured_app(_settings: Settings, *, dev_api: DevAPIConfig) -> object:
+    def create_secured_app(
+        _settings: Settings,
+        *,
+        dev_api: DevAPIConfig,
+        allow_deepseek_env_fallback: bool,
+    ) -> object:
+        assert allow_deepseek_env_fallback
         received.append(dev_api)
         return object()
 

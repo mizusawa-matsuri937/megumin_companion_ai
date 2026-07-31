@@ -70,6 +70,7 @@
 
 ## 当前 Wxx 实现记录
 
+- [W30：DeepSeek V4 Flash 独立接入（Draft PR #35；设置页滚动修复的代码 head CI 已通过，真实 Key 验证仍待进行）](implementation/w30_deepseek_flash.md)
 - [W14：文字对话、streaming、取消与恢复](implementation/w14_text_chat_streaming.md)
 - [W15：单实例、托盘和统一生命周期（已合并）](implementation/w15_single_instance_lifecycle.md)
 - [W16：设置、feature 与记忆管理最小 UI（已合并）](implementation/w16_settings_feature_memory_ui.md)
@@ -81,6 +82,8 @@
 
 ## 当前专项计划
 
+- [W30：DeepSeek V4 Flash 独立接入执行计划](plans/w30_deepseek_flash_execution_plan.md)：
+  独立 W30 的固定 Flash 文本出口、专用密钥、上下文开关、紧凑设置窗口的可达性回归与验收边界；不改变 W29 工作树或其验收状态。
 - [W28：Avatar Runtime、程序微动作与音量口型执行计划](plans/w28_avatar_runtime_execution_plan.md)：
   正式范围、架构、阶段、自动化、真实 VTS/音频验收和 Draft PR 定义；完成证据以实现记录和 exact head 为准。
 - [W29：五情绪 GPT-SoVITS 与 VTS 动作联动执行计划](plans/w29_five_emotion_tts_vts_execution_plan.md)：

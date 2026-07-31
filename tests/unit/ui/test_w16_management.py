@@ -104,6 +104,7 @@ from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox
 class _Secrets(DesktopSecretStore):
     def __init__(self) -> None:
         self.llm: str | None = None
+        self.deepseek_flash: str | None = None
         self.vts: str | None = None
 
     def status(self, _settings: Settings) -> tuple[bool, bool]:
@@ -112,12 +113,23 @@ class _Secrets(DesktopSecretStore):
     def store_llm(self, _settings: Settings, value: str) -> None:
         self.llm = value
 
+    def deepseek_flash_configured(self, _settings: Settings) -> bool:
+        return self.deepseek_flash is not None
+
+    def store_deepseek_flash(self, _settings: Settings, value: str) -> None:
+        self.deepseek_flash = value
+
     async def store_vts(self, _settings: Settings, value: str) -> None:
         self.vts = value
 
     def revoke_llm(self, _settings: Settings) -> bool:
         changed = self.llm is not None
         self.llm = None
+        return changed
+
+    def revoke_deepseek_flash(self, _settings: Settings) -> bool:
+        changed = self.deepseek_flash is not None
+        self.deepseek_flash = None
         return changed
 
     def revoke_vts(self, _settings: Settings) -> bool:
@@ -604,6 +616,45 @@ def test_w16_settings_secret_and_feature_disable_wait_for_barrier(
     qapp.processEvents()
 
 
+def test_gateway_tts_settings_save_accepts_legacy_aliases_without_reference_audio(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        for provider_name in (
+            "gpt-sovits-gateway",
+            "gpt_sovits_gateway",
+            "gateway",
+        ):
+            settings = _settings(tmp_path / provider_name)
+            management = DesktopManagementRuntime(settings, None, secrets=_Secrets())
+            bridge = ApplicationBridge()
+            form = replace(
+                _form(),
+                tts_provider=provider_name,
+                tts_ref_audio_path="",
+                tts_prompt_text="",
+            )
+
+            await management.dispatch(
+                bridge,
+                SettingsSaveCommand(payload=form),
+                capabilities=BackendCapabilities(text_chat=True, turn_cancel=True),
+            )
+
+            events = _events(bridge)
+            assert any(
+                isinstance(event, ManagementResultEvent)
+                and event.operation == "settings_saved"
+                and event.restart_required
+                for event in events
+            )
+            layer = read_user_settings(app_paths=settings.paths)
+            assert layer["tts"]["provider"] == provider_name
+            assert layer["tts"]["presets"] == {}
+
+    asyncio.run(scenario())
+
+
 def test_w16_memory_list_detail_update_delete_and_export_are_bounded(
     tmp_path: Path,
     qapp: QApplication,
@@ -881,8 +932,14 @@ def test_w16_secret_store_adapter_and_export_writer_are_bounded(
             self.saved.append(token)
 
     llm_file = _SecretFile()
+    deepseek_file = _SecretFile()
     vts_file = _SecretFile()
     monkeypatch.setattr(management_module, "llm_api_key_file", lambda _paths: llm_file)
+    monkeypatch.setattr(
+        management_module,
+        "deepseek_api_key_file",
+        lambda _paths: deepseek_file,
+    )
     monkeypatch.setattr(
         management_module,
         "vts_token_file",
@@ -894,9 +951,12 @@ def test_w16_secret_store_adapter_and_export_writer_are_bounded(
     assert store.status(settings) == (False, False)
 
     store.store_llm(settings, "synthetic-llm-key")
+    store.store_deepseek_flash(settings, "synthetic-deepseek-key")
     asyncio.run(store.store_vts(settings, "synthetic-vts-token"))
     assert store.status(settings) == (True, False)
+    assert store.deepseek_flash_configured(settings)
     assert llm_file.value == "synthetic-llm-key"
+    assert deepseek_file.value == "synthetic-deepseek-key"
     assert len(_TokenStore.saved) == 1
     token = _TokenStore.saved[0]
     assert token.plugin_name == settings.vts.plugin_name
@@ -904,6 +964,8 @@ def test_w16_secret_store_adapter_and_export_writer_are_bounded(
     assert token.authentication_token == "synthetic-vts-token"
     assert store.revoke_llm(settings)
     assert not store.revoke_llm(settings)
+    assert store.revoke_deepseek_flash(settings)
+    assert not store.revoke_deepseek_flash(settings)
     assert not store.revoke_vts(settings)
 
     payload = {"memories": [{"content": "synthetic export"}]}
@@ -1018,10 +1080,19 @@ def test_w16_management_reports_stable_error_codes_for_backend_failures(
         def store_llm(self, _settings: Settings, _value: str) -> None:
             raise self._error()
 
+        def deepseek_flash_configured(self, _settings: Settings) -> bool:
+            raise self._error()
+
+        def store_deepseek_flash(self, _settings: Settings, _value: str) -> None:
+            raise self._error()
+
         async def store_vts(self, _settings: Settings, _value: str) -> None:
             raise self._error()
 
         def revoke_llm(self, _settings: Settings) -> bool:
+            raise self._error()
+
+        def revoke_deepseek_flash(self, _settings: Settings) -> bool:
             raise self._error()
 
         def revoke_vts(self, _settings: Settings) -> bool:

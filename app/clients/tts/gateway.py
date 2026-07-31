@@ -29,6 +29,23 @@ _WAVE_CONTENT_TYPES = frozenset({"audio/wav", "audio/wave", "audio/x-wav"})
 _EXPECTED_BASE_URL = "http://127.0.0.1:9880"
 _PROTOCOL_HEADER = "x-tts-gateway-protocol"
 
+# The W29 structured pipeline supplies a canonical gateway slot in ``style``.
+# W30's compatibility path can still receive the older bounded emotion labels,
+# which are mapped only when ``style`` is not already a valid slot.
+_EMOTION_TO_VOICE_SLOT: dict[str, str] = {
+    "neutral": "neutral",
+    "bored": "neutral",
+    "sleepy": "neutral",
+    "happy": "gentle",
+    "worried": "gentle",
+    "shy": "tsundere",
+    "angry_cute": "tsundere",
+    "proud": "focused",
+    "focused": "focused",
+    "excited": "excited_explosion",
+    "explosion_mode": "excited_explosion",
+}
+
 
 class _AudioValidationError(ValueError):
     pass
@@ -134,7 +151,8 @@ class GPTSoVITSGatewayProvider:
             return self._failure(job, "tts_closed")
         if self._synthesis_cancellations:
             return self._failure(job, "tts_cancel_timeout")
-        if job.style not in VOICE_SLOTS or not 0.5 <= job.speed_factor <= 2.0:
+        voice_slot = _gateway_voice_slot(job)
+        if voice_slot is None or not 0.5 <= job.speed_factor <= 2.0:
             return self._failure(job, "tts_voice_slot_invalid")
 
         call_done: asyncio.Future[None] = asyncio.get_running_loop().create_future()
@@ -156,7 +174,12 @@ class GPTSoVITSGatewayProvider:
             if self._is_closed():
                 return self._failure(job, "tts_closed")
             worker = asyncio.create_task(
-                self._synthesize(job, segment_index=segment_index, token=token),
+                self._synthesize(
+                    job,
+                    voice_slot=voice_slot,
+                    segment_index=segment_index,
+                    token=token,
+                ),
                 name=f"gpt-sovits-gateway-{job.job_id}",
             )
             self._synthesis_tasks.add(worker)
@@ -191,6 +214,7 @@ class GPTSoVITSGatewayProvider:
         self,
         job: TTSJob,
         *,
+        voice_slot: str,
         segment_index: int,
         token: CancellationToken,
     ) -> AudioResult:
@@ -210,7 +234,7 @@ class GPTSoVITSGatewayProvider:
                 self._tts_endpoint,
                 json={
                     "text": job.text,
-                    "voice_slot": job.style,
+                    "voice_slot": voice_slot,
                     "speed_factor": job.speed_factor,
                 },
             )
@@ -388,7 +412,10 @@ class GPTSoVITSGatewayProvider:
         return self._client.build_request(
             method,
             url,
-            headers={"Authorization": f"Bearer {self._bearer_token}"},
+            headers={
+                "Authorization": f"Bearer {self._bearer_token}",
+                "X-TTS-Gateway-Protocol": "1",
+            },
             json=json,
         )
 
@@ -453,6 +480,16 @@ class GPTSoVITSGatewayProvider:
             success=False,
             error_code=error_code,
         )
+
+
+def _gateway_voice_slot(job: TTSJob) -> str | None:
+    """Prefer W29's canonical style and retain W30 compatibility labels."""
+
+    if job.style in VOICE_SLOTS:
+        return job.style
+    if job.emotion in VOICE_SLOTS:
+        return job.emotion
+    return _EMOTION_TO_VOICE_SLOT.get(job.emotion)
 
 
 def _timeout_extensions(timeout_ms: int) -> dict[str, float]:

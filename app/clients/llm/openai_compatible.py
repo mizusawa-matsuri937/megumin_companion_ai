@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import AsyncIterator, Awaitable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, TypeVar
@@ -59,6 +59,11 @@ class OpenAICompatibleLLMProvider:
         ca_bundle_path: Path | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
         client: httpx.AsyncClient | None = None,
+        finish_reason_classifier: Callable[[str], None] | None = None,
+        remote_error_classifier: Callable[[dict[str, Any]], None] | None = None,
+        status_error_classifier: Callable[[int, dict[str, Any]], LLMProviderError | None]
+        | None = None,
+        reject_tool_calls: bool = False,
     ) -> None:
         validate_endpoint(base_url, kind=EndpointKind.http)
         if not model.strip():
@@ -82,6 +87,10 @@ class OpenAICompatibleLLMProvider:
         self._max_stream_event_bytes = max_stream_event_bytes
         self._stream_completion_mode = StreamCompletionMode(stream_completion_mode)
         self._structured_turns = structured_turns
+        self._finish_reason_classifier = finish_reason_classifier or _classify_finish_reason
+        self._remote_error_classifier = remote_error_classifier or _raise_remote_error
+        self._status_error_classifier = status_error_classifier
+        self._reject_tool_calls = reject_tool_calls
         if client is not None:
             transport = client._transport
         self._client = httpx.AsyncClient(
@@ -113,7 +122,7 @@ class OpenAICompatibleLLMProvider:
             )
             try:
                 token.raise_if_cancelled()
-                self._raise_for_status(response)
+                await self._raise_for_status(response, token)
                 lines = _bounded_lines(
                     response,
                     token,
@@ -129,6 +138,7 @@ class OpenAICompatibleLLMProvider:
                             self._stream_completion_mode,
                             saw_event=saw_event,
                             finish_reason=finish_reason,
+                            classify=self._finish_reason_classifier,
                         )
                         return
                     token.raise_if_cancelled()
@@ -136,14 +146,21 @@ class OpenAICompatibleLLMProvider:
                     if data is None:
                         continue
                     if data == "[DONE]":
-                        _validate_done_marker(self._stream_completion_mode, finish_reason)
+                        _validate_done_marker(
+                            self._stream_completion_mode,
+                            finish_reason,
+                            classify=self._finish_reason_classifier,
+                        )
                         return
                     body = _parse_json(data)
-                    _raise_remote_error(body)
-                    deltas, event_finish_reason = _extract_stream_event(body)
+                    self._remote_error_classifier(body)
+                    deltas, event_finish_reason = _extract_stream_event(
+                        body,
+                        reject_tool_calls=self._reject_tool_calls,
+                    )
                     saw_event = True
                     if event_finish_reason is not None:
-                        _classify_finish_reason(event_finish_reason)
+                        self._finish_reason_classifier(event_finish_reason)
                         if finish_reason is not None and finish_reason != event_finish_reason:
                             raise LLMProviderError(LLMErrorCode.protocol, retryable=False)
                         finish_reason = event_finish_reason
@@ -177,15 +194,19 @@ class OpenAICompatibleLLMProvider:
             )
             try:
                 token.raise_if_cancelled()
-                self._raise_for_status(response)
+                await self._raise_for_status(response, token)
                 payload = await _read_bounded_body(
                     response,
                     token,
                     max_body_bytes=self._max_stream_event_bytes,
                 )
                 body = _parse_json(payload)
-                _raise_remote_error(body)
-                return _extract_completion(body)
+                self._remote_error_classifier(body)
+                return _extract_completion(
+                    body,
+                    finish_reason_classifier=self._finish_reason_classifier,
+                    reject_tool_calls=self._reject_tool_calls,
+                )
             finally:
                 await response.aclose()
         except LLMProviderError:
@@ -227,12 +248,28 @@ class OpenAICompatibleLLMProvider:
             payload["response_format"] = {"type": "json_object"}
         return payload
 
-    def _raise_for_status(self, response: httpx.Response) -> None:
+    async def _raise_for_status(self, response: httpx.Response, token: CancellationToken) -> None:
         status = response.status_code
         if 300 <= status < 400:
             raise LLMProviderError(LLMErrorCode.protocol, retryable=False, status_code=status)
         if status < 400:
             return
+        if self._status_error_classifier is not None:
+            try:
+                payload = await _read_bounded_body(
+                    response,
+                    token,
+                    max_body_bytes=self._max_stream_event_bytes,
+                )
+                body = _parse_json(payload)
+            except LLMProviderError:
+                # An oversized or malformed remote error body cannot override
+                # the stable HTTP status mapping below.
+                pass
+            else:
+                override = self._status_error_classifier(status, body)
+                if override is not None:
+                    raise override
         if status in {401, 403}:
             code, retryable = LLMErrorCode.authentication, False
         elif status == 429:
@@ -381,7 +418,11 @@ def _raise_remote_error(body: dict[str, Any]) -> None:
         raise LLMProviderError(LLMErrorCode.rejected, retryable=False)
 
 
-def _extract_stream_event(body: dict[str, Any]) -> tuple[list[str], str | None]:
+def _extract_stream_event(
+    body: dict[str, Any],
+    *,
+    reject_tool_calls: bool = False,
+) -> tuple[list[str], str | None]:
     choices = body.get("choices")
     if not isinstance(choices, list):
         raise LLMProviderError(LLMErrorCode.protocol, retryable=False)
@@ -390,6 +431,8 @@ def _extract_stream_event(body: dict[str, Any]) -> tuple[list[str], str | None]:
     for choice in choices:
         if not isinstance(choice, dict):
             raise LLMProviderError(LLMErrorCode.protocol, retryable=False)
+        if reject_tool_calls and _contains_tool_call(choice):
+            raise LLMProviderError(LLMErrorCode.rejected, retryable=False)
         raw_finish_reason = choice.get("finish_reason")
         if raw_finish_reason is not None:
             if not isinstance(raw_finish_reason, str):
@@ -420,13 +463,18 @@ def _classify_finish_reason(reason: str) -> None:
     raise LLMProviderError(LLMErrorCode.protocol, retryable=False)
 
 
-def _validate_done_marker(mode: StreamCompletionMode, finish_reason: str | None) -> None:
+def _validate_done_marker(
+    mode: StreamCompletionMode,
+    finish_reason: str | None,
+    *,
+    classify: Callable[[str], None] = _classify_finish_reason,
+) -> None:
     if mode in {StreamCompletionMode.finish_reason, StreamCompletionMode.eof}:
         raise LLMProviderError(LLMErrorCode.protocol, retryable=False)
     if mode is StreamCompletionMode.done_and_finish_reason and finish_reason is None:
         raise LLMProviderError(LLMErrorCode.protocol, retryable=False)
     if finish_reason is not None:
-        _classify_finish_reason(finish_reason)
+        classify(finish_reason)
 
 
 def _validate_stream_eof(
@@ -434,29 +482,43 @@ def _validate_stream_eof(
     *,
     saw_event: bool,
     finish_reason: str | None,
+    classify: Callable[[str], None] = _classify_finish_reason,
 ) -> None:
     if not saw_event:
         raise LLMProviderError(LLMErrorCode.protocol, retryable=False)
     if mode is StreamCompletionMode.eof:
         return
     if mode is StreamCompletionMode.finish_reason and finish_reason is not None:
-        _classify_finish_reason(finish_reason)
+        classify(finish_reason)
         return
     raise LLMProviderError(LLMErrorCode.truncated, retryable=False)
 
 
-def _extract_completion(body: dict[str, Any]) -> ChatCompletion:
+def _extract_completion(
+    body: dict[str, Any],
+    *,
+    finish_reason_classifier: Callable[[str], None] = _classify_finish_reason,
+    reject_tool_calls: bool = False,
+) -> ChatCompletion:
     choices = body.get("choices")
     if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
         raise LLMProviderError(LLMErrorCode.protocol, retryable=False)
+    if reject_tool_calls:
+        for candidate in choices:
+            if not isinstance(candidate, dict):
+                raise LLMProviderError(LLMErrorCode.protocol, retryable=False)
+            if _contains_tool_call(candidate):
+                raise LLMProviderError(LLMErrorCode.rejected, retryable=False)
     choice = choices[0]
     message = choice.get("message")
-    if not isinstance(message, dict) or not isinstance(message.get("content"), str):
+    if not isinstance(message, dict):
+        raise LLMProviderError(LLMErrorCode.protocol, retryable=False)
+    if not isinstance(message.get("content"), str):
         raise LLMProviderError(LLMErrorCode.protocol, retryable=False)
     finish_reason = choice.get("finish_reason")
     if not isinstance(finish_reason, str):
         raise LLMProviderError(LLMErrorCode.protocol, retryable=False)
-    _classify_finish_reason(finish_reason)
+    finish_reason_classifier(finish_reason)
     usage_raw = body.get("usage")
     usage = (
         {key: value for key, value in usage_raw.items() if isinstance(value, int)}
@@ -468,4 +530,20 @@ def _extract_completion(body: dict[str, Any]) -> ChatCompletion:
         finish_reason=finish_reason,
         model=body.get("model") if isinstance(body.get("model"), str) else None,
         usage=usage,
+    )
+
+
+def _contains_tool_call(choice: dict[str, Any]) -> bool:
+    """Reject tool markers wherever an OpenAI-compatible choice places them.
+
+    DeepSeek Flash has no tool-call route in this profile.  Some compatible
+    gateways put a marker on the choice itself or use ``message`` in a stream,
+    so looking only inside ``delta`` would silently accept a tool response.
+    """
+
+    if "tool_calls" in choice or "function_call" in choice:
+        return True
+    return any(
+        isinstance(container, dict) and ("tool_calls" in container or "function_call" in container)
+        for container in (choice.get("delta"), choice.get("message"))
     )
