@@ -684,6 +684,7 @@ def test_cancel_settlement_failure_opens_bounded_circuit_until_owned_worker_sett
     tmp_path: Path,
 ) -> None:
     async def scenario() -> None:
+        request_started = asyncio.Event()
         cancellation_seen = asyncio.Event()
         release_request = asyncio.Event()
         request_released = asyncio.Event()
@@ -692,6 +693,7 @@ def test_cancel_settlement_failure_opens_bounded_circuit_until_owned_worker_sett
         async def handler(request: httpx.Request) -> httpx.Response:
             nonlocal started
             started += 1
+            request_started.set()
             try:
                 await asyncio.Event().wait()
             except asyncio.CancelledError:
@@ -722,8 +724,30 @@ def test_cancel_settlement_failure_opens_bounded_circuit_until_owned_worker_sett
             max_owned_synthesis_tasks=1,
         )
 
-        results: list[AudioResult] = []
-        for index in range(3):
+        # This test exercises a worker that cannot settle cancellation, not a
+        # 100 ms request SLA. Start the first request explicitly and leave the
+        # loaded Windows runner enough time to enter the controlled handler.
+        first_token = CancellationToken("turn_cancel_timeout_0")
+        first_synthesis = asyncio.create_task(
+            provider.synthesize(
+                _job(
+                    first_token,
+                    job_id="job_cancel_timeout_0",
+                    turn_id="turn_cancel_timeout_0",
+                    connect_timeout_ms=1_000,
+                    first_byte_timeout_ms=1_000,
+                    timeout_ms=3_000,
+                    cancellation_timeout_ms=50,
+                ),
+                segment_index=0,
+                token=first_token,
+            )
+        )
+        await asyncio.wait_for(request_started.wait(), timeout=3)
+        results = [await asyncio.wait_for(first_synthesis, timeout=5)]
+        await asyncio.wait_for(cancellation_seen.wait(), timeout=3)
+
+        for index in range(1, 3):
             token = CancellationToken(f"turn_cancel_timeout_{index}")
             results.append(
                 await provider.synthesize(
@@ -740,8 +764,6 @@ def test_cancel_settlement_failure_opens_bounded_circuit_until_owned_worker_sett
                     token=token,
                 )
             )
-            if index == 0:
-                await asyncio.wait_for(cancellation_seen.wait(), timeout=3)
 
         assert [result.error_code for result in results] == ["tts_cancel_timeout"] * 3
         assert started == 1
@@ -1020,6 +1042,8 @@ def test_close_during_cache_promotion_removes_wav_and_partial_files(
             client=client,
         )
         promotion_started = asyncio.Event()
+        promotion_cancelled = asyncio.Event()
+        release_promotion = asyncio.Event()
         maintenance_calls = 0
 
         async def block_first_cache_maintenance() -> None:
@@ -1027,16 +1051,30 @@ def test_close_during_cache_promotion_removes_wav_and_partial_files(
             maintenance_calls += 1
             if maintenance_calls == 1:
                 promotion_started.set()
-                await asyncio.Event().wait()
+                try:
+                    await release_promotion.wait()
+                except asyncio.CancelledError:
+                    promotion_cancelled.set()
+                    raise
 
         monkeypatch.setattr(provider, "_cleanup_cache_locked", block_first_cache_maintenance)
         token = CancellationToken("turn_cache_close")
         synthesis = asyncio.create_task(
             provider.synthesize(_job(token), segment_index=0, token=token)
         )
-        await asyncio.wait_for(promotion_started.wait(), timeout=1)
+        await asyncio.wait_for(promotion_started.wait(), timeout=3)
 
-        await asyncio.wait_for(provider.close(), timeout=1)
+        closing = asyncio.create_task(provider.close())
+        try:
+            await asyncio.wait_for(promotion_cancelled.wait(), timeout=3)
+            # The product close path has its own bounded worker join. This
+            # harness timeout only guards a deadlock and must leave scheduler
+            # and filesystem cleanup headroom beyond that internal bound.
+            await asyncio.wait_for(asyncio.shield(closing), timeout=3)
+        finally:
+            release_promotion.set()
+            if not closing.done():
+                await asyncio.wait_for(asyncio.shield(closing), timeout=3)
         with pytest.raises(asyncio.CancelledError):
             await synthesis
 

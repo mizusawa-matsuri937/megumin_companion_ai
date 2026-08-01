@@ -2,7 +2,7 @@
 
 > **核验日期：2026-08-01（Asia/Shanghai）。** W19、W28、W29 与 W30/DeepSeek 产品堆栈已经按
 > exact-head guard 全部合入 `agent/windows-development-baseline`。当前唯一活跃目标是关闭合并后的
-> Windows CI 夹具竞态、同步正式状态，并在关闭变更自己的精确 head CI 全绿后受保护合并。本文不会递归记录
+> Windows CI 测试夹具竞态、同步正式状态，并在关闭变更自己的精确 head CI 全绿后受保护合并。本文不会递归记录
 > 承载本文的关闭 PR 自身是否已合并；该交付状态必须从 GitHub 的实时 PR、远端 ref 与最终 baseline 核验。
 
 ## 已确认的合并事实
@@ -40,12 +40,33 @@ merge-tree 差异。关闭变更只调整上述测试意图：registry 测试使
 writer barrier 确保取消发生在 writer 所有权仍存续时。产品默认 timeout、deadline 专项测试和运行时代码
 均未改变。
 
+首个关闭提交 `d6c1905616e7fcf29916672e6632cafa5f009a78` 已作为 Draft
+[#36](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/36) 推送。其 PR workflow
+`30684852156` 四项全部成功；push workflow `30684806619` 的 macOS quality 与双平台 installed-wheel
+成功，但 Windows quality job `91328407311` 在完整套件中另暴露两个既有
+`tests/unit/test_gpt_sovits.py` 夹具问题：
+
+- cancellation-settlement 测试没有先确认 MockTransport handler 已启动；满载 runner 可在 worker 首次调度前
+  用完 100 ms 总预算，随后等待一个永远不会设置的 cancellation event；
+- cache-promotion close 测试以 1 秒外层 `wait_for` 包住产品内部最多 1 秒的 bounded worker join，没有给
+  scheduler 与文件清理留下余量。
+
+当前候选继续只修测试意图：第一项恢复 request-start barrier，并为非 deadline 请求使用 1/1/3 秒调度余量；
+第二项显式观察 promotion task 收到取消，并给外层 deadlock guard 3 秒余量。产品 close 的内部 1 秒上限、
+产品默认 timeout、deadline 专项测试与运行时代码仍未改变。PR workflow 同一 Windows job 成功支持这是调度
+敏感夹具的判断，但不能覆盖 push workflow 的明确失败，因此必须发布新精确 head 并重新等待双 workflow。
+
 当前关闭树的本地证据：
 
-- 两个目标测试在 20 个独立 pytest 进程中 `runs=20 failures=0`；
-- 完整 Mock 文件 `18 passed`；TTS/Gateway/结构化链路矩阵 `205 passed`；
-- 完整隔离套件收集 1,542 项，`1539 passed, 3 skipped in 221.19s`，coverage `90.38%`；
-- tracked Ruff lint、284 文件 format、strict mypy 277 source、根 65 包与 gateway 122 包 lock check 全部通过。
+- 两个 MockTTS 目标测试和两个 GPT-SoVITS 目标测试分别在 20 个独立 pytest 进程中
+  `runs=20 failures=0`；
+- 完整 Mock 文件 `18 passed`，完整 GPT-SoVITS 文件 `57 passed`；TTS/Gateway/结构化链路矩阵
+  `205 passed`；
+- 当前精确树完整隔离套件收集 1,542 项，`1539 passed, 3 skipped in 274.64s`，coverage `90.37%`；
+- tracked Ruff lint、284 文件 format、strict mypy 277 source、根 65 包与 gateway 122 包 lock check 全部通过；
+- fresh wheel/source quarantine 的 installed smoke 为 `status=ok`、`source_tree_imported=false`，158 个 member，
+  protected/private/absolute-path member 均为 0；wheel SHA-256 为
+  `8af4bcf213913a5cfee7da05074d72377dd09f08d89cd59d7d03a784da1f1295`。
 
 三个 skip 仍是 optional RapidOCR、optional Pillow 和当前账户不能创建目录 symlink，不是本次产品或夹具失败。
 关闭分支仍须通过自己的 push/PR 双 workflow、live PR 审计、expected-head merge 与最终 baseline 全套复核，
@@ -67,7 +88,8 @@ writer barrier 确保取消发生在 writer 所有权仍存续时。产品默认
 
 ## 后续顺序
 
-1. 发布关闭 Draft PR，等待其精确 head 的 push/PR 双 workflow 全部成功并完成 live diff/review/thread 审计。
+1. 将当前 GPT-SoVITS 夹具修复与状态记录形成聚焦提交并推送 #36，等待新精确 head 的 push/PR 双 workflow
+   全部成功并完成 live diff/review/thread 审计。
 2. 以 expected-head guard 合并关闭 PR，从远端确认 merge commit 和 baseline ref。
 3. 在最终 baseline 隔离运行完整 pytest/coverage、tracked Ruff/format、strict mypy、双 lock 与 wheel/source
    quarantine，并清理本轮精确临时目录。

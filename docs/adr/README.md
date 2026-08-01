@@ -3,7 +3,8 @@
 > **2026-08-01 合并闭环：** W19～W30 产品堆栈已按 exact-head guard 合入
 > `agent/windows-development-baseline@83f52e228d8df6df9abf08ce492192752ff113c2`。所有者接受的是各实现记录中
 > 已列出的主观 Gate 与残余发布风险；真实 DeepSeek Key/账号/价格/远端保留、真实 Windows DPI 和其他未执行的
-> 外部验证仍保持“未验证”。本次关闭分支只稳定一个 Windows CI 测试夹具并同步状态，不改变任何 ADR 语义。
+> 外部验证仍保持“未验证”。本次关闭分支只稳定 MockTTS 与 GPT-SoVITS 的 Windows CI 测试夹具并同步状态，
+> 不改变任何 ADR 语义、产品 timeout 或运行时代码。
 >
 > **2026-07-31 后续状态：** ADR-W30 的 Gateway compatibility 已作为 `84c92bb` 推送；其 push workflow
 > `30612675642` 全绿。此前 `a0b5661` 的 PR workflow `30614461677` 在 Windows quality 发现一项直连 GPT-SoVITS

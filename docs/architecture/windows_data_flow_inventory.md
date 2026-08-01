@@ -9,7 +9,8 @@
 > 加入并完成该 code head 的 CI。W19、W28、W29 与 W30 最终已按 PR #34、#35、#33、#32 的顺序合入
 > `agent/windows-development-baseline@83f52e228d8df6df9abf08ce492192752ff113c2`；W30 最终组合同时包含
 > DeepSeek Flash 文本出口、专用密钥、脱敏摘要与既有本地 GPT-SoVITS Gateway 最小兼容。合并关闭只稳定
-> MockTTS CI 夹具并更新状态，不改变下述数据流。真实 DeepSeek Key、账号、计费与远端保留仍未由本地自动化验证。
+> MockTTS/GPT-SoVITS CI 测试夹具并更新状态，不改变下述数据流、产品 timeout 或运行时代码。真实 DeepSeek
+> Key、账号、计费与远端保留仍未由本地自动化验证。
 > 关联：[`../adr/README.md`](../adr/README.md)、[`../decisions/w00_owner_decisions.md`](../decisions/w00_owner_decisions.md)、
 > [`../decisions/w18_managed_chinese_stt_runtime.md`](../decisions/w18_managed_chinese_stt_runtime.md)
 

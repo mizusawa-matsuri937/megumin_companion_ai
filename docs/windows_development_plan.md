@@ -2,7 +2,7 @@
 
 > 原始版本：2026-07-17 Gate W0 决策落版
 >
-> 最新修订：2026-08-01 W19、W28、W29 与 W30/DeepSeek 已按 exact-head guard 全部合入 Windows baseline。PR #34、#35、#33、#32 的远端状态均为 `MERGED`；当前关闭工作只修复 baseline Windows CI 暴露的两个 MockTTS 测试夹具竞态并同步正式状态。未验证的真实 DeepSeek Key/账号/计费/远端保留和真实 Windows DPI 不因合并授权而变成已验证；W20～W27 编号与范围不变。
+> 最新修订：2026-08-01 W19、W28、W29 与 W30/DeepSeek 已按 exact-head guard 全部合入 Windows baseline。PR #34、#35、#33、#32 的远端状态均为 `MERGED`；当前关闭工作只修复 baseline 与关闭 PR Windows CI 暴露的四个 MockTTS/GPT-SoVITS 测试夹具竞态并同步正式状态。未验证的真实 DeepSeek Key/账号/计费/远端保留和真实 Windows DPI 不因合并授权而变成已验证；W20～W27 编号与范围不变。
 >
 > 代码基线：`agent/windows-development-baseline` / `83f52e228d8df6df9abf08ce492192752ff113c2`（关闭 PR 自身的最终 merge commit 需从远端实时核验）
 >
@@ -1170,8 +1170,10 @@ W30 是从 W28 基线派生的独立、可回滚工作项，不是原 W00～W27 
 
 1. 以 [`current/CURRENT_GOAL.md`](./current/CURRENT_GOAL.md) 和 GitHub 实时状态核验 W19～W30 已合并事实；
    不重复合并或借用历史 head 绿灯。
-2. 对 baseline push `30651854952` 暴露的 MockTTS registry/cancellation 夹具竞态实施仅测试修复；运行聚焦重复、
-   完整 pytest/coverage、tracked Ruff/format、strict mypy、双 lock、wheel/source-quarantine 和隐私/scope 审计。
+2. 对 baseline push `30651854952` 暴露的 MockTTS registry/cancellation 夹具竞态，以及关闭 PR #36 首个
+   push `30684806619` 暴露的 GPT-SoVITS request-start/cache-promotion close 夹具竞态实施仅测试修复；
+   运行聚焦重复、完整 pytest/coverage、tracked Ruff/format、strict mypy、双 lock、wheel/source-quarantine
+   和隐私/scope 审计。PR workflow `30684852156` 全绿不能覆盖同一 head 的 push Windows 明确失败。
 3. 只在关闭 PR 自己的 push/PR 精确 head 检查全部成功并重读 base/head/diff/review/thread/mergeability 后，
    使用 expected-head guard 合并；随后从远端同步最终 baseline 并重跑完整门。
 4. 完成关闭后，W19～W30 不再作为开放产品任务。新工作按 W20～W27 的既有范围另行启动，不能把未执行的
