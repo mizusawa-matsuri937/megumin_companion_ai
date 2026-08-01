@@ -1,6 +1,12 @@
 # W30：DeepSeek V4 Flash 独立接入执行计划
 
-> **状态：** 核心实现 `cd5cd43` 已推送至 Draft PR #35，且本地完整自动化质量门和审计 head `e35dbc7` CI 已通过。
+> **2026-08-01 合并闭环：** W30 与最新 W29/W28 sibling 组合形成最终 head
+> `13b8c750335fbe62f00476bb23a99c6ca68aae4b`；push `30647302622` 与 PR `30647308275`
+> 8/8 成功，并由 [PR #35](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/35) 以
+> expected-head guard 合入 W28，merge commit 为 `05cf8a6adf0e65fe2ae5e96228ff8688e79e995c`。
+> 本文件现为已实施计划与历史失败证据；真实 DeepSeek Key、账号、价格、限流、地域和远端保留仍未验证。
+>
+> **历史状态：** 核心实现 `cd5cd43` 已推送至 Draft PR #35，且本地完整自动化质量门和审计 head `e35dbc7` CI 已通过。
 > 2026-07-31 所有者授权一项既有本地 Gateway 的最小兼容跟进；此前 `a0b5661` 的 PR workflow `30614461677`
 > 在 Windows quality 发现四项 TTS 测试夹具时序失败。`a0ccfc6` 只修正夹具的事件同步和非 deadline 场景时限余量；
 > 完整本地质量门重跑通过，其 push `30615939286` 与 PR `30615942372` 均四项通过。
@@ -8,7 +14,7 @@
 >
 > **基线：** `codex/w30-deepseek-flash@b09841c13f1a733ec267027df62da6da7fc31fb6`
 >
-> **范围：** 单机、单 Windows 用户、个人私用；独立于 W29。
+> **范围：** 单机、单 Windows 用户、个人私用；W30 原始工作流独立于 W29，最终交付按所有者指令完成 sibling 语义组合。
 
 ## 目标与不变量
 
@@ -104,6 +110,7 @@
 ## 回滚与发布阻断
 
 - 回滚为 `llm.provider=none` 并撤销专用密钥；保留通用兼容配置和其密钥，不在 W30 中删除。
-- 以下任何一项阻断交付声明：真实 API Key 未提供、真实连通性未验证、测试/质量门失败、密钥或视觉敏感数据出现在
-  diff/artifact、无关 W29 改动混入 W30，或 Gateway compatibility 未经本 W30 head 的独立测试/CI 验证。
+- 测试/质量门失败、密钥或视觉敏感数据出现在 diff/artifact、未完成 sibling 语义合并，或 Gateway compatibility
+  未经最终组合 head 的独立测试/CI 验证，都会阻断合并。真实 API Key/连通性在所有者接受残余风险后没有阻断本次
+  私人 baseline 合并，但仍必须保持“未验证”，不得据此宣称服务、账号、价格或远端政策可用。
 - W30 的视觉摘要接口不是“实时截图理解”完成声明；生产截图捕获仍是独立任务。

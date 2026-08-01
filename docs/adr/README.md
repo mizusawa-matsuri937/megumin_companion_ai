@@ -1,5 +1,10 @@
 # Gate W0 Architecture Decision Records
 
+> **2026-08-01 合并闭环：** W19～W30 产品堆栈已按 exact-head guard 合入
+> `agent/windows-development-baseline@83f52e228d8df6df9abf08ce492192752ff113c2`。所有者接受的是各实现记录中
+> 已列出的主观 Gate 与残余发布风险；真实 DeepSeek Key/账号/价格/远端保留、真实 Windows DPI 和其他未执行的
+> 外部验证仍保持“未验证”。本次关闭分支只稳定一个 Windows CI 测试夹具并同步状态，不改变任何 ADR 语义。
+>
 > **2026-07-31 后续状态：** ADR-W30 的 Gateway compatibility 已作为 `84c92bb` 推送；其 push workflow
 > `30612675642` 全绿。此前 `a0b5661` 的 PR workflow `30614461677` 在 Windows quality 发现一项直连 GPT-SoVITS
 > cancellation/settlement 与三项 Gateway MockTransport 夹具时序失败；`a0ccfc6` 仅修正测试夹具，并由其 push
@@ -20,8 +25,8 @@
 | [ADR-W06](ADR-W06-bounded-pipeline.md) | 有界生成、TTS、音频和 VTS 流水线 | 已批准 |
 | [ADR-W07](ADR-W07-native-worker-isolation.md) | native worker 隔离、hard kill 和清理 | 已批准 |
 | [ADR-W08](ADR-W08-packaging-upgrade.md) | wheel、onedir、per-user 安装与升级 | 已批准；安装器实现暂定 |
-| [ADR-W28](ADR-W28-avatar-runtime.md) | 单写者 Avatar Runtime、标量音量包络与 VTS 生命周期 | 已批准并在 W28 本地工作树实现；发布/自然度 Gate 待关闭 |
-| [ADR-W29](ADR-W29-private-tts-gateway-and-structured-turns.md) | 私有五槽 TTS 网关、流式结构化回合与有序 Avatar 联动 | 已批准并在 W29 实现；P0 permit 代码 head 已通过 8/8 CI，状态记录仍待自身 exact-head CI；主观试听 Gate 待关闭 |
-| [ADR-W30](ADR-W30-deepseek-flash.md) | 固定 DeepSeek V4 Flash 文本 Provider、专用 DPAPI 密钥、脱敏视觉摘要出口与既有本地 Gateway 最小兼容 | 已按所有者指令采用；核心 `cd5cd43` 已在 Draft PR #35，本地自动化/质量门与审计 head `e35dbc7` CI 通过。Gateway 本地门与 `a0ccfc6` exact-code CI 已通过；真实 Key 仍未验证。 |
+| [ADR-W28](ADR-W28-avatar-runtime.md) | 单写者 Avatar Runtime、标量音量包络与 VTS 生命周期 | 已批准并随 PR #33 合并；主观 Gate 由所有者接受，记录中的未验证边界保留 |
+| [ADR-W29](ADR-W29-private-tts-gateway-and-structured-turns.md) | 私有五槽 TTS 网关、流式结构化回合与有序 Avatar 联动 | 已批准并随 PR #34/#35 组合合并；P0 permit 修复已包含 |
+| [ADR-W30](ADR-W30-deepseek-flash.md) | 固定 DeepSeek V4 Flash 文本 Provider、专用 DPAPI 密钥、脱敏视觉摘要出口与既有本地 Gateway 最小兼容 | 已按所有者指令采用并随 PR #35 合并；真实 Key、账号与远端行为仍未验证 |
 
 ADR 只冻结架构和失败语义，不表示对应代码、Windows VM、真实设备或发布 Gate 已完成。修改任一 ADR 必须更新所有者决策、威胁模型、数据流清单和 Gate 记录。

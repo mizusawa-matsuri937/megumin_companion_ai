@@ -1,12 +1,12 @@
 # Windows Gate W0 威胁模型
 
-> 版本：2026-07-31
+> 版本：2026-08-01
 > 状态：项目所有者自审通过；没有独立人工安全/隐私 reviewer
 > 范围：Windows 11 x64、标准用户、单交互会话、私人使用
-> W30 注记：DeepSeek Flash 的固定文本出口、专用 DPAPI 密钥和提示注入边界已纳入本模型，核心实现 `cd5cd43` 已推送至
-> Draft PR #35，且本地完整自动化质量门及审计 head `e35dbc7` 的跨平台 CI 已通过；真实 Key 和远端服务行为仍须独立核验，
-> 任一新 head 都须重审。所有者已另行授权 W30 的既有本地 GPT-SoVITS Gateway 最小兼容跟进；它必须作为独立
-> loopback/bearer 边界审计，不能借此扩大 DeepSeek 出站数据。本地自动化/质量门已通过，但新远端 head 的 CI 尚待形成证据。
+> W30 注记：DeepSeek Flash 的固定文本出口、专用 DPAPI 密钥和提示注入边界已纳入本模型。W19～W30 已按
+> PR #34、#35、#33、#32 合入 `agent/windows-development-baseline@83f52e228d8df6df9abf08ce492192752ff113c2`；
+> 既有本地 GPT-SoVITS Gateway 仍是独立 loopback/bearer 边界，不能借此扩大 DeepSeek 出站数据。所有者接受
+> 已记录的残余风险并授权合并，不等于真实 Key、账号、价格、保留、地域或远端服务行为已获验证。
 
 ## 保护目标
 

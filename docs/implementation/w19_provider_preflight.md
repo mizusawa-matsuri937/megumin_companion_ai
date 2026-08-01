@@ -1,6 +1,12 @@
 # W19：真实 VTS/GPT-SoVITS 配置向导与联动
 
-> 状态：实现与完整本地质量门已通过；功能提交
+> **2026-08-01 合并闭环：** [PR #32](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/32)
+> 已以精确 head `51f2e05a2ae040e297b4c839c37920d8859760d9` 合入
+> `agent/windows-development-baseline`，merge commit 为
+> `83f52e228d8df6df9abf08ce492192752ff113c2`，远端状态已复核为 `MERGED`。该 head 已包含上游
+> W28/W29/W30 组合；以下早期 Draft 状态与 W19 自身测试数量作为历史交付证据保留。
+>
+> 历史状态：实现与完整本地质量门已通过；功能提交
 > [`d641c29`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/d641c29b744bf400d46fe4453aefec0ed69044ee)
 > 已推送，Draft PR [#32](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/32) 已创建；交付 head
 > `fc9222f17a80e046badb77c8e1ab4270da81aaef` 的 PR/push 双 OS 自动门已通过。真实体验 Gate 仍待完成。最后核验：
@@ -115,13 +121,14 @@ RDP、快速切用户、跨 session 和第二 Windows 用户属于当前单机�
 
 ## 发布与回滚状态
 
-W19 功能提交 `d641c29b744bf400d46fe4453aefec0ed69044ee` 已推送至远端分支，Draft PR #32 的 base 为
-`agent/windows-development-baseline`、head 为 `codex/w19-provider-preflight`。交付 head
+W19 功能提交 `d641c29b744bf400d46fe4453aefec0ed69044ee` 已推送至远端分支；PR #32 的原始 base 为
+`agent/windows-development-baseline`、head 为 `codex/w19-provider-preflight`。历史交付 head
 `fc9222f17a80e046badb77c8e1ab4270da81aaef` 的
 [PR workflow](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/30157041353) 和
 [push workflow](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/30157040265)
-均为 `success`，各自的 macOS/Windows `quality` 与 `installed-wheel` 共八项全部通过。本 CI 关闭记录的新纯文档
-head 仍须独立复核。用户现有 `AGENTS.md` 无关改动保持未暂存，没有进入 W19 PR。
+均为 `success`，各自的 macOS/Windows `quality` 与 `installed-wheel` 共八项全部通过。最终组合 head
+`51f2e05...` 的 push `30651198879` 与 PR `30651201100` 也 8/8 成功，随后使用 expected-head guard 合并；
+远端 merge commit 为 `83f52e2...`。用户现有 `AGENTS.md` 无关改动保持未暂存，没有进入 W19 PR。
 
 回滚不删除用户资产或 secret：将 TTS 改回 mock、播放改回 silent、VTS 关闭即可恢复文字-only；如撤回 UI/command，
 保留既有 W08/W09 provider 与 generation 安全语义。

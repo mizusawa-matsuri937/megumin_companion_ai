@@ -1,6 +1,12 @@
 # W28：Avatar Runtime、程序微动作与音量口型执行计划
 
-> 状态：**产品实现、Draft PR 与交付代码 exact-head 自动门已完成；PR 未合并，真实中文 TTS 与自然度
+> **2026-08-01 合并闭环：** W28 最终 head `1e62266f553bd065262cd7045e2a523e4e2c28f6`
+> 已通过 push `30650686378` 与 PR `30650689973` 的 8/8 检查，并在所有者授权后由
+> [PR #33](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/33) 以 expected-head guard 合入
+> W19，merge commit 为 `51f2e05a2ae040e297b4c839c37920d8859760d9`。本文件现为已实施范围与历史 Gate
+> 记录；下方“不得合并”文字描述的是原交付阶段权限，不再覆盖 2026-07-31 的最新合并授权。
+>
+> 历史状态：**产品实现、Draft PR 与交付代码 exact-head 自动门已完成；PR 未合并，真实中文 TTS 与自然度
 > Gate 待关闭**
 >
 > 最后核验：2026-07-29（Asia/Shanghai）
@@ -732,5 +738,5 @@ Avatar Runtime ADR 至少记录：
 - [x] 私有配置/资产未提交、semantic 未意外改写（exact-byte metadata 差异已如实记录）
 - [x] ADR、数据流、威胁模型、计划、实现记录和索引同步
 - [x] 聚焦提交已推送，Draft PR 已创建
-- [x] 保持未合并
+- [x] 在 2026-07-31 所有者授权后完成 expected-head guarded merge；PR #33 远端状态为 `MERGED`
 - [x] `.agents/CONTEXT_MEMORY.md` 已更新

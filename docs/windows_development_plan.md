@@ -2,9 +2,9 @@
 
 > 原始版本：2026-07-17 Gate W0 决策落版
 >
-> 最新修订：2026-07-31 所有者已授权合并当前全部 PR，包括 W30/DeepSeek，并接受已记录的主观 Gate 与残余发布风险。W29 PR #34 已合入 W28；W30 必须先与该最新 W28/W29 组合、解析重叠并通过新 exact-head 质量门，随后再按堆栈逆序合并。未验证的真实 DeepSeek Key/账号/计费/远端保留不因合并授权而变成已验证；W20～W27 编号与范围不变。
+> 最新修订：2026-08-01 W19、W28、W29 与 W30/DeepSeek 已按 exact-head guard 全部合入 Windows baseline。PR #34、#35、#33、#32 的远端状态均为 `MERGED`；当前关闭工作只修复 baseline Windows CI 暴露的两个 MockTTS 测试夹具竞态并同步正式状态。未验证的真实 DeepSeek Key/账号/计费/远端保留和真实 Windows DPI 不因合并授权而变成已验证；W20～W27 编号与范围不变。
 >
-> 代码基线：`agent/windows-development-baseline` / `d56cfbd`
+> 代码基线：`agent/windows-development-baseline` / `83f52e228d8df6df9abf08ce492192752ff113c2`（关闭 PR 自身的最终 merge commit 需从远端实时核验）
 >
 > 状态：Gate W0 已由项目所有者有条件批准；允许私人开发范围进入 W01，残余风险与发布限制见 [`gates/gate_w0.md`](./gates/gate_w0.md)
 > 本文件覆盖此前的 `windows_development_plan.md`、`daily_development_plan.md`，以及 `project_architecture.md` 中所有按天排期和阶段顺序。旧计划只保留历史意义，不再作为任务、工期或验收依据。
@@ -1166,15 +1166,17 @@ W30 是从 W28 基线派生的独立、可回滚工作项，不是原 W00～W27 
 
 ## 11. 立即执行顺序
 
-2026-07-30 起，下列顺序覆盖本节此前基于 W28 的历史停点：
+2026-08-01 起，下列顺序覆盖本节此前的堆栈合并步骤：
 
-1. 完整读取 [`current/CURRENT_GOAL.md`](./current/CURRENT_GOAL.md)、
-   [`plans/w29_five_emotion_tts_vts_execution_plan.md`](./plans/w29_five_emotion_tts_vts_execution_plan.md) 与
-   [`plans/w30_deepseek_flash_execution_plan.md`](./plans/w30_deepseek_flash_execution_plan.md)，再以当前远端 PR/工作树核验事实。
-2. 将 W29 先合入 W28，再把更新后的 W28 合入 W30；重叠 gateway/bootstrap/UI/测试/文档必须保留两侧安全语义。
-3. 对 W29+W30 组合树运行聚焦回归、完整 pytest/coverage、Ruff、format、strict mypy、双 lock、wheel/source-quarantine 和敏感边界检查。
-4. 只在新 exact head 的 push/PR 检查全部成功后，才用 expected-head guard 合并 W30；随后等待 W28、W19 父分支新 head 各自 CI，再逆序合并 #33/#32。
-5. 合并授权不会把真实 DeepSeek Key、远端隐私/计费、真实 Windows DPI 或未完成的外部事实写成已验证。
+1. 以 [`current/CURRENT_GOAL.md`](./current/CURRENT_GOAL.md) 和 GitHub 实时状态核验 W19～W30 已合并事实；
+   不重复合并或借用历史 head 绿灯。
+2. 对 baseline push `30651854952` 暴露的 MockTTS registry/cancellation 夹具竞态实施仅测试修复；运行聚焦重复、
+   完整 pytest/coverage、tracked Ruff/format、strict mypy、双 lock、wheel/source-quarantine 和隐私/scope 审计。
+3. 只在关闭 PR 自己的 push/PR 精确 head 检查全部成功并重读 base/head/diff/review/thread/mergeability 后，
+   使用 expected-head guard 合并；随后从远端同步最终 baseline 并重跑完整门。
+4. 完成关闭后，W19～W30 不再作为开放产品任务。新工作按 W20～W27 的既有范围另行启动，不能把未执行的
+   Windows 感知、主动发话、安装、升级或发布 Gate 写成已完成。
+5. 合并授权不会把真实 DeepSeek Key、远端隐私/计费、真实 Windows DPI 或其他未完成的外部事实写成已验证。
 
 ## 12. 官方平台依据
 

@@ -1,15 +1,15 @@
 # Windows 数据流与保留清单
 
-> 版本：2026-07-31
+> 版本：2026-08-01
 > 状态：Gate W0 已批准的目标契约；W17/W18 的 MediaWorker 音频路径已实现并验证，W19 的 provider
 > 配置与显式联合 preflight 已实现并完成聚焦 fake/headless 验证。W28 的单写者
 > AvatarRuntime、标量 mouth progress 和真实输出 drain 已完成自动/实机验证；W29 的结构化回合、私有五槽
 > TTS 网关、真实中文播放与 VTS 联动已完成自动/实机验证。受管中文 STT
 > runtime 已由 [`224e06f`](https://github.com/mizusawa-matsuri937/megumin_companion_ai/commit/224e06f9cbb1d2ab0cc2260fb244b1f74cd7dfbc)
-> 加入并完成该 code head 的 CI。W30 核心实现 `cd5cd43` 已推送至 Draft PR #35，包含 DeepSeek Flash 的文本出口、专用密钥与
-> 脱敏摘要组合，并通过完整本地自动化质量门及审计 head `e35dbc7` 的跨平台 CI；2026-07-31 所有者另行授权
-> W30 对既有本地 GPT-SoVITS Gateway 的最小兼容跟进。当前 sibling 组合树仍须通过新 exact-head CI；
-> 真实 DeepSeek Key、账号、计费与远端保留仍未由本地自动化验证。
+> 加入并完成该 code head 的 CI。W19、W28、W29 与 W30 最终已按 PR #34、#35、#33、#32 的顺序合入
+> `agent/windows-development-baseline@83f52e228d8df6df9abf08ce492192752ff113c2`；W30 最终组合同时包含
+> DeepSeek Flash 文本出口、专用密钥、脱敏摘要与既有本地 GPT-SoVITS Gateway 最小兼容。合并关闭只稳定
+> MockTTS CI 夹具并更新状态，不改变下述数据流。真实 DeepSeek Key、账号、计费与远端保留仍未由本地自动化验证。
 > 关联：[`../adr/README.md`](../adr/README.md)、[`../decisions/w00_owner_decisions.md`](../decisions/w00_owner_decisions.md)、
 > [`../decisions/w18_managed_chinese_stt_runtime.md`](../decisions/w18_managed_chinese_stt_runtime.md)
 

@@ -116,9 +116,10 @@ def test_mock_tts_registers_before_write_and_unregisters_after_discard(
                 turn_id="turn_registry",
                 segment_id="segment_registry",
                 text="registry",
-                connect_timeout_ms=80,
-                first_byte_timeout_ms=80,
-                timeout_ms=300,
+                # This test asserts registry ownership, not a sub-second deadline.
+                connect_timeout_ms=1_000,
+                first_byte_timeout_ms=1_000,
+                timeout_ms=3_000,
                 cancellation_timeout_ms=50,
                 cancellation_token_id=token.token_id,
             ),
@@ -418,29 +419,39 @@ def test_mock_tts_cancellation_during_wave_generation_cleans_registry_and_path(
             temp_registry=registry,
         )
         token = CancellationToken("turn_mock_cancel")
-        loop = asyncio.get_running_loop()
         original_write = provider._write_wave
+        write_started = threading.Event()
+        release_write = threading.Event()
 
-        def cancel_after_write(path: Path, frequency_hz: float) -> None:
+        def controlled_write(path: Path, frequency_hz: float) -> None:
+            write_started.set()
+            assert release_write.wait(timeout=3)
             original_write(path, frequency_hz)
-            loop.call_soon_threadsafe(token.cancel)
 
-        monkeypatch.setattr(provider, "_write_wave", cancel_after_write)
-        with pytest.raises(asyncio.CancelledError):
-            await provider.synthesize(
+        monkeypatch.setattr(provider, "_write_wave", controlled_write)
+        synthesis = asyncio.create_task(
+            provider.synthesize(
                 TTSJob(
                     turn_id="turn_mock_cancel",
                     segment_id="segment_mock_cancel",
                     text="synthetic",
-                    connect_timeout_ms=80,
-                    first_byte_timeout_ms=80,
-                    timeout_ms=300,
+                    connect_timeout_ms=1_000,
+                    first_byte_timeout_ms=1_000,
+                    timeout_ms=3_000,
                     cancellation_timeout_ms=50,
                     cancellation_token_id=token.token_id,
                 ),
                 segment_index=0,
                 token=token,
             )
+        )
+        try:
+            assert await asyncio.to_thread(write_started.wait, 3)
+            token.cancel()
+        finally:
+            release_write.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(synthesis, timeout=3)
 
         assert registry.entries() == ()
         assert not list(paths.temp.rglob("*.wav"))

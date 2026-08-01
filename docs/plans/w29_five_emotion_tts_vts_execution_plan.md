@@ -1,6 +1,12 @@
 # W29：五情绪 GPT-SoVITS 与 VTS 动作联动执行计划
 
-> 状态：公共实现、私有安装、真实链路、本地质量门、功能提交、stacked Draft PR #34 和既有
+> **2026-08-01 合并闭环：** W29 最终 head `d0765e22cc3595230c6e9b2991c5c52a817cd2f5`
+> 已通过 push `30519958709` 与 PR `30519961163` 的 8/8 检查，并由
+> [PR #34](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/34) 以 expected-head guard 合入
+> W28，merge commit 为 `97c1a8f433ec67b0b7c482788a05260b43e3cf12`。所有者接受已记录的主观 Gate；
+> 本文件现为历史执行与验收边界，不再表示开放 Draft PR。
+>
+> 历史状态：公共实现、私有安装、真实链路、本地质量门、功能提交、stacked Draft PR #34 和既有
 > exact-head CI 已完成；2026-07-30 代码审计确认的 P0 gateway 稳定性缺陷已由
 > `a790f47` 修复，其代码 head 的 push/PR CI 8/8 成功；本状态记录仍须接受自身 exact-head CI。所有者
 > 主观试听 Gate 保留
@@ -22,7 +28,7 @@
 - 官方 GPT-SoVITS 固定提交；不启用 WebUI、原始 API、训练、ASR 或 UVR5。
 - 不允许 LLM 输出模型路径、声音槽、动作入口或 VTS ID。
 - 不提交声音权重、参考 WAV、提示词、生成音频、私有路径、VTS 模型/入口名称或 token。
-- 不自动启动网关，不合并本任务 PR；最终试听是所有者主观 Gate。
+- 不自动启动网关。原交付阶段保持 Draft；随后在所有者 2026-07-31 明确授权且最终 head 8/8 通过后受保护合并。
 
 ## 阶段
 
@@ -72,11 +78,12 @@
 - [x] wheel/source-quarantine、installed-artifact 和私有 denylist 通过。
 - [x] 形成聚焦提交、推送并创建以 W28 分支为 base 的 stacked Draft PR #34。
 - [x] 状态 head `4404460` 的 push/PR 两次 macOS/Windows quality 与 installed-wheel 共 8 项通过。
-- [ ] 所有者试听五种音色、情绪差异、中文自然度与整体动作观感。
+- [x] 所有者以“人工审核顺利”接受已记录的五种音色、情绪差异、中文自然度与动作观感主观 Gate；
+  不扩写未提供的逐项试听细节。
 
-本 CI 关闭记录本身仍按同一规则接受独立检查；最终报告必须重新读取 PR live latest head/checks。
+最终 exact-head CI、live PR 审计与 guarded merge 已完成；交付报告仍必须以 GitHub 实时状态和远端 ref 为准。
 
-### F. P0 gateway 稳定性修复（代码 head CI 已通过；状态记录待复核）
+### F. P0 gateway 稳定性修复（已合并）
 
 - [x] 将 synthesis permit 的归还绑定到每一个已登记 worker 的唯一终态；不得因成功、失败、取消、关闭或
   task 在首次调度前取消而泄漏或重复归还 permit。
@@ -89,7 +96,7 @@
   [push](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/30516799937) 与
   [PR](https://github.com/mizusawa-matsuri937/megumin_companion_ai/actions/runs/30516802283) workflow 的
   macOS/Windows `quality` 和 `installed-wheel` 共 8 项均成功。
-- [ ] 形成此状态记录的聚焦提交，等待其自身 exact-head CI，并重新审计 Draft PR 的最新 base/head/diff/checks。
+- [x] 状态记录和后续固定 4 秒眨眼 head 通过最终 exact-head CI，重新审计 base/head/diff/checks 后由 PR #34 合并。
 
 下列属于后续优化，**不**由本 P0 修复冒充完成：provider 并发度与 pipeline 队列容量分离、首段优先、
 真正的流式 PCM 播放、卡死 inference 的 gateway restart/self-healing。当前 cancellation circuit 会在
