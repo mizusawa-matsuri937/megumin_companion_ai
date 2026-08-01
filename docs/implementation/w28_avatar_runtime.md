@@ -1,6 +1,12 @@
 # W28：Avatar Runtime、程序微动作与音量口型
 
-> 状态：产品代码、完整本地质量门、真实 VTS 与真实 MediaWorker/输出设备验收已完成；三项交付代码提交已推送，
+> **2026-08-01 合并闭环：** [PR #33](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/33)
+> 已以精确 head `1e62266f553bd065262cd7045e2a523e4e2c28f6` 合入 W19，merge commit 为
+> `51f2e05a2ae040e297b4c839c37920d8859760d9`，远端状态已复核为 `MERGED`。所有者明确接受已记录的
+> 主观 Gate 后授权合并；这不把下文中 W28 当时未配置真实中文 TTS、未完成结构化回合等历史限制改写为
+> W28 自身已验证，后续能力仍以 W29 证据为准。
+>
+> 历史状态：产品代码、完整本地质量门、真实 VTS 与真实 MediaWorker/输出设备验收已完成；三项交付代码提交已推送，
 > stacked Draft PR [#33](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/33) 已创建，
 > 交付代码 head `a0b46bc8d7d46087b5cbf2db1a43f063ede62ab8` 的 push/PR 双 OS 自动门全部通过。
 > PR 仍为 open Draft 且未合并。真实中文 GPT-SoVITS 因当前用户配置未启用而未验证，主观自然度 Gate
@@ -268,5 +274,6 @@ latency 与 VTS 显示 latency 仍属于主观自然度 Gate。
 ## 发布状态
 
 W28 三项交付代码提交已推送，stacked Draft PR #33 已创建，交付代码 head 的 push/PR 双 OS 自动门全部通过。
-提交范围排除了用户修改的根 `AGENTS.md`、整个 `.agents/` 和所有私有资产。PR 仍为 open Draft，
-未获授权不得合并；真实中文 TTS 与主观自然度仍是明确未关闭 Gate。
+后续最终 head `1e62266...` 的 push `30650686378` 与 PR `30650689973` 8/8 成功，并在所有者授权后以
+expected-head guard 合并为 `51f2e05...`。提交范围排除了用户修改的根 `AGENTS.md`、整个 `.agents/` 和
+所有私有资产。W28 当时的真实中文 TTS 缺口由后续 W29 记录覆盖；不能反向改写成 W28 exact head 自身的证据。

@@ -4,16 +4,19 @@
 
 - [`../windows_development_plan.md`](../windows_development_plan.md) 是当前唯一的 Windows 分阶段执行计划。
   它定义 W 编号、依赖、验收、发布和人工 Gate；旧的按日顺序不能覆盖它。
-- [`w30_deepseek_flash_execution_plan.md`](w30_deepseek_flash_execution_plan.md) 是当前 W30 的详细执行包：
-  固定 DeepSeek Flash 文本 Provider、专用 DPAPI 密钥、既有上下文开关的受限复用和独立验证/回滚。
-  当前实施状态见 [`../implementation/w30_deepseek_flash.md`](../implementation/w30_deepseek_flash.md)。W29 是暂停的
-  独立工作树，既不是 W30 的代码来源，也不因本文而改变其验收状态。
+- W19、W28、W29 与 W30 已在 2026-07-31 按堆栈顺序合入
+  `agent/windows-development-baseline`；当前可复核基线为
+  `83f52e228d8df6df9abf08ce492192752ff113c2`。以下 W28～W30 文件现作为已实施范围、验收边界和历史失败证据保留，
+  不再表示开放 Draft PR。
+- [`w30_deepseek_flash_execution_plan.md`](w30_deepseek_flash_execution_plan.md) 记录固定 DeepSeek Flash 文本
+  Provider、专用 DPAPI 密钥、既有上下文开关的受限复用、Gateway compatibility 和回滚边界；最终 W29/W30
+  组合由 PR #35 合并。当前事实见 [`../implementation/w30_deepseek_flash.md`](../implementation/w30_deepseek_flash.md)。
 - [`w28_avatar_runtime_execution_plan.md`](w28_avatar_runtime_execution_plan.md) 是上位 Windows 计划中
   W28 的详细执行包，冻结 Avatar Runtime、程序微动作、实际播放音量口型、主体动作/红眼生命周期、
   自动化、真实 VTS/音频 Gate 和 Draft PR 交付。它保留为既有计划，不是 W30 的完成证据；其实现证据见
   [`../implementation/w28_avatar_runtime.md`](../implementation/w28_avatar_runtime.md)。
 - [`w29_five_emotion_tts_vts_execution_plan.md`](w29_five_emotion_tts_vts_execution_plan.md) 是 W28
-  之上的结构化回合、五声音槽、私有 GPT-SoVITS 网关、VTS 联动和发布执行包；当前实现证据见
+  之上的结构化回合、五声音槽、私有 GPT-SoVITS 网关、VTS 联动和发布执行包；已实施证据见
   [`../implementation/w29_five_emotion_tts_vts.md`](../implementation/w29_five_emotion_tts_vts.md)。
 
 ## 历史计划

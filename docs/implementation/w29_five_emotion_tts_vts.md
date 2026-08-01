@@ -1,6 +1,12 @@
 # W29：五情绪 GPT-SoVITS 与 VTS 动作联动
 
-> 状态：公共实现、私有运行时、真实 VTS/MediaWorker 链路、功能提交和 stacked Draft PR #34 已完成。
+> **2026-08-01 合并闭环：** [PR #34](https://github.com/mizusawa-matsuri937/megumin_companion_ai/pull/34)
+> 已以精确 head `d0765e22cc3595230c6e9b2991c5c52a817cd2f5` 合入 W28，merge commit 为
+> `97c1a8f433ec67b0b7c482788a05260b43e3cf12`；其 push `30519958709` 与 PR `30519961163`
+> 8/8 成功，远端状态已复核为 `MERGED`。所有者表示人工审核顺利并接受既有主观 Gate 后授权合并；本文不
+> 编造未陈述的具体试听结果，也不扩大为公开分发许可。
+>
+> 历史状态：公共实现、私有运行时、真实 VTS/MediaWorker 链路、功能提交和 stacked Draft PR #34 已完成。
 > 2026-07-30 发现确定性的 gateway permit 泄漏后，P0 提交 `a790f47` 及其 push/PR CI 8/8 已完成；
 > 此状态记录待形成新 exact head 并终审。PR 不合并，所有者主观试听 Gate 保留。
 > 最后核验：2026-07-30（Asia/Shanghai）
@@ -221,10 +227,13 @@ provenance 不含绝对路径、私有 marker 或 secret。
   均为 completed/success；macOS/Windows `quality` 与 `installed-wheel` 共 8 项全部通过。
 - 本 CI 关闭记录只修改正式文档；最终报告仍须读取 PR live latest head/checks，不能借用
   `4404460` 的绿灯覆盖任何后续提交。
+- 后续最终 head `d0765e2...` 的 push `30519958709` 与 PR `30519961163` 均 8/8 成功；PR #34 随后
+  以 expected-head guard 合并，merge commit 为 `97c1a8f...`。
 
 ## 残余 Gate 与回滚
 
-- 待完成：本 CI 关闭记录的独立 exact-head 检查和 PR 终审。
-- 所有者主观 Gate：试听五种声音的音色/情绪差异、中文自然度，并观察随机动作与台词是否协调。
+- 已完成：最终 exact-head 检查、live PR 终审和 guarded merge。
+- 所有者主观 Gate：所有者已以“人工审核顺利”接受此前记录的五种声音、中文自然度与动作观感 Gate；
+  本记录不扩写未提供的逐项试听细节。
 - 回滚：关闭 gateway 启动器，将 TTS provider 切回 Mock 或 silent；Avatar 和文字继续，嘴保持闭合。
   不删除私有声音、运行时、VTS 配置或备份。
